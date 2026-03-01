@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::plex::{
     Hub, IdentityResponse, Level, LibrarySection, PlayQueue, Playlist, PlexClient,
-    PlexClientConfig, PlexSettings, ServerInfo, Track,
+    PlexClientConfig, PlexSettings, ServerInfo, Tag, Track,
 };
 use crate::plex::models::{Album, Artist};
 
@@ -132,6 +132,21 @@ pub async fn get_on_deck(
 ) -> Result<Vec<crate::plex::PlexMedia>, String> {
     let c = client!(state);
     c.on_deck(section_id).await.map_err(|e| format!("{:#}", e))
+}
+
+/// Get tags (genres, moods, styles) for a library section.
+///
+/// `tag_type` should be "genre", "mood", or "style".
+#[tauri::command]
+pub async fn get_section_tags(
+    section_id: i64,
+    tag_type: String,
+    state: State<'_, PlexState>,
+) -> Result<Vec<Tag>, String> {
+    let c = client!(state);
+    c.get_tags(section_id, &tag_type)
+        .await
+        .map_err(|e| format!("{:#}", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +783,115 @@ pub async fn plex_get_resources(
     crate::plextv::get_resources(&settings.client_id, &token)
         .await
         .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Audio engine
+// ---------------------------------------------------------------------------
+
+/// Audio engine state managed by Tauri.
+pub struct AudioEngineState(pub std::sync::Mutex<Option<crate::audio::AudioEngine>>);
+
+impl AudioEngineState {
+    pub fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+}
+
+/// Helper: lock the audio engine and send a command.
+fn audio_send(
+    state: &AudioEngineState,
+    cmd: crate::audio::AudioCommand,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => engine.send(cmd),
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Start playing a track from the given URL.
+#[tauri::command]
+pub fn audio_play(
+    url: String,
+    rating_key: i64,
+    duration_ms: i64,
+    part_id: i64,
+    parent_key: String,
+    track_index: i64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::Play(crate::audio::TrackMeta {
+        url,
+        rating_key,
+        duration_ms,
+        part_id,
+        parent_key,
+        track_index,
+    }))
+}
+
+/// Pause audio playback.
+#[tauri::command]
+pub fn audio_pause(
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::Pause)
+}
+
+/// Resume audio playback.
+#[tauri::command]
+pub fn audio_resume(
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::Resume)
+}
+
+/// Stop audio playback and clear the current track.
+#[tauri::command]
+pub fn audio_stop(
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::Stop)
+}
+
+/// Seek to a position in the current track.
+#[tauri::command]
+pub fn audio_seek(
+    position_ms: i64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::Seek(position_ms))
+}
+
+/// Set the playback volume (0.0 - 1.0).
+#[tauri::command]
+pub fn audio_set_volume(
+    volume: f32,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::SetVolume(volume))
+}
+
+/// Pre-buffer the next track for gapless playback.
+#[tauri::command]
+pub fn audio_preload_next(
+    url: String,
+    rating_key: i64,
+    duration_ms: i64,
+    part_id: i64,
+    parent_key: String,
+    track_index: i64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    audio_send(&state, crate::audio::AudioCommand::PreloadNext(crate::audio::TrackMeta {
+        url,
+        rating_key,
+        duration_ms,
+        part_id,
+        parent_key,
+        track_index,
+    }))
 }
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,12 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod commands;
 mod plex;
 mod plextv;
 
-use commands::PlexState;
+use commands::{AudioEngineState, PlexState};
 use once_cell::sync::Lazy;
 use tauri::Manager;
 
@@ -60,7 +61,17 @@ fn plex_img_cache_key(src_url: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(PlexState::new())
+        .manage(AudioEngineState::new())
+        .setup(|app| {
+            // Start the audio engine — spawns decoder + output threads
+            let engine = audio::AudioEngine::start(app.handle().clone())
+                .expect("Failed to start audio engine");
+            let state = app.state::<AudioEngineState>();
+            *state.0.lock().unwrap() = Some(engine);
+            Ok(())
+        })
         // ---- Custom image-caching protocol ----
         .register_uri_scheme_protocol("pleximg", |app, request| {
             // Extract and decode the `src` query param (the full Plex URL).
@@ -131,6 +142,7 @@ pub fn run() {
             commands::get_recently_added,
             commands::get_hubs,
             commands::get_on_deck,
+            commands::get_section_tags,
             // Metadata
             commands::get_track,
             commands::get_artist,
@@ -183,6 +195,14 @@ pub fn run() {
             commands::plex_auth_poll,
             commands::plex_get_resources,
             commands::test_server_connection,
+            // Audio engine
+            commands::audio_play,
+            commands::audio_pause,
+            commands::audio_resume,
+            commands::audio_stop,
+            commands::audio_seek,
+            commands::audio_set_volume,
+            commands::audio_preload_next,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

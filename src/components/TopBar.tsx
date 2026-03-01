@@ -1,8 +1,9 @@
 import { Link, useLocation } from "wouter"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSearchStore, useConnectionStore, useUIStore, useLibraryStore } from "../stores"
 import { clearImageCache } from "../lib/plex"
 import { ActivityIndicator } from "./ActivityIndicator"
+import { SearchDropdown } from "./SearchDropdown"
 
 export function TopBar() {
   const [location, navigate] = useLocation()
@@ -11,8 +12,11 @@ export function TopBar() {
   const { isRefreshing, setIsRefreshing, incrementPageRefreshKey } = useUIStore()
   const { refreshAll, invalidateCache } = useLibraryStore()
   const [localQuery, setLocalQuery] = useState(query)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  // Debounced search when on /search
+  // Debounced search — fires regardless of current route
   useEffect(() => {
     const timer = setTimeout(() => {
       if (musicSectionId !== null && localQuery.trim()) {
@@ -29,23 +33,34 @@ export function TopBar() {
     setQuery(localQuery)
   }, [localQuery])
 
-  // Clear search when leaving the search page
+  // Close dropdown on route change
   useEffect(() => {
-    if (location !== "/search") {
-      setLocalQuery("")
-      clear()
-    }
+    setShowDropdown(false)
+    setActiveIndex(-1)
   }, [location])
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+        e.preventDefault()
+        void handleRefresh()
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault()
+        inputRef.current?.focus()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [musicSectionId, isRefreshing])
 
   const handleRefresh = async () => {
     if (!musicSectionId || isRefreshing) return
     setIsRefreshing(true)
     try {
-      // Null out all TTL timestamps so any re-triggered page fetch hits the network.
       invalidateCache()
-      // Signal all pages to re-run their useEffect fetch calls.
       incrementPageRefreshKey()
-      // Clear disk image cache and refetch home-page store data in parallel.
       await Promise.all([
         clearImageCache(),
         refreshAll(musicSectionId),
@@ -55,8 +70,51 @@ export function TopBar() {
     }
   }
 
+  const handleInputFocus = () => {
+    if (localQuery.trim().length > 0) setShowDropdown(true)
+    setActiveIndex(-1)
+  }
+
+  const handleInputBlur = () => {
+    // Delay so dropdown click events fire before the dropdown closes
+    setTimeout(() => setShowDropdown(false), 150)
+  }
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showDropdown) {
+      if (e.key === "Enter") {
+        navigate("/search")
+      }
+      return
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      setActiveIndex(i => i + 1)
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault()
+      setActiveIndex(i => Math.max(-1, i - 1))
+    } else if (e.key === "Escape") {
+      e.preventDefault()
+      setShowDropdown(false)
+      inputRef.current?.blur()
+    } else if (e.key === "Enter") {
+      if (activeIndex < 0) {
+        navigate("/search")
+        setShowDropdown(false)
+      }
+      // If activeIndex >= 0, SearchDropdown handles the Enter press via its own handler
+    }
+  }
+
+  const handleQueryChange = (value: string) => {
+    setLocalQuery(value)
+    setShowDropdown(value.trim().length > 0)
+    setActiveIndex(-1)
+  }
+
   return (
-    <div data-tauri-drag-region className="mb-3 flex flex-row items-center px-8 pt-3">
+    // pt-8 gives 32px of clearance for the macOS traffic-light buttons
+    <div data-tauri-drag-region className="mb-3 flex flex-row items-center px-8 pt-8">
       <div data-tauri-drag-region className="flex grow flex-row items-center gap-4">
         {/* Back button */}
         <Link href="/">
@@ -81,37 +139,46 @@ export function TopBar() {
           </svg>
         </button>
 
-        {/* Search input — only visible on /search, wired to store */}
-        {location === "/search" && (
-          <div className="relative text-sm text-black">
-            <svg
-              height="16" width="16"
-              className="absolute left-3 top-1/2 -translate-y-1/2 fill-[#121212] pointer-events-none"
-              viewBox="0 0 24 24"
+        {/* Search input — always visible, wired to store */}
+        <div className="relative text-sm text-black">
+          <svg
+            height="16" width="16"
+            className="absolute left-3 top-1/2 -translate-y-1/2 fill-[#121212] pointer-events-none"
+            viewBox="0 0 24 24"
+          >
+            <path d="M10.533 1.279c-5.18 0-9.407 4.14-9.407 9.279s4.226 9.279 9.407 9.279c2.234 0 4.29-.77 5.907-2.058l4.353 4.353a1 1 0 1 0 1.414-1.414l-4.344-4.344a9.157 9.157 0 0 0 2.077-5.816c0-5.14-4.226-9.28-9.407-9.28zm-7.407 9.279c0-4.006 3.302-7.28 7.407-7.28s7.407 3.274 7.407 7.28-3.302 7.279-7.407 7.279-7.407-3.273-7.407-7.28z" />
+          </svg>
+          <input
+            ref={inputRef}
+            type="text"
+            value={localQuery}
+            onChange={e => handleQueryChange(e.target.value)}
+            onFocus={handleInputFocus}
+            onBlur={handleInputBlur}
+            onKeyDown={handleInputKeyDown}
+            placeholder="What do you want to listen to?"
+            className="h-[40px] w-[364px] rounded-full bg-white pl-10 pr-4 text-black focus:outline-none"
+          />
+          {localQuery && (
+            <button
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => { setLocalQuery(""); clear(); setShowDropdown(false) }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#121212]/40 hover:text-[#121212]"
             >
-              <path d="M10.533 1.279c-5.18 0-9.407 4.14-9.407 9.279s4.226 9.279 9.407 9.279c2.234 0 4.29-.77 5.907-2.058l4.353 4.353a1 1 0 1 0 1.414-1.414l-4.344-4.344a9.157 9.157 0 0 0 2.077-5.816c0-5.14-4.226-9.28-9.407-9.28zm-7.407 9.279c0-4.006 3.302-7.28 7.407-7.28s7.407 3.274 7.407 7.28-3.302 7.279-7.407 7.279-7.407-3.273-7.407-7.28z" />
-            </svg>
-            <input
-              type="text"
-              value={localQuery}
-              onChange={e => setLocalQuery(e.target.value)}
-              placeholder="What do you want to listen to?"
-              autoFocus
-              className="h-[40px] w-[364px] rounded-full bg-white pl-10 pr-4 text-black focus:outline-none"
+              <svg height="12" width="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2.47 2.47a.75.75 0 0 1 1.06 0L8 6.94l4.47-4.47a.75.75 0 1 1 1.06 1.06L9.06 8l4.47 4.47a.75.75 0 1 1-1.06 1.06L8 9.06l-4.47 4.47a.75.75 0 0 1-1.06-1.06L6.94 8 2.47 3.53a.75.75 0 0 1 0-1.06z" />
+              </svg>
+            </button>
+          )}
+          {showDropdown && (
+            <SearchDropdown
+              activeIndex={activeIndex}
+              onActiveIndexChange={setActiveIndex}
+              onClose={() => setShowDropdown(false)}
             />
-            {localQuery && (
-              <button
-                type="button"
-                onClick={() => setLocalQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#121212]/40 hover:text-[#121212]"
-              >
-                <svg height="12" width="12" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M2.47 2.47a.75.75 0 0 1 1.06 0L8 6.94l4.47-4.47a.75.75 0 1 1 1.06 1.06L9.06 8l4.47 4.47a.75.75 0 1 1-1.06 1.06L8 9.06l-4.47 4.47a.75.75 0 0 1-1.06-1.06L6.94 8 2.47 3.53a.75.75 0 0 1 0-1.06z" />
-                </svg>
-              </button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
@@ -122,7 +189,7 @@ export function TopBar() {
         <button
           onClick={() => void handleRefresh()}
           disabled={isRefreshing || !isConnected}
-          title="Refresh library"
+          title="Refresh library (⌘R)"
           className="flex h-8 w-8 items-center justify-center rounded-full bg-black/70 hover:bg-[#282828] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <svg

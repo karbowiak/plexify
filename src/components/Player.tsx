@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
 import { reportTimeline } from "../lib/plex"
 
@@ -8,14 +8,24 @@ function formatMs(ms: number): string {
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
 }
 
+/**
+ * Convert a 0-100 slider position to a 0.0-1.0 gain value using a cubic curve.
+ * This matches human loudness perception: 50 on the slider sounds like "half volume".
+ * At 50: gain ≈ 0.125 (−18 dB), at 100: gain = 1.0.
+ */
+function sliderToGain(slider: number): number {
+  if (slider <= 0) return 0
+  if (slider >= 100) return 1
+  return Math.pow(slider / 100, 3)
+}
+
 export function Player() {
-  const audioRef = useRef<HTMLAudioElement>(null)
   const positionRef = useRef(0)
+  const volumeAreaRef = useRef<HTMLDivElement>(null)
 
   const {
     currentTrack,
     isPlaying,
-    streamUrl,
     positionMs,
     volume,
     shuffle,
@@ -24,10 +34,11 @@ export function Player() {
     resume,
     next,
     prev,
+    seekTo,
     setVolume,
     toggleShuffle,
     cycleRepeat,
-    updatePosition,
+    initAudioEvents,
   } = usePlayerStore()
 
   const { baseUrl, token } = useConnectionStore()
@@ -35,30 +46,16 @@ export function Player() {
   // Keep positionRef in sync for the timeline reporting interval
   positionRef.current = positionMs
 
-  // Sync play/pause with audio element
+  // Initialize Rust audio engine event listeners on mount
   useEffect(() => {
-    if (!audioRef.current) return
-    if (isPlaying) {
-      audioRef.current.play().catch(console.error)
-    } else {
-      audioRef.current.pause()
+    let cleanup: (() => void) | undefined
+    initAudioEvents().then((fn) => {
+      cleanup = fn
+    })
+    return () => {
+      cleanup?.()
     }
-  }, [isPlaying])
-
-  // Load new stream URL when track changes
-  useEffect(() => {
-    if (!audioRef.current || !streamUrl) return
-    audioRef.current.src = streamUrl
-    audioRef.current.load()
-    if (isPlaying) {
-      audioRef.current.play().catch(console.error)
-    }
-  }, [streamUrl])
-
-  // Sync volume
-  useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = volume / 100
-  }, [volume])
+  }, [])
 
   // Report timeline to Plex every 10 seconds during playback
   useEffect(() => {
@@ -97,15 +94,24 @@ export function Player() {
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused"
   }, [currentTrack?.rating_key, isPlaying])
 
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const ms = parseFloat(e.target.value)
-    if (audioRef.current) audioRef.current.currentTime = ms / 1000
-    updatePosition(ms)
-  }
+  // Scroll wheel on volume area — must be non-passive to call preventDefault()
+  useEffect(() => {
+    const el = volumeAreaRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      // deltaY < 0 = scroll up = louder; each notch ≈ 2.5 units
+      const delta = e.deltaY < 0 ? 2.5 : -2.5
+      // Read latest volume directly from store (avoids stale closure)
+      setVolume(usePlayerStore.getState().volume + delta)
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [])
 
-  const thumbUrl = currentTrack?.thumb
-    ? buildPlexImageUrl(baseUrl, token, currentTrack.thumb)
-    : null
+  // Prefer track thumb; fall back to album thumb (smart playlists return parent_thumb)
+  const thumbPath = currentTrack?.thumb ?? currentTrack?.parent_thumb
+  const thumbUrl = thumbPath ? buildPlexImageUrl(baseUrl, token, thumbPath) : null
 
   const progressPct = currentTrack?.duration
     ? (positionMs / currentTrack.duration) * 100
@@ -116,14 +122,6 @@ export function Player() {
 
   return (
     <div className="border-t border-[#282828]">
-      <audio
-        ref={audioRef}
-        onTimeUpdate={() => {
-          if (audioRef.current) updatePosition(audioRef.current.currentTime * 1000)
-        }}
-        onEnded={next}
-      />
-
       <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip rounded-b-lg bg-[#181818]">
         <div className="h-24">
           <div className="flex h-full items-center justify-between px-4">
@@ -224,7 +222,7 @@ export function Player() {
                     min={0}
                     max={currentTrack?.duration ?? 0}
                     value={positionMs}
-                    onChange={handleSeek}
+                    onChange={(e) => seekTo(parseFloat(e.target.value))}
                     className="h-1 w-full cursor-pointer appearance-none rounded-full bg-[#535353] accent-[#1db954]"
                     style={{
                       background: `linear-gradient(to right, #1db954 0%, #1db954 ${progressPct}%, #535353 ${progressPct}%, #535353 100%)`,
@@ -238,10 +236,24 @@ export function Player() {
             </div>
 
             {/* Right: volume */}
-            <div className="flex w-[30%] min-w-[11.25rem] items-center justify-end gap-1">
-              <svg role="presentation" height="16" width="16" viewBox="0 0 16 16" fill="currentColor" className="text-white text-opacity-70">
-                <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 6.087a4.502 4.502 0 0 0 0-8.474v1.65a2.999 2.999 0 0 1 0 5.175v1.649z" />
-              </svg>
+            <div ref={volumeAreaRef} className="flex w-[30%] min-w-[11.25rem] items-center justify-end gap-1">
+              {/* Volume icon — muted / low / full */}
+              <button onClick={() => setVolume(volume === 0 ? 80 : 0)} className="flex-shrink-0 text-white/70 hover:text-white transition-colors">
+                {volume === 0 ? (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M13.86 5.47a.75.75 0 0 0-1.061 0l-1.47 1.47-1.47-1.47A.75.75 0 0 0 8.8 6.53L10.269 8l-1.47 1.47a.75.75 0 1 0 1.06 1.06l1.47-1.47 1.47 1.47a.75.75 0 0 0 1.06-1.06L12.39 8l1.47-1.47a.75.75 0 0 0 0-1.06z" />
+                    <path d="M10.116 1.5A.75.75 0 0 0 8.991.85l-6.925 4a3.642 3.642 0 0 0-1.33 4.967 3.639 3.639 0 0 0 1.33 1.332l6.925 4a.75.75 0 0 0 1.125-.649v-13a.75.75 0 0 0-.002-.001zm0 12.34L3.322 9.688a2.14 2.14 0 0 1 0-3.7l6.794-3.99v11.84z" />
+                  </svg>
+                ) : volume < 50 ? (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 4.21v-4.2a2.447 2.447 0 0 1 0 4.2z" />
+                  </svg>
+                ) : (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 6.087a4.502 4.502 0 0 0 0-8.474v1.65a2.999 2.999 0 0 1 0 5.175v1.649z" />
+                  </svg>
+                )}
+              </button>
               <div className="w-[5.813rem]">
                 <input
                   type="range"

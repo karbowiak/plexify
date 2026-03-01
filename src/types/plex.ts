@@ -73,6 +73,12 @@ export interface PlexTag {
   filter: string | null
 }
 
+/** A genre/mood/style tag returned by the library tags endpoint. */
+export interface LibraryTag {
+  tag: string
+  count: number | null
+}
+
 export interface Review {
   id: number | null
   tag: string | null

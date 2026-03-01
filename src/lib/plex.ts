@@ -16,6 +16,7 @@ import type {
   IdentityResponse,
   Level,
   LibrarySection,
+  LibraryTag,
   PlayQueue,
   Playlist,
   PlexAuthPin,
@@ -77,6 +78,14 @@ export function getHubs(sectionId: number): Promise<Hub[]> {
 /** Get "on deck" / continue listening items for a section. */
 export function getOnDeck(sectionId: number): Promise<PlexMedia[]> {
   return invoke("get_on_deck", { sectionId })
+}
+
+/**
+ * Get tags (genres, moods, styles) for a library section.
+ * @param tagType "genre" | "mood" | "style"
+ */
+export function getSectionTags(sectionId: number, tagType: string): Promise<LibraryTag[]> {
+  return invoke("get_section_tags", { sectionId, tagType })
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +490,59 @@ export function plexAuthPoll(pinId: number): Promise<string | null> {
  */
 export function plexGetResources(token: string): Promise<PlexResource[]> {
   return invoke("plex_get_resources", { token })
+}
+
+// ---------------------------------------------------------------------------
+// Audio engine (Rust-native playback)
+// ---------------------------------------------------------------------------
+
+/** Start playing a track via the Rust audio engine. */
+export function audioPlay(
+  url: string,
+  ratingKey: number,
+  durationMs: number,
+  partId: number,
+  parentKey: string,
+  trackIndex: number,
+): Promise<void> {
+  return invoke("audio_play", { url, ratingKey, durationMs, partId, parentKey, trackIndex })
+}
+
+/** Pause audio playback. */
+export function audioPause(): Promise<void> {
+  return invoke("audio_pause")
+}
+
+/** Resume audio playback. */
+export function audioResume(): Promise<void> {
+  return invoke("audio_resume")
+}
+
+/** Stop audio playback and clear the current track. */
+export function audioStop(): Promise<void> {
+  return invoke("audio_stop")
+}
+
+/** Seek to a position in the current track. */
+export function audioSeek(positionMs: number): Promise<void> {
+  return invoke("audio_seek", { positionMs })
+}
+
+/** Set the playback volume (0.0 - 1.0). */
+export function audioSetVolume(volume: number): Promise<void> {
+  return invoke("audio_set_volume", { volume })
+}
+
+/** Pre-buffer the next track for gapless playback. */
+export function audioPreloadNext(
+  url: string,
+  ratingKey: number,
+  durationMs: number,
+  partId: number,
+  parentKey: string,
+  trackIndex: number,
+): Promise<void> {
+  return invoke("audio_preload_next", { url, ratingKey, durationMs, partId, parentKey, trackIndex })
 }
 
 // ---------------------------------------------------------------------------

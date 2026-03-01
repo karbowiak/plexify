@@ -7,6 +7,7 @@ import { ArtistPage } from "./Pages/Artist"
 import { AlbumPage } from "./Pages/Album"
 import { Liked } from "./Pages/Liked"
 import { SettingsPage } from "./Pages/Settings"
+import { RadioPage } from "./Pages/Radio"
 import clsx from "clsx"
 import { TopBar } from "./TopBar"
 import { Search } from "./Pages/Search"
@@ -35,6 +36,7 @@ const bg = {
   artist: "bg-gradient-to-b from-[#121212] from-10% via-[#121212] via-40% to-[#121212] to-90%",
   album: "bg-gradient-to-b from-[#121212] from-10% via-[#121212] via-40% to-[#121212] to-90%",
   stations: "bg-gradient-to-b from-[#121212] from-10% via-[#121212] via-40% to-[#121212] to-90%",
+  radio: "bg-gradient-to-b from-[#121212] from-10% via-[#121212] via-40% to-[#121212] to-90%",
   settings: "bg-gradient-to-b from-[#121212] from-10% via-[#121212] via-40% to-[#121212] to-90%",
 }
 
@@ -117,6 +119,12 @@ export function Page() {
             const id = parseInt(params.id ?? "0", 10)
             return id ? <AlbumPage albumId={id} /> : null
           }}
+        </Route>
+
+        <Route path="/radio/:type" key="radio">
+          {(params: { type?: string }) => (
+            <RadioPage stationType={params.type ?? ""} />
+          )}
         </Route>
 
         <Route path="/settings" key="settings">
