@@ -43,17 +43,21 @@ Grab the latest release for your platform from the [Releases page](https://githu
 
 ### macOS — Security Warning
 
-Plexify is not currently code-signed or notarized with Apple, so macOS Gatekeeper will block it on first launch. To open it:
-
-1. **Right-click** (or Control-click) the app in Applications
-2. Click **Open** from the context menu
-3. Click **Open** again in the dialog that appears
-
-You only need to do this once — macOS remembers your choice. Alternatively, run this in Terminal after installing:
+Plexify is not currently code-signed or notarized with Apple, so macOS Gatekeeper will block it. Run this in Terminal after downloading to remove the quarantine flag:
 
 ```bash
+# Remove quarantine from the downloaded .dmg
+xattr -cr ~/Downloads/Plexify_*.dmg
+```
+
+Then open the `.dmg` and drag Plexify into Applications as usual. If macOS still shows a warning when launching the app:
+
+```bash
+# Remove quarantine from the installed app
 xattr -cr /Applications/Plexify.app
 ```
+
+Alternatively, you can **right-click** the app in Applications, click **Open**, then click **Open** again in the dialog — macOS remembers your choice after the first time.
 
 ### Windows — SmartScreen Warning
 
