@@ -13,7 +13,9 @@ use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, Runtime};
 
 // ---------------------------------------------------------------------------
 // Public API
