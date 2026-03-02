@@ -13,17 +13,32 @@ import {
   createPlayQueue,
   createRadioQueue,
   createSmartShuffleQueue,
+  computeSonicPath,
+  getArtistPopularTracksInSection,
   getStreamUrl,
+  getStreamLevels,
+  getTrack,
   reportTimeline,
   markPlayed,
   updateNowPlaying,
   setNowPlayingState,
   getPlaylistItems,
 } from "../lib/plex"
-import type { Track } from "../types/plex"
+import type { Track, Level } from "../types/plex"
 import { useConnectionStore } from "./connectionStore"
 
-type RadioType = 'track' | 'artist' | 'album'
+type RadioType = 'track' | 'artist' | 'album' | 'playlist'
+
+export type DjMode = 'stretch' | 'twin' | 'twofer' | 'anno' | 'groupie' | 'freeze'
+
+export const DJ_MODES: { key: DjMode; name: string; desc: string }[] = [
+  { key: 'stretch',  name: 'DJ Stretch',  desc: 'Inserts a short Sonic Adventure between each pair of tracks' },
+  { key: 'twin',     name: 'DJ Gemini',   desc: 'Inserts the most sonically similar track after each track' },
+  { key: 'freeze',   name: 'DJ Freeze',   desc: 'Keeps playing with shuffled tracks from the same seed' },
+  { key: 'twofer',   name: 'DJ Twofer',   desc: 'Inserts another track by the same artist after each track' },
+  { key: 'anno',     name: 'DJ Contempo', desc: 'Keeps the mood going with tracks from the same era' },
+  { key: 'groupie',  name: 'DJ Groupie',  desc: 'Keeps queueing tracks from the same artist' },
+]
 
 interface PlayerState {
   currentTrack: Track | null
@@ -49,21 +64,37 @@ interface PlayerState {
   radioSeedKey: number | null
   /** Type of seed item used to start radio. */
   radioType: RadioType | null
-  /** Guest DJ: use AI smart-shuffle for radio recommendations. Persisted as a preference. */
-  guestDjEnabled: boolean
+  /** Active DJ personality, or null when DJ is off. Persisted as a preference. */
+  djMode: DjMode | null
 
-  playTrack: (track: Track, context?: Track[]) => Promise<void>
+  /** Waveform level data fetched on track-start. Null when unavailable. Not persisted. */
+  waveformLevels: Level[] | null
+
+  /** Transient error message shown briefly in the Player UI. Null when no error. */
+  playerError: string | null
+
+  /** Display name for the current playback context ("My Playlist", "Ado Radio", etc.). */
+  contextName: string | null
+  /** Optional deep-link for the context label (e.g. "/playlist/123"). */
+  contextHref: string | null
+
+  playTrack: (track: Track, context?: Track[], contextName?: string | null, contextHref?: string | null) => Promise<void>
   /** Play a Plex URI via a server-side play queue. Handles full playlists with shuffle. */
-  playFromUri: (uri: string, forceShuffle?: boolean) => Promise<void>
+  playFromUri: (uri: string, forceShuffle?: boolean, contextName?: string | null, contextHref?: string | null) => Promise<void>
   /** Start playing a playlist with progressive queue loading (100 tracks at a time). */
-  playPlaylist: (playlistId: number, totalCount: number) => Promise<void>
+  playPlaylist: (playlistId: number, totalCount: number, title: string, href: string) => Promise<void>
   /**
    * Start a radio station seeded from the given item.
    * Uses `createRadioQueue` normally, or `createSmartShuffleQueue` when Guest DJ is enabled.
+   * Pass `seedName` to set a human-readable context label ("Ado Radio").
    */
-  playRadio: (ratingKey: number, radioType: RadioType) => Promise<void>
-  /** Toggle Guest DJ mode on/off. Re-seeds the current station when turning on. */
-  toggleGuestDj: () => void
+  playRadio: (ratingKey: number, radioType: RadioType, seedName?: string) => Promise<void>
+  /** Append tracks to the end of the queue without touching radio/playlist state. */
+  addToQueue: (tracks: Track[]) => void
+  /** Stop radio auto-refill without clearing the existing queue. */
+  stopRadio: () => void
+  /** Set the active DJ personality (null = off). Re-seeds the current station immediately. */
+  setDjMode: (mode: DjMode | null) => void
   pause: () => void
   resume: () => void
   next: () => void
@@ -92,6 +123,24 @@ interface PlayerState {
 const _prefetchedPartKeys = new Set<string>()
 
 // ---------------------------------------------------------------------------
+// Gapless/crossfade transition tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * When track-ended fires, we set this timeout as a fallback for the non-gapless
+ * case (Rust stopped without a preloaded next track). If track-started fires first
+ * (gapless/crossfade transition), we cancel it so next() is not called twice.
+ */
+let _gaplessTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+// ---------------------------------------------------------------------------
+// Periodic timeline reporting — throttle to every 10 seconds
+// ---------------------------------------------------------------------------
+
+let _lastTimelineReportMs = 0
+const TIMELINE_REPORT_INTERVAL_MS = 10_000
+
+// ---------------------------------------------------------------------------
 // Radio — module-level state
 // ---------------------------------------------------------------------------
 
@@ -102,36 +151,183 @@ export function isDjGenerated(ratingKey: number): boolean {
   return _djGeneratedKeys.has(ratingKey)
 }
 
+/** Tracks which rating keys were auto-appended by the radio refill. */
+const _radioGeneratedKeys = new Set<number>()
+/** Returns true if this track was appended to the queue by radio auto-refill. */
+export function isRadioGenerated(ratingKey: number): boolean {
+  return _radioGeneratedKeys.has(ratingKey)
+}
+
 let _radioRefillInProgress = false
+
+/** Keep only items that have actual audio (at least one media part with a key). */
+function filterPlayable(tracks: Track[]): Track[] {
+  return tracks.filter(t => t.media?.[0]?.parts?.[0]?.key)
+}
 
 /** Silently append a fresh batch of radio tracks when the queue is running low. */
 async function appendRadioTracks(
   get: () => PlayerState,
-  set: (updater: (s: PlayerState) => Partial<PlayerState>) => void
+  set: (updater: (s: PlayerState) => Partial<PlayerState>) => void,
 ) {
-  const { isRadioMode, radioSeedKey, guestDjEnabled, queue, queueIndex } = get()
-  if (!isRadioMode || radioSeedKey === null || _radioRefillInProgress) return
+  const { isRadioMode, radioSeedKey, radioType, queue, queueIndex } = get()
+  if (!isRadioMode || radioSeedKey === null || radioType === null || _radioRefillInProgress) return
   if (queue.length - queueIndex > 5) return  // plenty of tracks ahead
 
   _radioRefillInProgress = true
   try {
-    const playQueue = guestDjEnabled
-      ? await createSmartShuffleQueue(radioSeedKey)
-      : await createRadioQueue(radioSeedKey)
+    const pq = await createRadioQueue(radioSeedKey, radioType)
+    const newTracks = filterPlayable(pq.items)
 
     // Append only tracks not already in the queue to avoid duplicates
     const existingKeys = new Set(get().queue.map(t => t.rating_key))
-    const newTracks = playQueue.items.filter(t => !existingKeys.has(t.rating_key))
-    if (newTracks.length === 0) return
+    const dedupedTracks = newTracks.filter(t => !existingKeys.has(t.rating_key))
+    if (dedupedTracks.length === 0) return
 
-    if (guestDjEnabled) {
-      for (const t of newTracks) _djGeneratedKeys.add(t.rating_key)
-    }
-    set(s => ({ queue: [...s.queue, ...newTracks] }))
+    dedupedTracks.forEach(t => _radioGeneratedKeys.add(t.rating_key))
+    set(s => ({ queue: [...s.queue, ...dedupedTracks] }))
   } catch (err) {
     console.error("Radio queue refill failed:", err)
   } finally {
     _radioRefillInProgress = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DJ track insertion — works in any playback context (playlist, album, radio)
+// ---------------------------------------------------------------------------
+
+let _djInsertInProgress = false
+
+/**
+ * Insert DJ-curated tracks into the queue based on the active DJ mode.
+ * Fires on track-start and when enabling a DJ mode. Independent of radio.
+ *
+ * - Freeze:   1 sonically similar track (track radio seeded from current)
+ * - Gemini:   1 most sonically similar track (smart shuffle twin mode)
+ * - Stretch:  Sonic adventure path between current and next original track
+ * - Twofer:   1 same-artist track (skips if current track is DJ-generated → alternating pattern)
+ * - Contempo: 1 same-era track (smart shuffle anno mode)
+ * - Groupie:  1 same-artist track via artist radio
+ */
+async function insertDjTracks(
+  get: () => PlayerState,
+  set: (updater: (s: PlayerState) => Partial<PlayerState>) => void,
+) {
+  const { djMode, currentTrack, queue, queueIndex } = get()
+  if (!djMode || !currentTrack) return
+  if (_djInsertInProgress) return
+
+  // Twofer & Stretch skip when the current track is DJ-generated
+  // (Twofer alternates user→DJ→user→DJ; Stretch path is already laid out)
+  if ((djMode === 'twofer' || djMode === 'stretch') && _djGeneratedKeys.has(currentTrack.rating_key)) return
+
+  _djInsertInProgress = true
+  try {
+    const existingKeys = new Set(queue.map(t => t.rating_key))
+    let picks: Track[] = []
+
+    switch (djMode) {
+      case 'freeze': {
+        // Sonically similar tracks seeded from the current track
+        const pq = await createRadioQueue(currentTrack.rating_key, 'track')
+        picks = filterPlayable(pq.items)
+          .filter(t => !existingKeys.has(t.rating_key))
+          .slice(0, 1)
+        break
+      }
+
+      case 'twin': {
+        // Most sonically similar track
+        const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'twin')
+        picks = filterPlayable(pq.items)
+          .filter(t => !existingKeys.has(t.rating_key))
+          .slice(0, 1)
+        break
+      }
+
+      case 'stretch': {
+        // Sonic adventure between current track and the next original (non-DJ) track
+        const { musicSectionId } = useConnectionStore.getState()
+        const nextOriginal = queue.slice(queueIndex + 1).find(t => !_djGeneratedKeys.has(t.rating_key))
+        if (musicSectionId && nextOriginal) {
+          try {
+            const pathTracks = await computeSonicPath(musicSectionId, currentTrack.rating_key, nextOriginal.rating_key)
+            picks = filterPlayable(pathTracks)
+              .filter(t =>
+                !existingKeys.has(t.rating_key) &&
+                t.rating_key !== currentTrack.rating_key &&
+                t.rating_key !== nextOriginal.rating_key
+              )
+          } catch {
+            // Sonic path unavailable — fall back to smart shuffle
+            const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'stretch')
+            picks = filterPlayable(pq.items)
+              .filter(t => !existingKeys.has(t.rating_key))
+              .slice(0, 2)
+          }
+        } else if (musicSectionId) {
+          // No next original track — use smart shuffle for a couple of bridge tracks
+          const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'stretch')
+          picks = filterPlayable(pq.items)
+            .filter(t => !existingKeys.has(t.rating_key))
+            .slice(0, 2)
+        }
+        break
+      }
+
+      case 'twofer': {
+        // Same-artist track
+        const { musicSectionId } = useConnectionStore.getState()
+        const artistId = parseInt(currentTrack.grandparent_key?.split('/').pop() ?? '0', 10)
+        if (musicSectionId && artistId > 0) {
+          const tracks = await getArtistPopularTracksInSection(musicSectionId, artistId, 10)
+          const available = tracks.filter(t =>
+            t.rating_key !== currentTrack.rating_key &&
+            !existingKeys.has(t.rating_key)
+          )
+          if (available.length > 0) {
+            picks = [available[Math.floor(Math.random() * available.length)]]
+          }
+        }
+        break
+      }
+
+      case 'anno': {
+        // Same era track
+        const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'anno')
+        picks = filterPlayable(pq.items)
+          .filter(t => !existingKeys.has(t.rating_key))
+          .slice(0, 1)
+        break
+      }
+
+      case 'groupie': {
+        // Same artist via artist radio
+        const artistId = parseInt(currentTrack.grandparent_key?.split('/').pop() ?? '0', 10)
+        if (artistId > 0) {
+          const pq = await createRadioQueue(artistId, 'artist')
+          picks = filterPlayable(pq.items)
+            .filter(t => !existingKeys.has(t.rating_key))
+            .slice(0, 1)
+        }
+        break
+      }
+    }
+
+    if (picks.length === 0) return
+
+    picks.forEach(t => _djGeneratedKeys.add(t.rating_key))
+    const { queueIndex: qi } = get()
+    set(s => {
+      const nq = [...s.queue]
+      nq.splice(qi + 1, 0, ...picks)
+      return { queue: nq }
+    })
+  } catch (err) {
+    console.error('DJ track insertion failed:', err)
+  } finally {
+    _djInsertInProgress = false
   }
 }
 
@@ -145,6 +341,77 @@ export function prefetchTrackAudio(track: Track): void {
   void audioPrefetch(url).catch(() => {/* non-critical */})
 }
 
+/** Extract track gain in dB from Plex stream metadata (audio stream has stream_type === 2). */
+function extractGainDb(track: Track): number | null {
+  return track.media[0]?.parts[0]?.streams?.find(s => s.stream_type === 2)?.gain ?? null
+}
+
+/**
+ * Session-level gain cache: rating_key → gain_db (null = "analyzed, no gain tag").
+ *
+ * Plex list endpoints (playlist items, album tracks) don't include Stream sub-elements,
+ * so extractGainDb returns null for those tracks. We lazily fetch the individual track
+ * metadata on first play and cache the result to avoid repeated API calls.
+ */
+const _gainCache = new Map<number, number | null>()
+
+/**
+ * Session-level waveform stream-ID cache: rating_key → audio stream id (null = "no audio stream").
+ * Same fallback pattern as _gainCache — list endpoints don't include Stream sub-elements.
+ */
+const _waveformStreamCache = new Map<number, number | null>()
+
+/** Fetch the audio stream ID for waveform levels, falling back to a metadata call if needed. */
+async function fetchAudioStreamId(track: Track): Promise<number | null> {
+  const inline = track.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
+  if (inline !== null) {
+    _waveformStreamCache.set(track.rating_key, inline)
+    return inline
+  }
+  if (_waveformStreamCache.has(track.rating_key)) {
+    return _waveformStreamCache.get(track.rating_key) ?? null
+  }
+  try {
+    const full = await getTrack(track.rating_key)
+    const id = full.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
+    _waveformStreamCache.set(track.rating_key, id)
+    return id
+  } catch {
+    _waveformStreamCache.set(track.rating_key, null)
+    return null
+  }
+}
+
+/**
+ * Get the gain for a track, fetching full metadata from Plex if the track object
+ * has no stream data (which happens for tracks loaded via list endpoints).
+ */
+async function fetchGainDb(track: Track): Promise<number | null> {
+  // Fast path: streams already included in the track object
+  const inline = extractGainDb(track)
+  if (inline !== null) {
+    _gainCache.set(track.rating_key, inline)
+    return inline
+  }
+
+  // Cache hit (including null = "no gain tag confirmed")
+  if (_gainCache.has(track.rating_key)) {
+    return _gainCache.get(track.rating_key) ?? null
+  }
+
+  // Fetch full track metadata — /library/metadata/{id} includes Stream elements
+  try {
+    const full = await getTrack(track.rating_key)
+    const gain = extractGainDb(full)
+    _gainCache.set(track.rating_key, gain)
+    return gain
+  } catch {
+    // Non-critical: fall back to no gain (file-tag fallback happens in Rust)
+    _gainCache.set(track.rating_key, null)
+    return null
+  }
+}
+
 /** Send a track to the Rust audio engine for playback. */
 async function sendToAudioEngine(track: Track): Promise<void> {
   const partKey = track.media[0]?.parts[0]?.key
@@ -153,6 +420,9 @@ async function sendToAudioEngine(track: Track): Promise<void> {
   // Build URL locally — avoids a Tauri IPC round-trip and PlexState lock contention
   const { baseUrl, token } = useConnectionStore.getState()
   const url = `${baseUrl}${partKey}?X-Plex-Token=${token}`
+  // fetchGainDb falls back to a /library/metadata/{id} call when the track object
+  // has no streams data (common for tracks loaded via playlist/album list endpoints).
+  const gainDb = await fetchGainDb(track)
   await audioPlay(
     url,
     track.rating_key,
@@ -160,6 +430,7 @@ async function sendToAudioEngine(track: Track): Promise<void> {
     track.media[0]?.parts[0]?.id ?? 0,
     track.parent_key,
     track.index,
+    gainDb,
   )
 }
 
@@ -180,6 +451,7 @@ async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 
   try {
     const { baseUrl, token } = useConnectionStore.getState()
     const url = `${baseUrl}${partKey}?X-Plex-Token=${token}`
+    const gainDb = await fetchGainDb(nextTrack)
     await audioPreloadNext(
       url,
       nextTrack.rating_key,
@@ -187,6 +459,7 @@ async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 
       nextTrack.media[0]?.parts[0]?.id ?? 0,
       nextTrack.parent_key,
       nextTrack.index,
+      gainDb,
     )
   } catch {
     // Pre-load failure is non-critical
@@ -204,7 +477,16 @@ const PLAYLIST_PAGE_SIZE = 100
 async function playAtIndex(index: number, get: () => PlayerState, set: any): Promise<void> {
   const track = get().queue[index]
   if (!track) return
-  set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0 })
+  set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0, waveformLevels: null })
+  _lastTimelineReportMs = 0
+
+  // Fetch waveform data — falls back to a metadata call when track lacks inline stream data
+  void fetchAudioStreamId(track).then(streamId => {
+    if (!streamId) return
+    return getStreamLevels(streamId, 128)
+      .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+      .catch(() => {/* waveform unavailable */})
+  })
   void reportTimeline(track.rating_key, "playing", 0, track.duration)
   void updateNowPlaying(
     track.title,
@@ -263,9 +545,13 @@ export const usePlayerStore = create<PlayerState>()(
   isRadioMode: false,
   radioSeedKey: null,
   radioType: null,
-  guestDjEnabled: false,
+  djMode: null,
+  waveformLevels: null,
+  playerError: null,
+  contextName: null,
+  contextHref: null,
 
-  playTrack: async (track: Track, context?: Track[]) => {
+  playTrack: async (track: Track, context?: Track[], contextName?: string | null, contextHref?: string | null) => {
     const { sectionUuid } = useConnectionStore.getState()
     const itemKey = `/library/metadata/${track.rating_key}`
     const uri = sectionUuid ? buildItemUri(sectionUuid, itemKey) : itemKey
@@ -276,8 +562,17 @@ export const usePlayerStore = create<PlayerState>()(
     const queueIndex = Math.max(0, context ? context.findIndex(t => t.rating_key === track.rating_key) : 0)
     // Explicit track selection: clear progressive playlist and radio context.
     set({ currentTrack: track, queue, queueIndex, isPlaying: true, positionMs: 0,
+      waveformLevels: null,
       playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
-      isRadioMode: false, radioSeedKey: null, radioType: null })
+      isRadioMode: false, radioSeedKey: null, radioType: null,
+      contextName: contextName ?? null, contextHref: contextHref ?? null })
+    _lastTimelineReportMs = 0
+    void fetchAudioStreamId(track).then(streamId => {
+      if (!streamId) return
+      return getStreamLevels(streamId, 128)
+        .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+        .catch(() => {})
+    })
     void reportTimeline(track.rating_key, "playing", 0, track.duration)
     void updateNowPlaying(
       track.title,
@@ -300,16 +595,23 @@ export const usePlayerStore = create<PlayerState>()(
     }
   },
 
-  playFromUri: async (uri: string, forceShuffle?: boolean) => {
+  playFromUri: async (uri: string, forceShuffle?: boolean, contextName?: string | null, contextHref?: string | null) => {
     const { shuffle, repeat } = get()
     const shouldShuffle = forceShuffle ?? shuffle
     try {
       const playQueue = await createPlayQueue(uri, shouldShuffle, repeat)
-      if (playQueue.items.length === 0) return
+      if (playQueue.items.length === 0) {
+        set({ playerError: "Couldn't load tracks — playlist may be empty or unsupported." })
+        setTimeout(() => set({ playerError: null }), 5000)
+        return
+      }
       const firstTrack = playQueue.items[0]
 
       // Update UI as soon as we know what track is first — before the audio fetch.
-      // Server-side play queue: clear progressive playlist context (Plex owns the queue).
+      // Server-side play queue: clear all radio/DJ context (Plex owns the queue now).
+      _djGeneratedKeys.clear()
+      _radioGeneratedKeys.clear()
+      _radioRefillInProgress = false
       set({
         currentTrack: firstTrack,
         queue: playQueue.items,
@@ -317,10 +619,23 @@ export const usePlayerStore = create<PlayerState>()(
         queueId: playQueue.id,
         isPlaying: true,
         positionMs: 0,
+        waveformLevels: null,
         shuffle: shouldShuffle,
         playlistKey: null,
         playlistTotalCount: 0,
         playlistLoadedCount: 0,
+        isRadioMode: false,
+        radioSeedKey: null,
+        radioType: null,
+        contextName: contextName ?? null,
+        contextHref: contextHref ?? null,
+      })
+      _lastTimelineReportMs = 0
+      void fetchAudioStreamId(firstTrack).then(streamId => {
+        if (!streamId) return
+        return getStreamLevels(streamId, 128)
+          .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+          .catch(() => {})
       })
       void reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
       void updateNowPlaying(
@@ -335,10 +650,13 @@ export const usePlayerStore = create<PlayerState>()(
       await sendToAudioEngine(firstTrack)
     } catch (err) {
       console.error("playFromUri failed:", err)
+      const msg = err instanceof Error ? err.message : String(err)
+      set({ playerError: `Shuffle failed: ${msg}` })
+      setTimeout(() => set({ playerError: null }), 6000)
     }
   },
 
-  playPlaylist: async (playlistId: number, totalCount: number) => {
+  playPlaylist: async (playlistId: number, totalCount: number, title: string, href: string) => {
     const tracks = await getPlaylistItems(playlistId, PLAYLIST_PAGE_SIZE, 0)
     if (tracks.length === 0) return
     const firstTrack = tracks[0]
@@ -350,10 +668,19 @@ export const usePlayerStore = create<PlayerState>()(
       queueId: null,
       isPlaying: true,
       positionMs: 0,
+      waveformLevels: null,
       playlistKey: playlistId,
       playlistTotalCount: totalCount,
       playlistLoadedCount: tracks.length,
       isLoadingMoreTracks: false,
+      contextName: title,
+      contextHref: href,
+    })
+    void fetchAudioStreamId(firstTrack).then(streamId => {
+      if (!streamId) return
+      return getStreamLevels(streamId, 128)
+        .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+        .catch(() => {})
     })
     void reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
     void updateNowPlaying(
@@ -368,26 +695,41 @@ export const usePlayerStore = create<PlayerState>()(
     await sendToAudioEngine(firstTrack)
   },
 
-  playRadio: async (ratingKey: number, radioType: RadioType) => {
-    const { guestDjEnabled } = get()
+  playRadio: async (ratingKey: number, radioType: RadioType, seedName?: string) => {
     _djGeneratedKeys.clear()
+    _radioGeneratedKeys.clear()
     _radioRefillInProgress = false
 
     try {
-      const playQueue = guestDjEnabled
-        ? await createSmartShuffleQueue(ratingKey)
-        : await createRadioQueue(ratingKey)
+      const { djMode } = get()
+      const playQueue = (djMode !== null && djMode !== 'freeze')
+        ? await createSmartShuffleQueue(ratingKey, radioType, djMode)
+        : await createRadioQueue(ratingKey, radioType)
 
-      if (playQueue.items.length === 0) return
-      const firstTrack = playQueue.items[0]
+      // Filter to playable tracks (skip artist/album metadata that Plex may include
+      // as the first item in a station play queue).
+      const tracks = filterPlayable(playQueue.items)
 
-      if (guestDjEnabled) {
-        for (const t of playQueue.items) _djGeneratedKeys.add(t.rating_key)
+      if (tracks.length === 0) {
+        set({ playerError: "Radio returned no playable tracks — the server may not support sonic analysis for this item." })
+        setTimeout(() => set({ playerError: null }), 5000)
+        return
       }
+      const firstTrack = tracks[0]
+
+      // Only update context label when a seedName was explicitly supplied.
+      // Re-seeds triggered by next() / setDjMode() omit seedName to preserve the label.
+      const radioHref = radioType === 'artist' ? `/artist/${ratingKey}`
+        : radioType === 'album' ? `/album/${ratingKey}`
+        : radioType === 'playlist' ? `/playlist/${ratingKey}`
+        : null
+      const contextUpdate = seedName !== undefined
+        ? { contextName: `${seedName} Radio`, contextHref: radioHref }
+        : {}
 
       set({
         currentTrack: firstTrack,
-        queue: playQueue.items,
+        queue: tracks,
         queueIndex: 0,
         queueId: playQueue.id,
         isPlaying: true,
@@ -398,6 +740,8 @@ export const usePlayerStore = create<PlayerState>()(
         playlistKey: null,
         playlistTotalCount: 0,
         playlistLoadedCount: 0,
+        playerError: null,
+        ...contextUpdate,
       })
       void reportTimeline(firstTrack.rating_key, "playing", 0, firstTrack.duration)
       void updateNowPlaying(
@@ -412,15 +756,71 @@ export const usePlayerStore = create<PlayerState>()(
       await sendToAudioEngine(firstTrack)
     } catch (err) {
       console.error("playRadio failed:", err)
+      const msg = err instanceof Error ? err.message : String(err)
+      set({ playerError: `Radio failed: ${msg}` })
+      setTimeout(() => set({ playerError: null }), 6000)
     }
   },
 
-  toggleGuestDj: () => {
-    const { guestDjEnabled, isRadioMode, radioSeedKey, radioType } = get()
-    set({ guestDjEnabled: !guestDjEnabled })
-    // Re-seed the station when toggling so the new mode takes effect immediately
-    if (isRadioMode && radioSeedKey !== null && radioType !== null) {
-      void get().playRadio(radioSeedKey, radioType)
+  addToQueue: (tracks: Track[]) => {
+    set(s => ({ queue: [...s.queue, ...tracks] }))
+  },
+
+  stopRadio: () => {
+    set({ isRadioMode: false, radioSeedKey: null, radioType: null })
+  },
+
+  setDjMode: (mode: DjMode | null) => {
+    const { isRadioMode } = get()
+
+    if (mode !== null && isRadioMode) {
+      // Switching/enabling DJ in radio mode: clear ALL future tracks.
+      // Matches PlexAmp behaviour of creating a brand-new queue per mode switch.
+      set(s => ({ queue: s.queue.slice(0, s.queueIndex + 1) }))
+    } else if (mode === null) {
+      // Turning off DJ: only remove DJ-generated bonus tracks, keep radio/seed tracks.
+      set(s => ({
+        queue: s.queue.filter((t, i) =>
+          i <= s.queueIndex || !_djGeneratedKeys.has(t.rating_key)
+        ),
+      }))
+    }
+
+    _djGeneratedKeys.clear()
+    _radioGeneratedKeys.clear()
+    _radioRefillInProgress = false
+
+    set({ djMode: mode })
+
+    if (mode === null) return  // DJ off: cleaned up, nothing more to do
+
+    const { currentTrack, queue, queueIndex } = get()
+
+    // Twofer: immediately insert a same-artist bonus track after the current position
+    if (mode === 'twofer' && currentTrack) {
+      const { musicSectionId } = useConnectionStore.getState()
+      const artistId = parseInt(currentTrack.grandparent_key?.split('/').pop() ?? '0', 10)
+      const nextTrack = queue[queueIndex + 1]
+      if (musicSectionId && artistId > 0 && nextTrack?.grandparent_key !== currentTrack.grandparent_key) {
+        getArtistPopularTracksInSection(musicSectionId, artistId, 10)
+          .then(tracks => {
+            const { queue: q2, queueIndex: qi2, currentTrack: ct2 } = get()
+            const available = tracks.filter(t =>
+              t.rating_key !== ct2?.rating_key &&
+              !q2.some(x => x.rating_key === t.rating_key)
+            )
+            if (!available.length) return
+            const pick = available[Math.floor(Math.random() * available.length)]
+            _djGeneratedKeys.add(pick.rating_key)
+            set(s => { const nq = [...s.queue]; nq.splice(qi2 + 1, 0, pick); return { queue: nq } })
+          })
+          .catch(() => {/* non-critical */})
+      }
+    }
+
+    // ALL DJ modes in radio mode: force-append new tracks immediately (no exclusions).
+    if (isRadioMode) {
+      void appendRadioTracks(get, set as never, true)
     }
   },
 
@@ -550,7 +950,7 @@ export const usePlayerStore = create<PlayerState>()(
     // Position updates from the Rust audio engine (~4x/sec)
     unlisteners.push(
       await listen<{ position_ms: number; duration_ms: number }>("audio://position", (e) => {
-        const { currentTrack, queue, queueIndex, repeat, isRadioMode } = get()
+        const { currentTrack, queue, queueIndex, repeat, isRadioMode, isPlaying } = get()
         set({ positionMs: e.payload.position_ms })
 
         // Trigger pre-load when approaching end of track (30s before end)
@@ -564,6 +964,16 @@ export const usePlayerStore = create<PlayerState>()(
         // Proactively refill the queue when ≤ 5 tracks remain in radio mode
         if (isRadioMode && queue.length - queueIndex <= 5) {
           void appendRadioTracks(get, set as never)
+        }
+
+        // Periodic timeline report every 10s so Plex shows "Now Playing" on
+        // other clients and correctly tracks resume position.
+        if (isPlaying && currentTrack) {
+          const now = e.payload.position_ms
+          if (now - _lastTimelineReportMs >= TIMELINE_REPORT_INTERVAL_MS) {
+            _lastTimelineReportMs = now
+            void reportTimeline(currentTrack.rating_key, "playing", now, currentTrack.duration)
+          }
         }
       }),
     )
@@ -579,17 +989,122 @@ export const usePlayerStore = create<PlayerState>()(
       }),
     )
 
-    // Track ended naturally — scrobble + advance to next
+    // Track ended naturally — scrobble + handle repeat-one.
+    // For gapless/crossfade: track-started fires quickly and cancels the fallback timeout.
+    // For non-gapless (Rust stopped without a preloaded next): the 500ms timeout calls next().
     unlisteners.push(
       await listen<{ type: string; rating_key: number }>("audio://track-ended", (e) => {
-        // Scrobble the completed track
+        set({ waveformLevels: null })
         void markPlayed(e.payload.rating_key)
-        const { currentTrack } = get()
+        const { currentTrack, repeat, queueIndex } = get()
         if (currentTrack) {
           void reportTimeline(currentTrack.rating_key, "stopped", currentTrack.duration, currentTrack.duration)
         }
-        void setNowPlayingState("stopped")
-        get().next()
+
+        // Repeat-one: restart the current track immediately
+        if (repeat === 1) {
+          void playAtIndex(queueIndex, get, set)
+          return
+        }
+
+        // Fallback for non-gapless: advance queue if track-started doesn't fire within 500ms
+        if (_gaplessTimeoutId !== null) clearTimeout(_gaplessTimeoutId)
+        _gaplessTimeoutId = setTimeout(() => {
+          _gaplessTimeoutId = null
+          get().next()
+        }, 500)
+      }),
+    )
+
+    // Track started — fired for gapless transitions, crossfade completions, and user-initiated plays.
+    // For gapless/crossfade: advance queue state without calling audioPlay() (audio is already playing).
+    // For user-initiated plays: currentTrack already matches, so we skip.
+    unlisteners.push(
+      await listen<{ type: string; rating_key: number }>("audio://track-started", (e) => {
+        // Cancel the non-gapless fallback timeout — Rust handled the transition
+        if (_gaplessTimeoutId !== null) {
+          clearTimeout(_gaplessTimeoutId)
+          _gaplessTimeoutId = null
+        }
+
+        const { currentTrack, queue, queueIndex, repeat, isRadioMode, djMode,
+                playlistKey, playlistLoadedCount, playlistTotalCount } = get()
+
+        // User-initiated play: playAtIndex() already updated state — nothing to do here,
+        // but still fetch waveform if it hasn't been loaded yet (playAtIndex fetches it too,
+        // this handles the rare race where track-started fires before the fetch completes).
+        if (currentTrack?.rating_key === e.payload.rating_key) return
+
+        // Gapless/crossfade transition: find the next track
+        let nextIndex = queueIndex + 1
+        if (nextIndex >= queue.length && repeat === 2) nextIndex = 0
+
+        // Verify the next track matches — fall back to searching the queue
+        if (!queue[nextIndex] || queue[nextIndex].rating_key !== e.payload.rating_key) {
+          const found = queue.findIndex(t => t.rating_key === e.payload.rating_key)
+          if (found < 0) return
+          nextIndex = found
+        }
+
+        const track = queue[nextIndex]
+        if (!track) return
+
+        // Advance queue state — audio is already playing, do NOT call audioPlay()
+        set({ currentTrack: track, queueIndex: nextIndex, positionMs: 0, isPlaying: true, waveformLevels: null })
+        _lastTimelineReportMs = 0
+        void reportTimeline(track.rating_key, "playing", 0, track.duration)
+
+        // Fetch waveform data — falls back to a metadata call when track lacks inline stream data
+        void fetchAudioStreamId(track).then(streamId => {
+          if (!streamId) return
+          return getStreamLevels(streamId, 128)
+            .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+            .catch(() => {/* waveform unavailable */})
+        })
+        void updateNowPlaying(
+          track.title,
+          track.grandparent_title ?? "",
+          track.parent_title ?? "",
+          track.thumb || track.parent_thumb || null,
+          track.duration ?? 0,
+        )
+        void setNowPlayingState("playing", 0)
+
+        // Pre-buffer the track after this one for the next gapless transition
+        void preloadNextTrack(get().queue, nextIndex, repeat)
+
+        // Progressive playlist loading: load more when approaching end
+        if (playlistKey && playlistLoadedCount < playlistTotalCount && nextIndex >= queue.length - 20) {
+          void loadMorePlaylistTracks(get, set as never)
+        }
+
+        // Radio: refill queue if running low
+        if (isRadioMode && queue.length - nextIndex <= 5) {
+          void appendRadioTracks(get, set as never)
+        }
+
+        // Twofer: insert a same-artist bonus track after the current track
+        if (djMode === 'twofer' && track) {
+          const { musicSectionId } = useConnectionStore.getState()
+          const artistId = parseInt(track.grandparent_key?.split('/').pop() ?? '0', 10)
+          const nextTrack = get().queue[nextIndex + 1]
+          // Skip if the very next slot is already the same artist (avoid back-to-back doubles)
+          if (musicSectionId && artistId > 0 && nextTrack?.grandparent_key !== track.grandparent_key) {
+            getArtistPopularTracksInSection(musicSectionId, artistId, 10)
+              .then(tracks => {
+                const { queue: q2, queueIndex: qi2, currentTrack: ct2 } = get()
+                const available = tracks.filter(t =>
+                  t.rating_key !== ct2?.rating_key &&
+                  !q2.some(x => x.rating_key === t.rating_key)
+                )
+                if (!available.length) return
+                const pick = available[Math.floor(Math.random() * available.length)]
+                _djGeneratedKeys.add(pick.rating_key)
+                set(s => { const nq = [...s.queue]; nq.splice(qi2 + 1, 0, pick); return { queue: nq } })
+              })
+              .catch(() => {/* non-critical */})
+          }
+        }
       }),
     )
 
@@ -656,7 +1171,7 @@ export const usePlayerStore = create<PlayerState>()(
         volume: state.volume,
         shuffle: state.shuffle,
         repeat: state.repeat,
-        guestDjEnabled: state.guestDjEnabled,
+        djMode: state.djMode,
       }),
     }
   )

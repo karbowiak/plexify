@@ -1,11 +1,14 @@
 import { Link, useLocation } from "wouter"
 import clsx from "clsx"
+import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { usePlayerStore } from "../stores/playerStore"
 
 export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) {
   const [location] = useLocation()
   const playlists = useLibraryStore(s => s.playlists)
   const { baseUrl, token } = useConnectionStore()
+  const playPlaylist = usePlayerStore(useShallow(s => s.playPlaylist))
 
   return (
     <div className="flex h-full w-60 flex-shrink-0 flex-col bg-black p-6">
@@ -59,7 +62,7 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
         ))}
       </ul>
 
-      <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
+      <div className="mt-2 min-h-0 flex-1 overflow-y-scroll scrollbar scrollbar-w-1 scrollbar-track-[#1a1a1a] scrollbar-thumb-[#444] hover:scrollbar-thumb-[#666]">
         <ul className="pt-1">
           {playlists.map((playlist) => {
             const href = `/playlist/${playlist.rating_key}`
@@ -70,14 +73,27 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
                 <Link
                   href={href}
                   className={clsx(
-                    "flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-white/10 hover:no-underline",
+                    "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-white/10 hover:no-underline",
                     location !== href ? "text-[#b3b3b3]" : "text-white"
                   )}
                 >
-                  <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-[#282828]">
+                  <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-[#282828]">
                     {artUrl && (
                       <img src={artUrl} alt="" className="h-full w-full object-cover" />
                     )}
+                    <button
+                      onClick={e => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        void playPlaylist(playlist.rating_key, playlist.leaf_count, playlist.title, href)
+                      }}
+                      title={`Play ${playlist.title}`}
+                      className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <svg viewBox="0 0 16 16" width="16" height="16" fill="white">
+                        <polygon points="3,2 13,8 3,14" />
+                      </svg>
+                    </button>
                   </div>
                   <span className="truncate text-sm font-normal">{playlist.title}</span>
                 </Link>
@@ -152,6 +168,24 @@ const routes2 = [
     icon: (
       <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
         <path d="M15.724 4.22A4.313 4.313 0 0 0 12 6.192 4.313 4.313 0 0 0 8.276 4.22a4.313 4.313 0 0 0-4.204 4.32c0 3.96 4.49 7.98 7.928 10.47 3.44-2.49 7.928-6.51 7.928-10.47a4.313 4.313 0 0 0-4.204-4.32z" />
+      </svg>
+    ),
+  },
+  {
+    title: "Liked Artists",
+    href: "/collection/artists",
+    icon: (
+      <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
+      </svg>
+    ),
+  },
+  {
+    title: "Liked Albums",
+    href: "/collection/albums",
+    icon: (
+      <svg height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
       </svg>
     ),
   },

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { Link } from "wouter"
+import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, usePlayerStore, buildPlexImageUrl, useUIStore } from "../../stores"
 import { getAlbum, getAlbumTracks, getRelatedHubs } from "../../lib/plex"
 import { prefetchTrackAudio } from "../../stores/playerStore"
@@ -35,7 +36,7 @@ function TagChip({ tag }: { tag: PlexTag }) {
 
 export function AlbumPage({ albumId }: { albumId: number }) {
   const { baseUrl, token, musicSectionId } = useConnectionStore()
-  const { playTrack, playRadio } = usePlayerStore()
+  const { playTrack, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
   const { pageRefreshKey } = useUIStore()
 
   // Seed from eager-load cache for an instant first render.
@@ -49,6 +50,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
   // UI state
   const [descExpanded, setDescExpanded] = useState(false)
   const [showImageModal, setShowImageModal] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     setError(null)
@@ -118,19 +120,19 @@ export function AlbumPage({ albumId }: { albumId: number }) {
         <UltraBlur src={thumbUrl ?? parentThumbUrl} />
 
         {/* Absolute-positioned action buttons — bottom-right, non-blocking */}
-        <div className="absolute bottom-8 right-8 z-10 flex items-center gap-3">
+        <div className="absolute bottom-8 right-8 z-20 flex items-center gap-3">
           <button
-            onClick={() => void playRadio(albumId, 'album')}
-            title="Album Radio — continuous sonically-similar music"
-            className="flex h-10 items-center gap-2 rounded-full border border-white/20 px-4 text-sm font-medium text-white hover:border-white/40 hover:bg-white/10 active:scale-95 transition-all"
+            onClick={() => tracks.length > 0 && void playTrack(tracks[0], tracks, album.title, `/album/${albumId}`)}
+            disabled={tracks.length === 0}
+            title="Play"
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1db954] text-black shadow-lg hover:bg-[#1ed760] hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-              <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
+            <svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor">
+              <polygon points="3,2 13,8 3,14" />
             </svg>
-            Radio
           </button>
           <button
-            onClick={() => { if (tracks.length === 0) return; const s = [...tracks].sort(() => Math.random() - 0.5); void playTrack(s[0], s) }}
+            onClick={() => { if (tracks.length === 0) return; const s = [...tracks].sort(() => Math.random() - 0.5); void playTrack(s[0], s, album.title, `/album/${albumId}`) }}
             disabled={tracks.length === 0}
             title="Shuffle"
             className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
@@ -141,15 +143,42 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             </svg>
           </button>
           <button
-            onClick={() => tracks.length > 0 && void playTrack(tracks[0], tracks)}
-            disabled={tracks.length === 0}
-            title="Play"
-            className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1db954] text-black shadow-lg hover:bg-[#1ed760] hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={() => void playRadio(albumId, 'album')}
+            title="Album Radio — continuous sonically-similar music"
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 hover:scale-105 active:scale-95 transition-all"
           >
-            <svg viewBox="0 0 16 16" width="22" height="22" fill="currentColor">
-              <polygon points="3,2 13,8 3,14" />
+            <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
+              <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
             </svg>
           </button>
+          {/* Three-dot menu */}
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen(v => !v)}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-white/50 hover:text-white hover:bg-white/10 transition-all"
+              title="More options"
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                <circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>
+              </svg>
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-lg bg-[#282828] shadow-xl border border-white/10 py-1">
+                  <button
+                    onClick={() => { addToQueue(tracks); setMenuOpen(false) }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-white/10"
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+                      <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
+                    </svg>
+                    Add album to Queue
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="relative z-10 flex flex-row items-end w-full gap-6">
@@ -166,7 +195,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
           )}
 
           {/* Info column — no fixed height so hero grows with expanded description */}
-          <div className="flex min-w-0 flex-1 flex-col gap-2 pr-20 pb-2">
+          <div className="flex min-w-0 flex-1 flex-col gap-2 pr-72 pb-2">
             <div className="text-xs font-semibold uppercase tracking-widest text-gray-300">{formatLabel}</div>
             <h1 className="text-4xl font-black text-white leading-tight truncate">{album.title}</h1>
 
@@ -247,42 +276,72 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             </tr>
           </thead>
           <tbody>
-            {tracks.map((track, idx) => (
+            {tracks.map((track, idx) => {
+              const isActive = currentTrack?.rating_key === track.rating_key
+              return (
               <tr
                 key={track.rating_key}
-                className="group cursor-pointer hover:bg-white/5 rounded"
-                onClick={() => void playTrack(track, tracks)}
+                className={`group cursor-pointer rounded ${isActive ? "bg-white/5" : "hover:bg-white/5"}`}
+                onClick={() => void playTrack(track, tracks, album.title, `/album/${albumId}`)}
                 onMouseEnter={() => prefetchTrackAudio(track)}
               >
                 <td className="p-2 text-center w-8">
-                  <span className="group-hover:hidden">{track.index || idx + 1}</span>
-                  <span className="hidden group-hover:flex items-center justify-center">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                      <polygon points="3,2 13,8 3,14" />
-                    </svg>
-                  </span>
+                  {isActive ? (
+                    <>
+                      <span className="group-hover:hidden flex items-center justify-center text-[#1db954]">
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                          <rect x="1" y="3" width="3" height="10" rx="1"/><rect x="6" y="1" width="3" height="12" rx="1"/><rect x="11" y="5" width="3" height="8" rx="1"/>
+                        </svg>
+                      </span>
+                      <span className="hidden group-hover:flex items-center justify-center text-[#1db954]">
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><polygon points="3,2 13,8 3,14" /></svg>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="group-hover:hidden">{track.index || idx + 1}</span>
+                      <span className="hidden group-hover:flex items-center justify-center">
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                          <polygon points="3,2 13,8 3,14" />
+                        </svg>
+                      </span>
+                    </>
+                  )}
                 </td>
                 <td className="p-2">
-                  <div className="text-white">{track.title}</div>
+                  <div className={isActive ? "text-[#1db954]" : "text-white"}>{track.title}</div>
                   {track.original_title && (
                     <div className="text-xs text-gray-500">{track.original_title}</div>
                   )}
                 </td>
                 <td className="p-2 text-right tabular-nums">
                   <span className="group-hover:hidden">{formatMs(track.duration)}</span>
-                  <button
-                    className="hidden group-hover:inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors px-1"
-                    title="Track Radio"
-                    onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
-                  >
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                      <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
-                    </svg>
-                    Radio
-                  </button>
+                  <div className="hidden group-hover:inline-flex items-center gap-2">
+                    <button
+                      className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1"
+                      title="Add to Queue"
+                      onClick={e => { e.stopPropagation(); addToQueue([track]) }}
+                    >
+                      <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                        <path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
+                      </svg>
+                      Queue
+                    </button>
+                    <button
+                      className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors px-1"
+                      title="Track Radio"
+                      onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
+                    >
+                      <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                        <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
+                      </svg>
+                      Radio
+                    </button>
+                  </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>

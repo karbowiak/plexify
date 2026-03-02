@@ -87,6 +87,66 @@ pub(crate) mod serde_string_or_bool {
     }
 }
 
+/// Serde helper for plain `f64` fields that Plex may return as JSON strings.
+/// Handles: JSON string (→ parsed f64), JSON number (→ f64). Returns 0.0 on empty string.
+pub(crate) mod serde_string_or_f64 {
+    use serde::{Deserializer, de::{self, Visitor}};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = f64;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("string or float")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.is_empty() { return Ok(0.0); }
+                v.parse().map_err(de::Error::custom)
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> { Ok(v) }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> { Ok(v as f64) }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> { Ok(v as f64) }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// Serde helper: like `serde_string_or_i64` but for `Option<f64>`.
+/// Handles: absent field (→ None via `#[serde(default)]`), JSON null (→ None),
+/// JSON string (→ Some(parsed)), JSON float (→ Some(v)).
+pub(crate) mod serde_string_or_f64_opt {
+    use serde::{Deserializer, de::{self, Visitor}};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Option<f64>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("optional string or float")
+            }
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                d.deserialize_any(V)
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.is_empty() { return Ok(None); }
+                v.parse().map(Some).map_err(de::Error::custom)
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> { Ok(Some(v)) }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> { Ok(Some(v as f64)) }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> { Ok(Some(v as f64)) }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
 /// Serde helper: like `serde_string_or_i64` but for `Option<i64>`.
 /// Handles: absent field (→ None via `#[serde(default)]`), JSON null (→ None),
 /// JSON string (→ Some(parsed)), JSON integer (→ Some(v)).
@@ -231,6 +291,14 @@ pub struct Track {
     #[serde(rename(deserialize = "parentTitle"), default, deserialize_with = "serde_null_or_string::deserialize")]
     pub parent_title: String,
 
+    /// Album release year
+    #[serde(rename(deserialize = "parentYear"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
+    pub parent_year: Option<i64>,
+
+    /// Album studio / record label
+    #[serde(rename(deserialize = "parentStudio"), default)]
+    pub parent_studio: Option<String>,
+
     /// Artist rating key
     #[serde(rename(deserialize = "grandparentKey"), default, deserialize_with = "serde_null_or_string::deserialize")]
     pub grandparent_key: String,
@@ -344,6 +412,12 @@ pub struct Track {
     #[serde(rename(deserialize = "skipCount"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
     pub skip_count: Option<i64>,
 
+    /// Sequential ID Plex assigns when a track is added to a playlist.
+    /// Lower = added earlier. Only present on playlist item responses;
+    /// null everywhere else (album pages, search, etc.).
+    #[serde(rename(deserialize = "playlistItemID"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
+    pub playlist_item_id: Option<i64>,
+
     /// Media files for this track (contains stream/part info)
     #[serde(rename(deserialize = "Media"), default)]
     pub media: Vec<Media>,
@@ -419,6 +493,39 @@ pub struct MediaPart {
     /// Whether BIF/preview thumbnails exist
     #[serde(default)]
     pub indexes: Option<String>,
+
+    /// Audio/video streams within this part (contains Plex loudness analysis)
+    #[serde(rename(deserialize = "Stream"), default)]
+    pub streams: Vec<PlexStream>,
+}
+
+/// A media stream (audio, video, or subtitle) within a Part.
+/// `stream_type`: 1 = video, 2 = audio, 3 = subtitle.
+/// The loudness fields are populated by Plex's deep audio analysis.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PlexStream {
+    /// Stream ID — used as the path parameter for `/library/streams/{id}/levels`
+    #[serde(default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
+    pub id: Option<i64>,
+
+    #[serde(rename(deserialize = "streamType"), default, deserialize_with = "serde_string_or_i64_opt::deserialize")]
+    pub stream_type: Option<i64>,
+
+    /// Track gain in dB from Plex loudness analysis (same as REPLAYGAIN_TRACK_GAIN)
+    #[serde(default, deserialize_with = "serde_string_or_f64_opt::deserialize")]
+    pub gain: Option<f64>,
+
+    /// Album gain in dB
+    #[serde(rename(deserialize = "albumGain"), default, deserialize_with = "serde_string_or_f64_opt::deserialize")]
+    pub album_gain: Option<f64>,
+
+    /// Track peak (linear, 0.0–1.0+)
+    #[serde(default, deserialize_with = "serde_string_or_f64_opt::deserialize")]
+    pub peak: Option<f64>,
+
+    /// Integrated loudness in LUFS
+    #[serde(default, deserialize_with = "serde_string_or_f64_opt::deserialize")]
+    pub loudness: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -942,21 +1049,9 @@ pub struct PlayQueue {
 /// A loudness/peak level sample from a stream's analysis data
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Level {
-    /// RMS loudness value (dBFS)
-    #[serde(default)]
+    /// Loudness value (dBFS) — Plex returns this as the single field "v"
+    #[serde(rename(deserialize = "v"), default, deserialize_with = "serde_string_or_f64::deserialize")]
     pub loudness: f64,
-
-    /// Peak value (dBFS)
-    #[serde(default)]
-    pub peak: f64,
-
-    /// Sample start index
-    #[serde(rename(deserialize = "sampleStart"), default)]
-    pub sample_start: i64,
-
-    /// Sample end index
-    #[serde(rename(deserialize = "sampleEnd"), default)]
-    pub sample_end: i64,
 }
 
 /// Container returned by the `/library/streams/{id}/levels` endpoint
@@ -1067,6 +1162,32 @@ pub struct SearchFilters {
 }
 
 /// Sonic similarity query parameters
+// ---------------------------------------------------------------------------
+// Station resolution (internal — used by radio queue creation)
+// ---------------------------------------------------------------------------
+
+/// A station entry in a metadata item's `Station` array.
+///
+/// Returned when fetching metadata with `?includeStations=1`.  The `key`
+/// is the path the server assigns to this station (e.g.
+/// `/library/metadata/{id}/stations/0/{uuid}`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct StationRef {
+    /// API path of this station
+    #[serde(default)]
+    pub key: String,
+}
+
+/// Minimal metadata item that includes the `Station` array.
+///
+/// Used to resolve the station key for an artist / album.  We use a dedicated
+/// struct so we don't need to add a `stations` field to every model.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct MetaWithStations {
+    #[serde(rename = "Station", default)]
+    pub stations: Vec<StationRef>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 pub struct SonicParams {

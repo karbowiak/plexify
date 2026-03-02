@@ -55,10 +55,22 @@ pub async fn connect_plex(
     base_url: String,
     token: String,
     state: State<'_, PlexState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
+    use tauri::Manager;
+    // Load the stable per-installation client_id so Plex can track this
+    // client's sessions (required as X-Plex-Client-Identifier header for /:/timeline).
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    let client_id = if settings.client_id.is_empty() {
+        "plexify-client".to_string()
+    } else {
+        settings.client_id
+    };
     let config = PlexClientConfig {
         base_url,
         token,
+        client_id,
         // Plex servers on the LAN commonly use self-signed or Plex-issued
         // certificates that may not validate against the system trust store.
         accept_invalid_certs: true,
@@ -348,6 +360,36 @@ pub async fn get_liked_tracks(
         .map_err(|e| format!("{:#}", e))
 }
 
+/// Get artists that have been rated (liked) by the user.
+///
+/// Returns artists sorted by most recently rated.
+#[tauri::command]
+pub async fn get_liked_artists(
+    section_id: i64,
+    limit: Option<i32>,
+    state: State<'_, PlexState>,
+) -> Result<Vec<Artist>, String> {
+    let c = client!(state);
+    c.liked_artists(section_id, limit)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Get albums that have been rated (liked) by the user.
+///
+/// Returns albums sorted by most recently rated.
+#[tauri::command]
+pub async fn get_liked_albums(
+    section_id: i64,
+    limit: Option<i32>,
+    state: State<'_, PlexState>,
+) -> Result<Vec<Album>, String> {
+    let c = client!(state);
+    c.liked_albums(section_id, limit)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
 /// Get all tracks in a playlist.
 #[tauri::command]
 pub async fn get_playlist_items(
@@ -425,18 +467,21 @@ pub async fn add_to_play_queue(
 
 /// Create a radio play queue seeded from any Plex item (track, album, or artist).
 ///
-/// Uses PlexAmp's `plex://radio` URI scheme so the Plex server generates
+/// Create a radio play queue seeded from any Plex item.
+///
+/// Uses the correct `server://` URI scheme so the Plex server generates
 /// continuously refreshing, sonically-curated recommendations.
 #[tauri::command]
 pub async fn create_radio_queue(
     rating_key: i64,
+    item_type: String,
     degrees_of_separation: Option<i32>,
     include_external: bool,
     shuffle: bool,
     state: State<'_, PlexState>,
 ) -> Result<PlayQueue, String> {
     let c = client!(state);
-    c.create_radio_queue(rating_key, degrees_of_separation, include_external, shuffle)
+    c.create_radio_queue(rating_key, &item_type, degrees_of_separation, include_external, shuffle)
         .await
         .map_err(|e| format!("{:#}", e))
 }
@@ -448,6 +493,8 @@ pub async fn create_radio_queue(
 #[tauri::command]
 pub async fn create_smart_shuffle_queue(
     rating_key: i64,
+    item_type: String,
+    dj_mode: Option<String>,
     degrees_of_separation: Option<i32>,
     include_external: bool,
     state: State<'_, PlexState>,
@@ -462,7 +509,7 @@ pub async fn create_smart_shuffle_queue(
         settings.client_id
     };
     let c = client!(state);
-    c.create_smart_shuffle_queue(rating_key, degrees_of_separation, include_external, &client_id)
+    c.create_smart_shuffle_queue(rating_key, &item_type, dj_mode.as_deref(), degrees_of_separation, include_external, &client_id)
         .await
         .map_err(|e| format!("{:#}", e))
 }
@@ -513,7 +560,8 @@ pub async fn report_timeline(
         _ => PlaybackState::Stopped,
     };
     let c = client!(plex_state);
-    c.report_timeline(rating_key, playback_state, time_ms, duration_ms, None)
+    let client_id = c.client_id.clone();
+    c.report_timeline(rating_key, playback_state, time_ms, duration_ms, Some(&client_id))
         .await
         .map_err(|e| format!("{:#}", e))
 }
@@ -865,6 +913,7 @@ pub fn audio_play(
     part_id: i64,
     parent_key: String,
     track_index: i64,
+    gain_db: Option<f32>,
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
     audio_send(&state, crate::audio::AudioCommand::Play(crate::audio::TrackMeta {
@@ -874,6 +923,7 @@ pub fn audio_play(
         part_id,
         parent_key,
         track_index,
+        gain_db,
     }))
 }
 
@@ -928,6 +978,7 @@ pub fn audio_preload_next(
     part_id: i64,
     parent_key: String,
     track_index: i64,
+    gain_db: Option<f32>,
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
     audio_send(&state, crate::audio::AudioCommand::PreloadNext(crate::audio::TrackMeta {
@@ -937,6 +988,7 @@ pub fn audio_preload_next(
         part_id,
         parent_key,
         track_index,
+        gain_db,
     }))
 }
 
@@ -991,6 +1043,92 @@ pub fn audio_set_cache_max_bytes(
     let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
     match guard.as_ref() {
         Some(engine) => { engine.set_max_cache_bytes(max_bytes); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Set the crossfade window duration in milliseconds.
+/// Pass 0 to disable crossfade. Default is 8000 ms (8 s).
+/// Maximum recommended value is 30000 ms (30 s).
+#[tauri::command]
+pub fn audio_set_crossfade_window(
+    ms: u64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_crossfade_window(ms); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Enable or disable ReplayGain audio normalization.
+/// When enabled (default), tracks are volume-levelled using embedded REPLAYGAIN_TRACK_GAIN tags.
+#[tauri::command]
+pub fn audio_set_normalization_enabled(
+    enabled: bool,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_normalization_enabled(enabled); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Set all 10 EQ band gains in dB (±12 dB per band).
+/// Recomputes biquad coefficients in the audio thread immediately.
+#[tauri::command]
+pub fn audio_set_eq(
+    gains_db: [f32; 10],
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_eq(gains_db); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Enable or disable the 10-band graphic EQ.
+/// When disabled the EQ processing is bypassed entirely (zero CPU cost).
+#[tauri::command]
+pub fn audio_set_eq_enabled(
+    enabled: bool,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_eq_enabled(enabled); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Set the pre-amp gain in dB (range −12..+3, default 0).
+/// Applied before EQ in the output callback. Use this to recover headroom
+/// after EQ boosts to prevent clipping.
+#[tauri::command]
+pub fn audio_set_preamp_gain(
+    db: f32,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_preamp_gain(db); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Enable or disable crossfade for consecutive same-album tracks.
+/// When disabled (default), same-album tracks play gaplessly without any crossfade.
+#[tauri::command]
+pub fn audio_set_same_album_crossfade(
+    enabled: bool,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_same_album_crossfade(enabled); Ok(()) }
         None => Err("Audio engine not initialized.".to_string()),
     }
 }

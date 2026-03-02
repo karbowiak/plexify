@@ -8,19 +8,21 @@ interface MediaCardProps {
   isArtist?: boolean
   /** When true, fixes card at 160px wide and prevents flex shrink (for scroll rows) */
   scrollItem?: boolean
+  /** When true (with scrollItem), renders card ~33% larger at 213px */
+  large?: boolean
   href?: string
   onClick?: () => void
   /** Called once on first hover — used for eager pre-fetching of page data. */
   prefetch?: () => void
 }
 
-export function MediaCard({ title, desc, thumb, isArtist, scrollItem, href, onClick, prefetch }: MediaCardProps) {
+export function MediaCard({ title, desc, thumb, isArtist, scrollItem, large, href, onClick, prefetch }: MediaCardProps) {
   const inner = (
     <div
       onMouseEnter={prefetch}
       className={clsx(
         "group cursor-pointer rounded-md bg-[#181818] p-3 transition-colors hover:bg-[#282828]",
-        scrollItem && "w-40 flex-shrink-0"
+        scrollItem && (large ? "w-[213px] flex-shrink-0" : "w-40 flex-shrink-0")
       )}
     >
       <div className="mb-3">
@@ -53,14 +55,14 @@ export function MediaCard({ title, desc, thumb, isArtist, scrollItem, href, onCl
 
   if (href) {
     return (
-      <Link href={href} className={clsx("no-underline hover:no-underline", scrollItem && "flex-shrink-0")}>
+      <Link href={href} className={clsx("no-underline hover:no-underline", scrollItem && (large ? "w-[213px] flex-shrink-0" : "flex-shrink-0"))}>
         {inner}
       </Link>
     )
   }
 
   if (onClick) {
-    return <div onClick={onClick} className={clsx(scrollItem && "flex-shrink-0")}>{inner}</div>
+    return <div onClick={onClick} className={clsx(scrollItem && (large ? "w-[213px] flex-shrink-0" : "flex-shrink-0"))}>{inner}</div>
   }
 
   return inner

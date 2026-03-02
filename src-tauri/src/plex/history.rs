@@ -371,7 +371,7 @@ impl PlexClient {
     #[instrument(skip(self))]
     pub async fn mark_played(&self, rating_key: i64) -> Result<()> {
         let path = format!(
-            "/:/scrobble?ratingKey={}&key=/library/metadata/{}",
+            "/:/scrobble?ratingKey={}&key=/library/metadata/{}&identifier=com.plexapp.plugins.library",
             rating_key, rating_key
         );
         let url = self.build_url(&path);
@@ -420,7 +420,7 @@ impl PlexClient {
     #[instrument(skip(self))]
     pub async fn mark_unplayed(&self, rating_key: i64) -> Result<()> {
         let path = format!(
-            "/:/unscrobble?ratingKey={}&key=/library/metadata/{}",
+            "/:/unscrobble?ratingKey={}&key=/library/metadata/{}&identifier=com.plexapp.plugins.library",
             rating_key, rating_key
         );
         let url = self.build_url(&path);
@@ -490,7 +490,7 @@ impl PlexClient {
         };
 
         let path = format!(
-            "/:/timeline?ratingKey={}&key=/library/metadata/{}&state={}&time={}&duration={}&clientIdentifier={}",
+            "/:/timeline?ratingKey={}&key=/library/metadata/{}&state={}&time={}&duration={}&identifier=com.plexapp.plugins.library&clientIdentifier={}",
             rating_key, rating_key, state_str, time, duration, client_identifier
         );
         let url = self.build_url(&path);
@@ -501,6 +501,7 @@ impl PlexClient {
             .client
             .get(&url)
             .header("X-Plex-Token", &self.token)
+            .header("X-Plex-Client-Identifier", client_identifier)
             .header("Accept", "application/json")
             .send()
             .await
@@ -528,9 +529,11 @@ impl PlexClient {
     /// `PUT /:/rate?key=/library/metadata/{id}&rating={val}&identifier=com.plexapp.plugins.library`
     #[instrument(skip(self))]
     pub async fn rate_item(&self, rating_key: i64, rating: Option<f64>) -> Result<()> {
+        // Plex /:/rate expects the bare ratingKey integer, NOT the full
+        // /library/metadata/{id} path — the full path returns HTTP 500.
         let rating_str = rating.map_or("-1".to_string(), |r| r.to_string());
         let path = format!(
-            "/:/rate?key=/library/metadata/{}&rating={}&identifier=com.plexapp.plugins.library",
+            "/:/rate?key={}&rating={}&identifier=com.plexapp.plugins.library",
             rating_key, rating_str
         );
         let url = self.build_url(&path);
@@ -612,7 +615,7 @@ mod tests {
         let client_identifier = "plexify";
 
         let path = format!(
-            "/:/timeline?ratingKey={}&key=/library/metadata/{}&state={}&time={}&duration={}&clientIdentifier={}",
+            "/:/timeline?ratingKey={}&key=/library/metadata/{}&state={}&time={}&duration={}&identifier=com.plexapp.plugins.library&clientIdentifier={}",
             rating_key, rating_key, state_str, time, duration, client_identifier
         );
 
@@ -620,6 +623,7 @@ mod tests {
         assert!(path.contains("state=playing"));
         assert!(path.contains("time=30000"));
         assert!(path.contains("duration=180000"));
+        assert!(path.contains("identifier=com.plexapp.plugins.library"));
     }
 }
 
@@ -716,6 +720,113 @@ mod integration_tests {
         match client.rate_item(key, None).await {
             Ok(()) => println!("Cleared rating for track {}", key),
             Err(e) => println!("Clear rating failed: {}", e),
+        }
+    }
+
+    /// Diagnostic test: probe the /:/rate endpoint and verify the userRating
+    /// actually changes on the track. Prints the exact URL, HTTP status, and
+    /// response body for every attempt.
+    #[tokio::test]
+    async fn test_rate_item_diagnostic() {
+        let client = get_client();
+        let section_id = get_music_section_id(&client).await;
+
+        // Use liked_tracks (type=10, userRating>>0) — guaranteed to have a rating.
+        let tracks = client
+            .liked_tracks(section_id, Some(1))
+            .await
+            .expect("liked_tracks failed");
+
+        let track = match tracks.into_iter().next() {
+            Some(t) => t,
+            None => {
+                println!("No liked tracks found — try starring a track in Plex first");
+                return;
+            }
+        };
+
+        println!("=== Target track ===");
+        println!("  ratingKey  : {}", track.rating_key);
+        println!("  title      : {}", track.title);
+        println!("  userRating : {:?}", track.user_rating);
+        println!();
+
+        // Build the candidate URLs to probe so we can see which variant Plex accepts.
+        let token = &client.token;
+        let base   = client.build_url("");
+        let base   = base.trim_end_matches('/');
+
+        let variants: &[(&str, String)] = &[
+            // Variant A: key as full metadata path (current implementation)
+            ("A – key=/library/metadata/{id}", format!(
+                "{}/:/rate?key=/library/metadata/{}&rating=6&identifier=com.plexapp.plugins.library",
+                base, track.rating_key
+            )),
+            // Variant B: key as bare integer (alternative format)
+            ("B – key={id} (bare int)", format!(
+                "{}/:/rate?key={}&rating=6&identifier=com.plexapp.plugins.library",
+                base, track.rating_key
+            )),
+            // Variant C: token in URL instead of header
+            ("C – token in URL", format!(
+                "{}/:/rate?key=/library/metadata/{}&rating=6&identifier=com.plexapp.plugins.library&X-Plex-Token={}",
+                base, track.rating_key, token
+            )),
+        ];
+
+        let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        for (label, url) in variants {
+            println!("--- {} ---", label);
+            println!("  URL: {}", url);
+
+            let resp = http
+                .put(url)
+                .header("X-Plex-Token", token)
+                .header("Accept", "application/json")
+                .send()
+                .await;
+
+            match resp {
+                Err(e) => println!("  ERROR sending request: {}", e),
+                Ok(r) => {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_else(|e| format!("<read error: {}>", e));
+                    println!("  HTTP status : {}", status);
+                    println!("  Body        : {}", if body.is_empty() { "(empty)" } else { &body });
+
+                    // After the first successful 2xx response, re-fetch the track
+                    // to confirm whether userRating actually changed.
+                    if status.is_success() {
+                        println!("  → Re-fetching track to verify userRating changed…");
+                        match client.get_track(track.rating_key).await {
+                            Ok(updated) => {
+                                println!("  userRating before: {:?}", track.user_rating);
+                                println!("  userRating after : {:?}", updated.user_rating);
+                                if updated.user_rating != track.user_rating {
+                                    println!("  ✓ Rating CHANGED — this variant works!");
+                                } else {
+                                    println!("  ✗ Rating did NOT change (200 but no effect)");
+                                }
+                            }
+                            Err(e) => println!("  Re-fetch failed: {}", e),
+                        }
+                        break; // stop after first working variant
+                    }
+                }
+            }
+            println!();
+        }
+
+        // Restore original rating
+        println!("Restoring original rating ({:?})…", track.user_rating);
+        match client.rate_item(track.rating_key, track.user_rating).await {
+            Ok(()) => println!("Rating restored."),
+            Err(e) => println!("Restore failed: {}", e),
         }
     }
 }

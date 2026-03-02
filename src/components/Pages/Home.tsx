@@ -1,9 +1,23 @@
+import { useEffect, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import type { PlexMedia } from "../../types/plex"
+import { searchLibrary } from "../../lib/plex"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
+
+/** Strip common mix suffixes to get the artist name: "Ado Mix" → "Ado" */
+function mixTitleToArtistName(title: string): string {
+  return title.replace(/\s+(Mix|Radio|Station|Mix Radio)$/i, "").trim()
+}
+
+/**
+ * Module-level cache of mix title → artist thumb URL.
+ * Survives component unmount/remount so images don't flash grey on navigation.
+ * The actual image bytes are cached separately by the pleximg:// Tauri handler.
+ */
+const mixThumbCache = new Map<string, string>()
 
 function getItemYear(item: PlexMedia): number {
   if (item.type === "album") return item.year
@@ -51,7 +65,12 @@ function getMediaInfo(item: PlexMedia, baseUrl: string, token: string, opts?: { 
       return {
         title: item.title,
         desc: "Playlist",
-        thumb: item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null,
+        // Prefer thumb (artist image on mixes) over composite (collage)
+        thumb: item.thumb
+          ? buildPlexImageUrl(baseUrl, token, item.thumb)
+          : item.composite
+            ? buildPlexImageUrl(baseUrl, token, item.composite)
+            : null,
         isArtist: false,
         href: `/playlist/${item.rating_key}`,
         ratingKey: item.rating_key,
@@ -71,7 +90,55 @@ export function Home() {
   })))
   const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId } = useConnectionStore()
 
+  // Seed from module-level cache so images are available immediately on remount.
+  const [mixThumbs, setMixThumbs] = useState<Record<string, string>>(
+    () => Object.fromEntries(mixThumbCache)
+  )
+
   const hasRealData = recentlyAdded.length > 0 || hubs.length > 0
+
+  const sectionId = musicSectionId ?? 0
+
+  const mixesHubs = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
+  const mixesItems = mixesHubs.flatMap(h => h.metadata)
+  const mixesTitle = mixesHubs[0]?.title ?? "Mixes for You"
+
+  // For each mix, search the library for the artist named in the title and
+  // cache their thumbnail. Already-cached titles are skipped.
+  useEffect(() => {
+    if (!isConnected || mixesItems.length === 0 || sectionId === 0) return
+    const controller = new AbortController()
+
+    const run = async () => {
+      const updates: Record<string, string> = {}
+      for (const item of mixesItems) {
+        if (controller.signal.aborted) break
+        if (item.type !== "playlist") continue
+        if (mixThumbCache.has(item.title)) continue  // already resolved
+        const artistName = mixTitleToArtistName(item.title)
+        if (!artistName) continue
+        try {
+          const results = await searchLibrary(sectionId, artistName, "artist")
+          const artist = results.find(
+            r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()
+          ) ?? results.find(r => r.type === "artist")
+          if (artist && artist.type === "artist" && artist.thumb) {
+            const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
+            mixThumbCache.set(item.title, url)
+            updates[item.title] = url
+          }
+        } catch {
+          // search failure for one mix shouldn't abort the rest
+        }
+      }
+      if (!controller.signal.aborted && Object.keys(updates).length > 0) {
+        setMixThumbs(prev => ({ ...prev, ...updates }))
+      }
+    }
+
+    void run()
+    return () => controller.abort()
+  }, [isConnected, sectionId, mixesItems.length])
 
   if (!hasRealData) {
     const message = isConnecting
@@ -86,8 +153,6 @@ export function Home() {
     )
   }
 
-  const sectionId = musicSectionId ?? 0
-
   function makePrefetch(info: ReturnType<typeof getMediaInfo>) {
     if (!info) return undefined
     if (info.itemType === "artist") return () => prefetchArtist(info.ratingKey, sectionId)
@@ -95,27 +160,26 @@ export function Home() {
     return undefined
   }
 
-  // "Mixes for You" comes from the music.mixes.* hub (requires Plex Pass + sonic analysis).
-  const mixesHub = hubs.find(h => h.hub_identifier.startsWith("music.mixes"))
-  const mixesItems = mixesHub?.metadata ?? []
-
   return (
     <div className="space-y-8 pb-8">
       {mixesItems.length > 0 && (
-        <ScrollRow title={mixesHub!.title} restoreKey="home-mixes">
+        <ScrollRow title={mixesTitle} restoreKey="home-mixes">
           {mixesItems.map((item, idx) => {
             const info = getMediaInfo(item, baseUrl, token)
             if (!info) return null
+            // Prefer the looked-up artist thumb; fall back to whatever getMediaInfo found.
+            const thumb = (item.type === "playlist" ? mixThumbs[item.title] : null) ?? info.thumb
             return (
               <MediaCard
                 key={idx}
                 title={info.title}
                 desc={info.desc}
-                thumb={info.thumb}
+                thumb={thumb ?? null}
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
                 scrollItem
+                large
               />
             )
           })}
@@ -145,6 +209,8 @@ export function Home() {
 
       {hubs.map(hub => {
         if (hub.metadata.length === 0) return null
+        // Skip mixes hubs — already rendered as the pinned top section
+        if (hub.hub_identifier.startsWith("music.mixes")) return null
         const isAnniversary = hub.hub_identifier.includes("anniversary")
         // "On This Day" — sort oldest → newest and show the release year.
         const items = isAnniversary

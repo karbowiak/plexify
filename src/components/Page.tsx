@@ -6,6 +6,8 @@ import { Library } from "./Pages/Library"
 import { ArtistPage } from "./Pages/Artist"
 import { AlbumPage } from "./Pages/Album"
 import { Liked } from "./Pages/Liked"
+import { LikedArtists } from "./Pages/LikedArtists"
+import { LikedAlbums } from "./Pages/LikedAlbums"
 import { SettingsPage } from "./Pages/Settings"
 import { RadioPage } from "./Pages/Radio"
 import clsx from "clsx"
@@ -105,6 +107,14 @@ export function Page() {
 
         <Route path="/collection/tracks" key="liked">
           <Liked />
+        </Route>
+
+        <Route path="/collection/artists" key="liked-artists">
+          <LikedArtists />
+        </Route>
+
+        <Route path="/collection/albums" key="liked-albums">
+          <LikedAlbums />
         </Route>
 
         <Route path="/stations" key="stations">

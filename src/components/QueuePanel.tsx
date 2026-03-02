@@ -15,7 +15,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
 import { useUIStore } from "../stores/uiStore"
-import { isDjGenerated } from "../stores/playerStore"
+import { isDjGenerated, isRadioGenerated } from "../stores/playerStore"
 
 function formatMs(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -28,6 +28,7 @@ interface SortableItemProps {
   absoluteIndex: number
   isCurrent: boolean
   isGuestDj: boolean
+  isRadio: boolean
   thumb: string | null
   title: string
   artist: string
@@ -41,6 +42,7 @@ function SortableItem({
   index,
   isCurrent,
   isGuestDj,
+  isRadio,
   thumb,
   title,
   artist,
@@ -105,6 +107,11 @@ function SortableItem({
               DJ
             </span>
           )}
+          {isRadio && !isGuestDj && (
+            <span className="flex-shrink-0 rounded px-1 py-0.5 text-[0.55rem] font-bold uppercase tracking-wide bg-orange-500/20 text-orange-300">
+              Radio
+            </span>
+          )}
         </div>
         <div className="truncate text-xs text-gray-500">{artist}</div>
       </div>
@@ -149,9 +156,9 @@ export function QueuePanel() {
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     if (!over || active.id === over.id) return
-    const fromIndex = queue.findIndex(t => String(t.rating_key) === active.id)
-    const toIndex = queue.findIndex(t => String(t.rating_key) === over.id)
-    if (fromIndex !== -1 && toIndex !== -1) {
+    const fromIndex = parseInt(String(active.id), 10)
+    const toIndex = parseInt(String(over.id), 10)
+    if (!isNaN(fromIndex) && !isNaN(toIndex)) {
       reorderQueue(fromIndex, toIndex)
     }
   }
@@ -202,7 +209,7 @@ export function QueuePanel() {
               onDragEnd={handleDragEnd}
             >
               <SortableContext
-                items={displayItems.map(t => String(t.rating_key))}
+                items={displayItems.map((_, i) => String(queueIndex + i))}
                 strategy={verticalListSortingStrategy}
               >
                 {displayItems.map((track, relIdx) => {
@@ -212,12 +219,13 @@ export function QueuePanel() {
                   const thumb = thumbPath ? buildPlexImageUrl(baseUrl, token, thumbPath) : null
                   return (
                     <SortableItem
-                      key={track.rating_key}
-                      id={String(track.rating_key)}
+                      key={absoluteIndex}
+                      id={String(absoluteIndex)}
                       index={relIdx}
                       absoluteIndex={absoluteIndex}
                       isCurrent={isCurrent}
                       isGuestDj={isDjGenerated(track.rating_key)}
+                      isRadio={isRadioGenerated(track.rating_key)}
                       thumb={thumb}
                       title={track.title}
                       artist={track.grandparent_title}

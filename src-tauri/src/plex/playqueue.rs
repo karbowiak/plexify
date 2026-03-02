@@ -6,10 +6,12 @@
 #![allow(dead_code)]
 
 use super::{PlexClient, PlayQueue};
-use crate::plex::models::PlexApiResponse;
+use crate::plex::models::{MediaContainer, MetaWithStations, PlexApiResponse, StationRef};
 use anyhow::{Context, Result};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, instrument};
 use url::Url;
+use uuid::Uuid;
 
 impl PlexClient {
     /// Create a new play queue from a library URI.
@@ -201,72 +203,187 @@ impl PlexClient {
             .context("Failed to delete play queue")
     }
 
+    /// Resolve the station key for an artist.
+    ///
+    /// Tries three strategies in order:
+    ///   1. `GET /library/metadata/{id}?includeStations=1` → inline `Station[0].key`
+    ///   2. `GET /library/metadata/{id}/stations`          → first station playlist key
+    ///   3. UUID-based fallback (same as track radio)       → always succeeds
+    async fn resolve_artist_station_key(&self, rating_key: i64) -> String {
+        // Strategy 1: inline stations via ?includeStations=1
+        let path = format!(
+            "/library/metadata/{}?includeStations=1&excludeFields=summary",
+            rating_key
+        );
+        if let Ok(container) = self.get::<MediaContainer<MetaWithStations>>(&path).await {
+            if let Some(key) = container
+                .metadata
+                .into_iter()
+                .next()
+                .and_then(|m| m.stations.into_iter().next())
+                .map(|s| s.key)
+                .filter(|k| !k.is_empty())
+            {
+                debug!("Artist station key (inline): {}", key);
+                return key;
+            }
+        }
+
+        // Strategy 2: dedicated /stations sub-resource
+        let path2 = format!("/library/metadata/{}/stations", rating_key);
+        if let Ok(container) = self.get::<MediaContainer<StationRef>>(&path2).await {
+            if let Some(s) = container.metadata.into_iter().next().filter(|s| !s.key.is_empty()) {
+                debug!("Artist station key (/stations): {}", s.key);
+                return s.key;
+            }
+        }
+
+        // Strategy 3: UUID-based fallback (may still work for some servers)
+        let fallback = Self::track_station_key(rating_key);
+        debug!("Artist station key (UUID fallback): {}", fallback);
+        fallback
+    }
+
+    /// Build the radio station key for a track/album (UUID-based, no server call).
+    fn track_station_key(rating_key: i64) -> String {
+        format!(
+            "/library/metadata/{}/station/{}?type=10",
+            rating_key,
+            Uuid::new_v4(),
+        )
+    }
+
+    /// Fetch up to 20 tracks from a playlist and return a pseudo-randomly chosen rating_key.
+    ///
+    /// Called once per `create_radio_queue("playlist", ...)` invocation (including each
+    /// automatic refill), so successive calls use different seeds and cover the playlist's
+    /// full sonic range over time.
+    async fn playlist_sample_track(&self, playlist_id: i64) -> Result<i64> {
+        let tracks = self.get_playlist_items(playlist_id, Some(20), Some(0)).await?;
+        if tracks.is_empty() {
+            return Err(anyhow::anyhow!("Playlist {} has no tracks", playlist_id));
+        }
+        // Pseudo-random: subsecond nanoseconds mod count — no extra dependency needed.
+        let idx = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as usize
+            % tracks.len();
+        Ok(tracks[idx].rating_key)
+    }
+
+    /// Build a `library://abc/station/` URI for play queue creation.
+    ///
+    /// This is the universally compatible format used by PlexAmp for servers
+    /// that don't advertise the "universal" PlayQueue feature.  The station
+    /// key (with appended radio params) is percent-encoded inside the path.
+    fn build_radio_uri(station_key: &str, rating_key: i64, include_external: bool, degrees: i32) -> String {
+        // Append radio params — use ? or & depending on whether the station key
+        // already carries query params (track station keys end with ?type=10).
+        let sep = if station_key.contains('?') { '&' } else { '?' };
+        let station_with_params = format!(
+            "{}{}initialRatingKey={}&includeSharedContent={}&maxDegreesOfSeparation={}",
+            station_key,
+            sep,
+            rating_key,
+            if include_external { 1 } else { 0 },
+            degrees,
+        );
+        // PlexAmp: `library://abc/station/${encodeURIComponent(path)}`
+        let encoded: String = url::form_urlencoded::byte_serialize(station_with_params.as_bytes()).collect();
+        format!("library://abc/station/{}", encoded)
+    }
+
     /// Create a radio play queue seeded from any Plex item.
     ///
-    /// Uses PlexAmp's `plex://radio` URI scheme to generate a server-side station
-    /// that streams sonically-curated recommendations continuously.
+    /// Mirrors PlexAmp's `buildRadioPlayQueueUri` + `buildPlayQueueUri` logic:
+    /// resolves the station key (server-side for artists, UUID-based for
+    /// tracks/albums), wraps it in `library://abc/station/{encoded}`, then
+    /// POSTs to `/playQueues?type=audio&uri=…`.
     ///
     /// # Arguments
-    /// * `rating_key` - Rating key of the seed item (track, album, or artist)
-    /// * `degrees_of_separation` - Recommendation diversity: `None` = unlimited (-1),
-    ///   0 = closest matches only, 3+ = adventurous
-    /// * `include_external` - Include content from external/cloud sources
+    /// * `rating_key` - Rating key of the seed item
+    /// * `item_type`  - `"artist"` | `"album"` | `"playlist"` | `"track"` (or any other value → track path)
+    /// * `degrees_of_separation` - Diversity: `None` = unlimited (-1)
+    /// * `include_external` - Include tracks from external/cloud sources
     /// * `shuffle` - Shuffle the initial queue
     #[instrument(skip(self))]
     pub async fn create_radio_queue(
         &self,
         rating_key: i64,
+        item_type: &str,
         degrees_of_separation: Option<i32>,
         include_external: bool,
         shuffle: bool,
     ) -> Result<PlayQueue> {
-        let station_key = format!(
-            "/library/metadata/{}/station/{}",
-            rating_key,
-            uuid::Uuid::new_v4(),
-        );
         let degrees = degrees_of_separation.unwrap_or(-1);
-        let radio_uri = format!(
-            "plex://radio?stationKey={station_key}&initialRatingKey={rating_key}&degreesOfSeparation={degrees}&includeExternal={ext}",
-            ext = if include_external { "true" } else { "false" },
-        );
-        debug!(
-            "Creating radio queue: ratingKey={} stationKey={}",
-            rating_key, station_key
-        );
-        // Reuse create_play_queue — the plex://radio URI is treated like any other library URI.
+
+        // For albums/playlists, resolve a real track as the sonic seed:
+        // - Album: first track (album-level station URIs return only metadata, no audio)
+        // - Playlist: pseudo-random track from the first 20 items so each refill call
+        //   samples a different sonic neighbourhood and covers the playlist's full range.
+        let seed_key = match item_type {
+            "album" => match self.album_tracks(rating_key).await {
+                Ok(tracks) if !tracks.is_empty() => {
+                    debug!("Album radio: using first track {} as seed", tracks[0].rating_key);
+                    tracks[0].rating_key
+                }
+                _ => rating_key,
+            },
+            "playlist" => match self.playlist_sample_track(rating_key).await {
+                Ok(key) => {
+                    debug!("Playlist radio: sampled track {} as seed", key);
+                    key
+                }
+                _ => rating_key,
+            },
+            _ => rating_key,
+        };
+
+        let station_key = if item_type == "artist" {
+            self.resolve_artist_station_key(rating_key).await
+        } else {
+            Self::track_station_key(seed_key)
+        };
+
+        let radio_uri = Self::build_radio_uri(&station_key, seed_key, include_external, degrees);
+        debug!("Creating radio queue: ratingKey={} seedKey={} uri={}", rating_key, seed_key, radio_uri);
         self.create_play_queue(&radio_uri, shuffle, 0).await
     }
 
     /// Create a smart-shuffle (Guest DJ) play queue.
     ///
     /// Same as `create_radio_queue` but sends `smartShuffle=1` and a DJ-specific
-    /// `X-Plex-Client-Identifier` header. Plex uses this to enable the AI-curated
-    /// "Guest DJ" persona that generates more contextually intelligent recommendations.
+    /// `X-Plex-Client-Identifier` header so Plex enables its AI-curated Guest DJ mode.
     ///
     /// # Arguments
     /// * `rating_key` - Rating key of the seed item
-    /// * `degrees_of_separation` - Recommendation diversity (`None` = unlimited)
+    /// * `item_type`  - `"artist"` | `"track"` | `"album"`
+    /// * `dj_mode`    - DJ personality key (e.g. `"stretch"`, `"twin"`, `"twofer"`, `"anno"`, `"groupie"`)
+    /// * `degrees_of_separation` - Diversity (`None` = unlimited)
     /// * `include_external` - Include external sources
     /// * `client_id` - Stable installation UUID; `-transient-deejay` is appended
     #[instrument(skip(self))]
     pub async fn create_smart_shuffle_queue(
         &self,
         rating_key: i64,
+        item_type: &str,
+        dj_mode: Option<&str>,
         degrees_of_separation: Option<i32>,
         include_external: bool,
         client_id: &str,
     ) -> Result<PlayQueue> {
-        let station_key = format!(
-            "/library/metadata/{}/station/{}",
-            rating_key,
-            uuid::Uuid::new_v4(),
-        );
         let degrees = degrees_of_separation.unwrap_or(-1);
-        let radio_uri = format!(
-            "plex://radio?stationKey={station_key}&initialRatingKey={rating_key}&degreesOfSeparation={degrees}&includeExternal={ext}",
-            ext = if include_external { "true" } else { "false" },
-        );
+
+        let station_key = if item_type == "artist" {
+            self.resolve_artist_station_key(rating_key).await
+        } else {
+            Self::track_station_key(rating_key)
+        };
+
+        let radio_uri = Self::build_radio_uri(&station_key, rating_key, include_external, degrees);
+        let dj_id = format!("{}-transient-deejay", client_id);
+        debug!("Creating smart shuffle queue: ratingKey={} djId={} djMode={:?}", rating_key, dj_id, dj_mode);
 
         let base = self.build_url("/playQueues");
         let mut url = Url::parse(&base).context("Failed to parse playQueues URL")?;
@@ -274,15 +391,13 @@ impl PlexClient {
             .append_pair("type", "audio")
             .append_pair("uri", &radio_uri)
             .append_pair("shuffle", "1")
-            .append_pair("smartShuffle", "1")
+            .append_pair("smartShuffle", "1");
+        if let Some(mode) = dj_mode {
+            url.query_pairs_mut().append_pair("shuffleMode", mode);
+        }
+        url.query_pairs_mut()
             .append_pair("includeChapters", "1")
             .append_pair("includeRelated", "1");
-
-        let dj_id = format!("{}-transient-deejay", client_id);
-        debug!(
-            "Creating smart shuffle queue: ratingKey={} djId={}",
-            rating_key, dj_id
-        );
 
         let response = self
             .client
@@ -418,5 +533,201 @@ mod integration_tests {
             Ok(()) => println!("Deleted play queue {}", queue_id),
             Err(e) => println!("delete_play_queue failed: {}", e),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Radio queue tests with known items
+    //
+    // Artist: 544945   Album: 637022   Track: 548362   Section: 5
+    // -----------------------------------------------------------------------
+
+    const RADIO_ARTIST_KEY: i64 = 544945;
+    const RADIO_ALBUM_KEY:  i64 = 637022;
+    const RADIO_TRACK_KEY:  i64 = 548362;
+
+    /// Inspect what station key resolve_artist_station_key returns for the known artist.
+    /// Prints which strategy succeeded and what URI is built from the resolved key.
+    #[tokio::test]
+    async fn test_resolve_artist_station_key() {
+        let client = get_client();
+        println!("resolve_artist_station_key for artist {}", RADIO_ARTIST_KEY);
+        let key = client.resolve_artist_station_key(RADIO_ARTIST_KEY).await;
+        println!("  → station key: {}", key);
+
+        // Also show the full URI that would be sent to /playQueues
+        let uri = PlexClient::build_radio_uri(&key, RADIO_ARTIST_KEY, false, -1);
+        println!("  → radio URI: {}", uri);
+    }
+
+    /// Test create_radio_queue for the known TRACK.
+    /// This is the simplest case — a track key should always work.
+    #[tokio::test]
+    async fn test_create_radio_queue_for_track() {
+        let client = get_client();
+        println!("create_radio_queue: track pivot={}", RADIO_TRACK_KEY);
+        match client.create_radio_queue(RADIO_TRACK_KEY, "track", None, false, false).await {
+            Ok(q) => {
+                println!("  → OK: queue id={} items={}", q.id, q.items.len());
+                for t in q.items.iter().take(5) {
+                    println!("    - [{}] {} — {}", t.rating_key, t.grandparent_title, t.title);
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Test create_radio_queue for the known ARTIST.
+    /// This goes through resolve_artist_station_key + build_radio_uri + POST /playQueues.
+    #[tokio::test]
+    async fn test_create_radio_queue_for_artist() {
+        let client = get_client();
+        println!("create_radio_queue: artist pivot={}", RADIO_ARTIST_KEY);
+        match client.create_radio_queue(RADIO_ARTIST_KEY, "artist", None, false, false).await {
+            Ok(q) => {
+                println!("  → OK: queue id={} items={}", q.id, q.items.len());
+                for t in q.items.iter().take(5) {
+                    println!("    - [{}] {} — {}", t.rating_key, t.grandparent_title, t.title);
+                }
+                if q.items.is_empty() {
+                    println!("  ! Queue empty — server did not produce tracks for this URI");
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Test create_radio_queue for the known ALBUM.
+    #[tokio::test]
+    async fn test_create_radio_queue_for_album() {
+        let client = get_client();
+        println!("create_radio_queue: album pivot={}", RADIO_ALBUM_KEY);
+        match client.create_radio_queue(RADIO_ALBUM_KEY, "album", None, false, false).await {
+            Ok(q) => {
+                println!("  → OK: queue id={} items={}", q.id, q.items.len());
+                for t in q.items.iter().take(5) {
+                    println!("    - [{}] {} — {}", t.rating_key, t.grandparent_title, t.title);
+                }
+                if q.items.is_empty() {
+                    println!("  ! Queue empty — server did not produce tracks for this URI");
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Raw probe: what does GET /library/metadata/{artistId}?includeStations=1 return?
+    /// Prints the full response body (truncated) so we can see the exact JSON shape.
+    #[tokio::test]
+    async fn test_artist_include_stations_raw() {
+        use serde_json::Value;
+        let client = get_client();
+        let url = client.build_url(&format!(
+            "/library/metadata/{}?includeStations=1&excludeFields=summary",
+            RADIO_ARTIST_KEY
+        ));
+        println!("GET {}", url);
+        let resp = client.client.get(&url)
+            .header("X-Plex-Token", &client.token)
+            .header("Accept", "application/json")
+            .send().await.expect("request failed");
+        println!("  Status: {}", resp.status());
+        let body: Value = resp.json().await.expect("parse failed");
+        let body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+        // Print up to 4000 chars so we can see Station arrays if present
+        let truncated = if body_str.len() > 4000 { &body_str[..4000] } else { &body_str };
+        println!("{}", truncated);
+    }
+
+    /// Raw probe: GET /library/sections/5/mix?pivot={trackKey}
+    /// Shows the raw response for the sonic mix endpoint.
+    #[tokio::test]
+    async fn test_mix_endpoint_raw_track() {
+        use serde_json::Value;
+        let client = get_client();
+        let url = client.build_url(&format!(
+            "/library/sections/5/mix?pivot={}&limit=5",
+            RADIO_TRACK_KEY
+        ));
+        println!("GET {}", url);
+        let resp = client.client.get(&url)
+            .header("X-Plex-Token", &client.token)
+            .header("Accept", "application/json")
+            .send().await.expect("request failed");
+        println!("  Status: {}", resp.status());
+        let body: Value = resp.json().await.expect("parse failed");
+        let body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+        let truncated = if body_str.len() > 4000 { &body_str[..4000] } else { &body_str };
+        println!("{}", truncated);
+    }
+
+    /// Test create_radio_queue for a dynamically-fetched audio PLAYLIST.
+    /// Fetches the first audio playlist with ≥1 track and verifies that
+    /// the returned queue contains at least one playable item.
+    #[tokio::test]
+    async fn test_create_radio_queue_for_playlist() {
+        use super::super::Playlist;
+        let client = get_client();
+
+        // Fetch the user's audio playlists (limit to 20 to keep it fast)
+        let playlists: Vec<Playlist> = match client.list_playlists(0, Some(20)).await {
+            Ok(p) => p,
+            Err(e) => {
+                println!("list_playlists failed: {} — skipping", e);
+                return;
+            }
+        };
+
+        // Pick the first one that has tracks
+        let playlist = match playlists.iter().find(|p| p.leaf_count > 0) {
+            Some(p) => p,
+            None => {
+                println!("No audio playlists with tracks found — skipping");
+                return;
+            }
+        };
+
+        println!(
+            "Playlist radio test: '{}' (key={}, tracks={})",
+            playlist.title, playlist.rating_key, playlist.leaf_count
+        );
+
+        match client.create_radio_queue(playlist.rating_key, "playlist", None, false, false).await {
+            Ok(q) => {
+                println!("  → OK: queue id={} items={}", q.id, q.items.len());
+                for t in q.items.iter().take(5) {
+                    println!("    - [{}] {} — {}", t.rating_key, t.grandparent_title, t.title);
+                }
+                let playable = q.items.iter().filter(|t| {
+                    t.media.first()
+                        .and_then(|m| m.parts.first())
+                        .map_or(false, |p| !p.key.is_empty())
+                }).count();
+                println!("  → playable: {}/{}", playable, q.items.len());
+                assert!(q.items.len() > 0, "Expected at least 1 item in playlist radio queue");
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Raw probe: GET /library/sections/5/mix?pivot={artistKey}
+    /// Reveals whether the /mix endpoint accepts artist keys.
+    #[tokio::test]
+    async fn test_mix_endpoint_raw_artist() {
+        use serde_json::Value;
+        let client = get_client();
+        let url = client.build_url(&format!(
+            "/library/sections/5/mix?pivot={}&limit=5",
+            RADIO_ARTIST_KEY
+        ));
+        println!("GET {}", url);
+        let resp = client.client.get(&url)
+            .header("X-Plex-Token", &client.token)
+            .header("Accept", "application/json")
+            .send().await.expect("request failed");
+        println!("  Status: {}", resp.status());
+        let body: Value = resp.json().await.expect("parse failed");
+        let body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+        let truncated = if body_str.len() > 4000 { &body_str[..4000] } else { &body_str };
+        println!("{}", truncated);
     }
 }

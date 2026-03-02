@@ -3,6 +3,17 @@
  * All field names match what Tauri's JSON serialization produces (snake_case from serde).
  */
 
+/** A media stream (audio=2, video=1, subtitle=3) with Plex loudness analysis data */
+export interface PlexStream {
+  id: number | null
+  stream_type: number | null
+  /** Track gain in dB from Plex loudness analysis (equivalent to REPLAYGAIN_TRACK_GAIN) */
+  gain: number | null
+  album_gain: number | null
+  peak: number | null
+  loudness: number | null
+}
+
 export interface MediaPart {
   id: number
   key: string
@@ -12,6 +23,7 @@ export interface MediaPart {
   container: string | null
   audio_profile: string | null
   indexes: string | null
+  streams: PlexStream[]
 }
 
 export interface Media {
@@ -33,6 +45,9 @@ export interface Track {
   parent_key: string
   /** Album title */
   parent_title: string
+  parent_year: number | null
+  /** Album studio / record label */
+  parent_studio: string | null
   grandparent_key: string
   /** Artist name */
   grandparent_title: string
@@ -64,6 +79,8 @@ export interface Track {
   music_analysis_version: number | null
   rating_count: number | null
   skip_count: number | null
+  /** Sequential ID Plex assigns when a track is added to a playlist. Lower = added earlier. Null outside playlist context. */
+  playlist_item_id: number | null
   media: Media[]
 }
 
@@ -238,12 +255,9 @@ export interface PlayQueue {
 // Phase 2: Sonic / PlexAmp
 // ---------------------------------------------------------------------------
 
-/** A single loudness/peak sample from stream level analysis */
+/** A single loudness sample from stream level analysis. Plex returns each as {"v": dBFS}. */
 export interface Level {
   loudness: number
-  peak: number
-  sample_start: number
-  sample_end: number
 }
 
 // ---------------------------------------------------------------------------

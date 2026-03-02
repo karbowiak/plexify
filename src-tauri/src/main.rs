@@ -181,6 +181,8 @@ pub fn run() {
             commands::get_playlists,
             commands::get_playlist_items,
             commands::get_liked_tracks,
+            commands::get_liked_artists,
+            commands::get_liked_albums,
             commands::create_playlist,
             // Play queue
             commands::create_play_queue,
@@ -231,6 +233,12 @@ pub fn run() {
             commands::audio_cache_info,
             commands::audio_clear_cache,
             commands::audio_set_cache_max_bytes,
+            commands::audio_set_crossfade_window,
+            commands::audio_set_normalization_enabled,
+            commands::audio_set_eq,
+            commands::audio_set_eq_enabled,
+            commands::audio_set_preamp_gain,
+            commands::audio_set_same_album_crossfade,
             // Now Playing / media controls
             commands::update_now_playing,
             commands::set_now_playing_state,

@@ -551,7 +551,7 @@ impl PlexClient {
         sub_sample: Option<i32>,
     ) -> Result<Vec<Level>> {
         let sub = sub_sample.unwrap_or(128);
-        let path = format!("/library/streams/{}/levels?subSample={}", stream_id, sub);
+        let path = format!("/library/streams/{}/levels?subsample={}", stream_id, sub);
         debug!("Fetching stream levels for stream {}", stream_id);
         let container: LevelsContainer = self.get(&path)
             .await
@@ -752,21 +752,32 @@ mod integration_tests {
     #[tokio::test]
     async fn test_get_stream_levels() {
         let client = get_client();
-        let section_id = get_music_section_id(&client).await;
-        let Some((track_key, _, _)) = get_test_keys(&client, section_id).await else {
-            println!("No tracks available — skipping");
-            return;
+        // artist_popular_tracks doesn't include stream data — fetch full metadata via get_track
+        let tracks = match client.artist_popular_tracks(PINPONPANPON_KEY, Some(1)).await {
+            Ok(t) if !t.is_empty() => t,
+            Ok(_) => { println!("No popular tracks — skipping"); return; }
+            Err(e) => { println!("artist_popular_tracks failed: {}", e); return; }
         };
-        let track = match client.get_track(track_key).await {
+        let track = match client.get_track(tracks[0].rating_key).await {
             Ok(t) => t,
             Err(e) => { println!("get_track failed: {}", e); return; }
         };
-        let stream_id = match track.media.first().and_then(|m| m.parts.first()) {
-            Some(part) => part.id,
-            None => { println!("No media parts found — skipping"); return; }
+        let part = match track.media.first().and_then(|m| m.parts.first()) {
+            Some(p) => p,
+            None => { println!("No media parts — skipping"); return; }
         };
+        let stream_id = part.streams.iter()
+            .find(|s| s.stream_type == Some(2))
+            .and_then(|s| s.id)
+            .unwrap_or(part.id);
         match client.get_stream_levels(stream_id, Some(128)).await {
-            Ok(levels) => println!("Got {} level samples for stream {}", levels.len(), stream_id),
+            Ok(levels) => {
+                println!("Got {} level samples for stream {} (track: {})",
+                    levels.len(), stream_id, track.title);
+                for l in levels.iter().take(5) {
+                    println!("  loudness={}", l.loudness);
+                }
+            }
             Err(e) => println!("get_stream_levels failed (may need loudness analysis): {}", e),
         }
     }
@@ -1190,6 +1201,174 @@ mod integration_tests {
                 a.subformat.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>().join(", ")
             };
             println!("  - {} ({}) → [{}]", a.title, a.year, sf);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Radio / Mix endpoint tests
+    //
+    // These tests use known items from the user's library to verify that the
+    // /library/sections/{id}/mix endpoint returns data in various scenarios.
+    //
+    // Artist: 544945   (known artist in the library)
+    // Album:  637022   (known album in the library)
+    // Track:  548362   (known track in the library)
+    // -----------------------------------------------------------------------
+
+    const RADIO_ARTIST_KEY: i64 = 544945;
+    const RADIO_ALBUM_KEY: i64 = 637022;
+    const RADIO_TRACK_KEY: i64 = 548362;
+
+    /// Test the sonic mix endpoint with a known TRACK rating key as pivot.
+    /// This is the baseline case — should always work if sonic analysis is enabled.
+    #[tokio::test]
+    async fn test_radio_mix_track_pivot() {
+        let client = get_client();
+        println!("Testing track_radio with track pivot={}", RADIO_TRACK_KEY);
+        match client.track_radio(MUSIC_SECTION_ID, RADIO_TRACK_KEY, Some(25), None).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in tracks.iter().take(5) {
+                    println!("    - [{}] {} — {} ({})", t.rating_key, t.grandparent_title, t.title, t.parent_title);
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Test the sonic mix endpoint with a known ARTIST rating key as pivot.
+    /// This reveals whether the /mix endpoint accepts artist keys directly.
+    #[tokio::test]
+    async fn test_radio_mix_artist_pivot() {
+        let client = get_client();
+        println!("Testing track_radio with artist pivot={}", RADIO_ARTIST_KEY);
+        match client.track_radio(MUSIC_SECTION_ID, RADIO_ARTIST_KEY, Some(25), None).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in tracks.iter().take(5) {
+                    println!("    - [{}] {} — {} ({})", t.rating_key, t.grandparent_title, t.title, t.parent_title);
+                }
+                if tracks.is_empty() {
+                    println!("  ! No tracks returned — artist key may not be a valid pivot");
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Test the sonic mix endpoint with a known ALBUM rating key as pivot.
+    /// This reveals whether the /mix endpoint accepts album keys directly.
+    #[tokio::test]
+    async fn test_radio_mix_album_pivot() {
+        let client = get_client();
+        println!("Testing track_radio with album pivot={}", RADIO_ALBUM_KEY);
+        match client.track_radio(MUSIC_SECTION_ID, RADIO_ALBUM_KEY, Some(25), None).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in tracks.iter().take(5) {
+                    println!("    - [{}] {} — {} ({})", t.rating_key, t.grandparent_title, t.title, t.parent_title);
+                }
+                if tracks.is_empty() {
+                    println!("  ! No tracks returned — album key may not be a valid pivot");
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Get a popular track for the known artist, then use it as the pivot for /mix.
+    /// This is the two-step fallback used by playRadio for artist radio.
+    #[tokio::test]
+    async fn test_radio_mix_via_artist_popular_track() {
+        let client = get_client();
+        println!("Step 1: get popular track for artist {}", RADIO_ARTIST_KEY);
+
+        let pop = match client.artist_popular_tracks_in_section(MUSIC_SECTION_ID, RADIO_ARTIST_KEY, Some(1)).await {
+            Ok(t) => t,
+            Err(e) => { println!("  → artist_popular_tracks_in_section FAIL: {}", e); return; }
+        };
+
+        let pivot = match pop.first() {
+            Some(t) => {
+                println!("  → OK: popular track pivot={} '{}'", t.rating_key, t.title);
+                t.rating_key
+            }
+            None => { println!("  ! No popular tracks found for artist"); return; }
+        };
+
+        println!("Step 2: track_radio with pivot={}", pivot);
+        match client.track_radio(MUSIC_SECTION_ID, pivot, Some(25), None).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in tracks.iter().take(5) {
+                    println!("    - [{}] {} — {} ({})", t.rating_key, t.grandparent_title, t.title, t.parent_title);
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Get the first track from the known album, then use it as the pivot for /mix.
+    /// This is the two-step fallback used by playRadio for album radio.
+    #[tokio::test]
+    async fn test_radio_mix_via_album_first_track() {
+        let client = get_client();
+        println!("Step 1: get tracks for album {}", RADIO_ALBUM_KEY);
+
+        let album_tracks = match client.album_tracks(RADIO_ALBUM_KEY).await {
+            Ok(t) => t,
+            Err(e) => { println!("  → album_tracks FAIL: {}", e); return; }
+        };
+
+        let pivot = match album_tracks.first() {
+            Some(t) => {
+                println!("  → OK: first album track pivot={} '{}'", t.rating_key, t.title);
+                t.rating_key
+            }
+            None => { println!("  ! No tracks in album"); return; }
+        };
+
+        println!("Step 2: track_radio with pivot={}", pivot);
+        match client.track_radio(MUSIC_SECTION_ID, pivot, Some(25), None).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in tracks.iter().take(5) {
+                    println!("    - [{}] {} — {} ({})", t.rating_key, t.grandparent_title, t.title, t.parent_title);
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Verify artist_popular_tracks_in_section works for the known artist.
+    #[tokio::test]
+    async fn test_radio_artist_popular_tracks_in_section() {
+        let client = get_client();
+        println!("Testing artist_popular_tracks_in_section for artist {}", RADIO_ARTIST_KEY);
+        match client.artist_popular_tracks_in_section(MUSIC_SECTION_ID, RADIO_ARTIST_KEY, Some(5)).await {
+            Ok(tracks) => {
+                println!("  → OK: {} tracks returned", tracks.len());
+                for t in &tracks {
+                    println!("    - [{}] {} (album: {})", t.rating_key, t.title, t.parent_title);
+                }
+            }
+            Err(e) => println!("  → FAIL: {}", e),
+        }
+    }
+
+    /// Verify artist_stations for the known artist — what station keys are available?
+    #[tokio::test]
+    async fn test_radio_artist_stations_known() {
+        let client = get_client();
+        println!("Testing artist_stations for artist {}", RADIO_ARTIST_KEY);
+        match client.artist_stations(RADIO_ARTIST_KEY).await {
+            Ok(stations) => {
+                println!("  → OK: {} stations", stations.len());
+                for s in &stations {
+                    println!("    - [{}] key={}", s.title, s.key);
+                }
+            }
+            Err(e) => println!("  → FAIL (may be normal if no sonic analysis): {}", e),
         }
     }
 }

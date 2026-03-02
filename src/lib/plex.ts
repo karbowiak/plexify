@@ -202,6 +202,16 @@ export function getLikedTracks(sectionId: number, limit?: number): Promise<Track
   return invoke("get_liked_tracks", { sectionId, limit: limit ?? null })
 }
 
+/** Get artists that the user has rated (liked), sorted by most recently rated. */
+export function getLikedArtists(sectionId: number, limit?: number): Promise<Artist[]> {
+  return invoke("get_liked_artists", { sectionId, limit: limit ?? null })
+}
+
+/** Get albums that the user has rated (liked), sorted by most recently rated. */
+export function getLikedAlbums(sectionId: number, limit?: number): Promise<Album[]> {
+  return invoke("get_liked_albums", { sectionId, limit: limit ?? null })
+}
+
 /** Get tracks inside a playlist, with optional pagination. */
 export function getPlaylistItems(
   playlistId: number,
@@ -274,12 +284,14 @@ export function addToPlayQueue(
  */
 export function createRadioQueue(
   ratingKey: number,
+  itemType: string,
   degreesOfSeparation?: number,
   includeExternal?: boolean,
   shuffle?: boolean
 ): Promise<PlayQueue> {
   return invoke("create_radio_queue", {
     ratingKey,
+    itemType,
     degreesOfSeparation: degreesOfSeparation ?? null,
     includeExternal: includeExternal ?? false,
     shuffle: shuffle ?? false,
@@ -298,11 +310,15 @@ export function createRadioQueue(
  */
 export function createSmartShuffleQueue(
   ratingKey: number,
+  itemType: string,
+  djMode?: string,
   degreesOfSeparation?: number,
   includeExternal?: boolean
 ): Promise<PlayQueue> {
   return invoke("create_smart_shuffle_queue", {
     ratingKey,
+    itemType,
+    djMode: djMode ?? null,
     degreesOfSeparation: degreesOfSeparation ?? null,
     includeExternal: includeExternal ?? false,
   })
@@ -551,8 +567,9 @@ export function audioPlay(
   partId: number,
   parentKey: string,
   trackIndex: number,
+  gainDb: number | null,
 ): Promise<void> {
-  return invoke("audio_play", { url, ratingKey, durationMs, partId, parentKey, trackIndex })
+  return invoke("audio_play", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb })
 }
 
 /** Pause audio playback. */
@@ -588,8 +605,9 @@ export function audioPreloadNext(
   partId: number,
   parentKey: string,
   trackIndex: number,
+  gainDb: number | null,
 ): Promise<void> {
-  return invoke("audio_preload_next", { url, ratingKey, durationMs, partId, parentKey, trackIndex })
+  return invoke("audio_preload_next", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb })
 }
 
 /** Warm the audio disk cache for a URL in the background. Returns immediately. */
@@ -610,6 +628,55 @@ export function audioClearCache(): Promise<void> {
 /** Set the maximum audio cache size in bytes. Pass 0 for unlimited. */
 export function audioSetCacheMaxBytes(maxBytes: number): Promise<void> {
   return invoke("audio_set_cache_max_bytes", { maxBytes })
+}
+
+/**
+ * Set the crossfade window duration in milliseconds.
+ * Pass 0 to disable crossfade entirely. Default is 8000 ms (8 s).
+ * Maximum recommended value is 30000 ms (30 s).
+ */
+export function audioSetCrossfadeWindow(ms: number): Promise<void> {
+  return invoke("audio_set_crossfade_window", { ms })
+}
+
+/**
+ * Enable or disable ReplayGain audio normalization.
+ * When enabled (default), tracks are volume-levelled using embedded REPLAYGAIN_TRACK_GAIN tags.
+ */
+export function audioSetNormalizationEnabled(enabled: boolean): Promise<void> {
+  return invoke("audio_set_normalization_enabled", { enabled })
+}
+
+/**
+ * Set all 10 EQ band gains in dB (±12 dB per band).
+ * Index order: 32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz.
+ */
+export function audioSetEq(gainsDb: [number, number, number, number, number, number, number, number, number, number]): Promise<void> {
+  return invoke("audio_set_eq", { gainsDb })
+}
+
+/**
+ * Enable or disable the 10-band graphic EQ.
+ * When disabled, all EQ processing is bypassed with zero CPU cost.
+ */
+export function audioSetEqEnabled(enabled: boolean): Promise<void> {
+  return invoke("audio_set_eq_enabled", { enabled })
+}
+
+/**
+ * Set the pre-amp gain in dB (range −12..+3, default 0).
+ * Applied before EQ; use to recover headroom after large EQ boosts.
+ */
+export function audioSetPreampGain(db: number): Promise<void> {
+  return invoke("audio_set_preamp_gain", { db })
+}
+
+/**
+ * Enable or disable crossfade for consecutive same-album tracks.
+ * When disabled (default), same-album tracks play gaplessly without fading.
+ */
+export function audioSetSameAlbumCrossfade(enabled: boolean): Promise<void> {
+  return invoke("audio_set_same_album_crossfade", { enabled })
 }
 
 // ---------------------------------------------------------------------------

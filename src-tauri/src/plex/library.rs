@@ -226,6 +226,78 @@ impl PlexClient {
         Ok(container.hub.into_iter().flat_map(|h| h.metadata).collect())
     }
 
+    /// Get artists with a user rating set (liked/rated artists)
+    ///
+    /// # Arguments
+    /// * `section_id` - Library section ID
+    /// * `limit` - Optional limit on number of results
+    ///
+    /// # Returns
+    /// * `Result<Vec<super::models::Artist>>` - List of rated artists, sorted by most recently rated
+    #[instrument(skip(self))]
+    pub async fn liked_artists(&self, section_id: i64, limit: Option<i32>) -> Result<Vec<super::models::Artist>> {
+        let mut params = vec![
+            ("type".to_string(), "8".to_string()),
+            ("sort".to_string(), "lastRatedAt:desc".to_string()),
+            ("userRating>>".to_string(), "0".to_string()),
+        ];
+
+        if let Some(limit) = limit {
+            params.push(("limit".to_string(), limit.to_string()));
+        }
+
+        let path = format!("/library/sections/{}/all", section_id);
+        let url = build_url_from_params(&self.build_url(&path), &params);
+
+        debug!("Fetching liked artists for section {} from {}", section_id, url);
+
+        let container: MediaContainer<PlexMedia> = self
+            .get_url(&url)
+            .await
+            .with_context(|| format!("Failed to fetch liked artists for section {}", section_id))?;
+
+        Ok(container.metadata.into_iter().filter_map(|m| match m {
+            PlexMedia::Artist(a) => Some(a),
+            _ => None,
+        }).collect())
+    }
+
+    /// Get albums with a user rating set (liked/rated albums)
+    ///
+    /// # Arguments
+    /// * `section_id` - Library section ID
+    /// * `limit` - Optional limit on number of results
+    ///
+    /// # Returns
+    /// * `Result<Vec<super::models::Album>>` - List of rated albums, sorted by most recently rated
+    #[instrument(skip(self))]
+    pub async fn liked_albums(&self, section_id: i64, limit: Option<i32>) -> Result<Vec<super::models::Album>> {
+        let mut params = vec![
+            ("type".to_string(), "9".to_string()),
+            ("sort".to_string(), "lastRatedAt:desc".to_string()),
+            ("userRating>>".to_string(), "0".to_string()),
+        ];
+
+        if let Some(limit) = limit {
+            params.push(("limit".to_string(), limit.to_string()));
+        }
+
+        let path = format!("/library/sections/{}/all", section_id);
+        let url = build_url_from_params(&self.build_url(&path), &params);
+
+        debug!("Fetching liked albums for section {} from {}", section_id, url);
+
+        let container: MediaContainer<PlexMedia> = self
+            .get_url(&url)
+            .await
+            .with_context(|| format!("Failed to fetch liked albums for section {}", section_id))?;
+
+        Ok(container.metadata.into_iter().filter_map(|m| match m {
+            PlexMedia::Album(a) => Some(a),
+            _ => None,
+        }).collect())
+    }
+
     /// Get tracks with a user rating set (liked/rated tracks)
     ///
     /// # Arguments

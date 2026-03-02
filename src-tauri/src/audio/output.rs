@@ -10,6 +10,7 @@ use ringbuf::HeapCons;
 use tracing::{error, info};
 
 use super::decoder::DecoderShared;
+use super::eq::{BiquadCoeffs, BiquadState};
 
 /// Size of the ring buffer in samples (2 seconds at 48kHz stereo)
 pub const RING_BUFFER_SIZE: usize = 48000 * 2 * 2;
@@ -56,6 +57,22 @@ pub fn start_output(
     Ok((stream, sample_rate))
 }
 
+/// Smooth soft-knee peak limiter — transparent below 0.95 (≈ −0.45 dBFS),
+/// curves asymptotically toward ±1.0 above the threshold.
+/// Always active; no toggle needed — it's a safety net, not an effect.
+#[inline(always)]
+fn soft_limit(x: f32) -> f32 {
+    const THRESH: f32 = 0.95;
+    let abs = x.abs();
+    if abs <= THRESH {
+        x
+    } else {
+        let over = abs - THRESH;
+        let sign = if x > 0.0 { 1.0f32 } else { -1.0f32 };
+        (THRESH + over / (1.0 + over)) * sign
+    }
+}
+
 fn build_f32_stream(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -63,6 +80,11 @@ fn build_f32_stream(
     shared: Arc<DecoderShared>,
 ) -> Result<Stream, String> {
     let output_channels = config.channels as usize;
+
+    // EQ filter state lives here, captured by the closure and persists across callbacks.
+    // [band 0..10][channel 0..8] — Direct Form I history per band per channel.
+    let mut eq_state = [[BiquadState::default(); 8]; 10];
+    let mut eq_was_enabled = false;
 
     let stream = device
         .build_output_stream(
@@ -79,6 +101,25 @@ fn build_f32_stream(
                             break;
                         }
                     }
+                    // Reset EQ history to prevent stale IIR state causing audible clicks
+                    for band in &mut eq_state { *band = [BiquadState::default(); 8]; }
+                    data.fill(0.0);
+                    return;
+                }
+
+                // A Seek command completed — drain pre-seek samples so the seeked
+                // position is heard immediately instead of after ~2 s of buffered audio.
+                // Unlike flush_pending, the decoder push loop is NOT interrupted here;
+                // new samples from the seeked position are pushed concurrently.
+                if shared.seek_flush_pending.swap(false, Ordering::AcqRel) {
+                    loop {
+                        let n = consumer.pop_slice(data);
+                        if n < data.len() {
+                            break;
+                        }
+                    }
+                    // Reset EQ history to prevent seeking artifacts from stale IIR state
+                    for band in &mut eq_state { *band = [BiquadState::default(); 8]; }
                     data.fill(0.0);
                     return;
                 }
@@ -89,7 +130,23 @@ fn build_f32_stream(
                     return;
                 }
 
+                // EQ: snapshot enabled flag + coefficients once per callback (not per-sample).
+                // If EQ was just re-enabled, reset IIR state to avoid a pop from stale history.
+                let eq_enabled = shared.eq_enabled.load(Ordering::Relaxed);
+                if eq_enabled && !eq_was_enabled {
+                    for band in &mut eq_state { *band = [BiquadState::default(); 8]; }
+                }
+                eq_was_enabled = eq_enabled;
+                let coeffs: Option<[BiquadCoeffs; 10]> = if eq_enabled {
+                    shared.eq_coeffs.lock().ok().map(|g| *g)
+                } else {
+                    None
+                };
+
+                // Normalization gain is applied in the decoder before samples reach the
+                // ring buffer, so the output callback only needs to scale by volume × pre-amp.
                 let volume = shared.volume();
+                let preamp = shared.preamp_gain_millths.load(Ordering::Relaxed) as f32 / 1_000.0;
                 let source_channels = shared.channels.load(Ordering::Relaxed) as usize;
 
                 if source_channels == 0 {
@@ -109,9 +166,19 @@ fn build_f32_stream(
                             data[pos..].fill(0.0);
                             break;
                         }
-                        // Apply volume
-                        for sample in &mut data[pos..pos + available] {
-                            *sample *= volume;
+                        // Apply volume × pre-amp, then EQ, then soft limiter — single pass.
+                        // Channel index is (absolute output position) % output_channels.
+                        for (i, sample) in data[pos..pos + available].iter_mut().enumerate() {
+                            let ch = (pos + i) % output_channels;
+                            *sample *= volume * preamp;
+                            if let Some(ref c) = coeffs {
+                                for band in 0..10 {
+                                    if !c[band].is_identity() {
+                                        *sample = eq_state[band][ch].process(*sample, &c[band]);
+                                    }
+                                }
+                            }
+                            *sample = soft_limit(*sample);
                         }
                         pos += available;
                     } else {
@@ -125,7 +192,20 @@ fn build_f32_stream(
                             break;
                         }
 
-                        // Map source channels to output channels
+                        // Apply EQ per source channel before channel mapping
+                        if let Some(ref c) = coeffs {
+                            for ch in 0..source_channels {
+                                let mut s = frame[ch];
+                                for band in 0..10 {
+                                    if !c[band].is_identity() {
+                                        s = eq_state[band][ch].process(s, &c[band]);
+                                    }
+                                }
+                                frame[ch] = s;
+                            }
+                        }
+
+                        // Map source channels to output channels; apply volume × preamp + limiter
                         for out_ch in 0..output_channels {
                             let src_ch = if out_ch < source_channels {
                                 out_ch
@@ -134,7 +214,7 @@ fn build_f32_stream(
                                 source_channels - 1
                             };
                             if pos < data.len() {
-                                data[pos] = frame[src_ch] * volume;
+                                data[pos] = soft_limit(frame[src_ch] * volume * preamp);
                                 pos += 1;
                             }
                         }

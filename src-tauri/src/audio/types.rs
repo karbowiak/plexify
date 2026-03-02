@@ -11,6 +11,9 @@ pub struct TrackMeta {
     pub part_id: i64,
     pub parent_key: String,
     pub track_index: i64,
+    /// Track gain from Plex loudness analysis in dB (e.g. -14.1).
+    /// None if the server hasn't analysed this track yet.
+    pub gain_db: Option<f32>,
 }
 
 /// Commands sent from the Tauri thread to the decoder thread
@@ -23,6 +26,12 @@ pub enum AudioCommand {
     Seek(i64),            // position in milliseconds
     SetVolume(f32),       // 0.0 - 1.0
     PreloadNext(TrackMeta),
+    SetCrossfadeWindow(u64), // milliseconds; 0 = disabled
+    SetNormalizationEnabled(bool), // enable/disable ReplayGain normalization
+    SetEq { gains_db: [f32; 10] }, // recompute all 10 biquad coefficients
+    SetEqEnabled(bool),            // enable/disable EQ bypass
+    SetPreampGain(f32),            // pre-amp in dB (−12..+3); applied before EQ
+    SetSameAlbumCrossfade(bool),   // when false (default), suppress crossfade for same-album tracks
     Shutdown,
 }
 

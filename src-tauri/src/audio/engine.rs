@@ -97,6 +97,37 @@ impl AudioEngine {
         super::decoder::prefetch_url_bg(url, Arc::clone(&self.shared));
     }
 
+    /// Set the crossfade window duration in milliseconds. Pass 0 to disable crossfade.
+    pub fn set_crossfade_window(&self, ms: u64) {
+        let _ = self.cmd_tx.send(AudioCommand::SetCrossfadeWindow(ms));
+    }
+
+    /// Enable or disable ReplayGain audio normalization.
+    pub fn set_normalization_enabled(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetNormalizationEnabled(enabled));
+    }
+
+    /// Set all 10 EQ band gains (in dB). Recomputes biquad coefficients immediately.
+    pub fn set_eq(&self, gains_db: [f32; 10]) {
+        let _ = self.cmd_tx.send(AudioCommand::SetEq { gains_db });
+    }
+
+    /// Enable or disable the 10-band graphic EQ.
+    pub fn set_eq_enabled(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetEqEnabled(enabled));
+    }
+
+    /// Set pre-amp gain in dB (−12..+3). Applied before EQ in the output callback.
+    pub fn set_preamp_gain(&self, db: f32) {
+        let _ = self.cmd_tx.send(AudioCommand::SetPreampGain(db));
+    }
+
+    /// Enable or disable crossfade for consecutive same-album tracks.
+    /// When false (default), gapless transitions are used for same-album tracks.
+    pub fn set_same_album_crossfade(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetSameAlbumCrossfade(enabled));
+    }
+
     /// Update the maximum audio cache size. Pass 0 for unlimited.
     pub fn set_max_cache_bytes(&self, max_bytes: u64) {
         self.shared.max_cache_bytes.store(max_bytes, Ordering::Relaxed);

@@ -289,3 +289,44 @@ body {
     u+05f0-05f4, u+200e-200f, u+20aa, u+fb2a-fb36, u+fb38-fb3c, u+fb3e,
     u+fb40-fb41, u+fb43-fb44, u+fb46-fb4f, u+ffff;
 }
+
+/* ---------------------------------------------------------------------------
+   EQ Panel — vertical range slider
+   The slider is a standard horizontal <input type="range"> rotated -90deg.
+   We reset the default browser appearance and add a custom track + thumb.
+   --------------------------------------------------------------------------- */
+.eq-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.eq-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: #404040;
+}
+
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  margin-top: -4.5px;
+  transition: background 0.15s;
+}
+
+.eq-slider:hover::-webkit-slider-thumb {
+  background: #1db954;
+}
+
+.eq-slider::-webkit-slider-container {
+  overflow: visible;
+}

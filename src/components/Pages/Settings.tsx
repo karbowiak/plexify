@@ -5,6 +5,7 @@ import clsx from "clsx"
 import { useConnectionStore, useLibraryStore } from "../../stores"
 import { plexAuthPoll, plexGetResources, testServerConnection, audioCacheInfo, audioClearCache, audioSetCacheMaxBytes } from "../../lib/plex"
 import type { PlexResource } from "../../types/plex"
+import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
 
 type Section = "account" | "playback" | "downloads" | "ai" | "experience"
 type AuthState = "idle" | "polling" | "picking"
@@ -79,10 +80,28 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
+const PREAMP_OPTIONS = [3, 0, -3, -6, -9, -12] as const
+const CROSSFADE_OPTIONS = [
+  { label: "Off",  ms: 0 },
+  { label: "2s",   ms: 2000 },
+  { label: "4s",   ms: 4000 },
+  { label: "6s",   ms: 6000 },
+  { label: "8s",   ms: 8000 },
+  { label: "10s",  ms: 10000 },
+  { label: "15s",  ms: 15000 },
+] as const
+
 function PlaybackSection() {
   const [cacheInfo, setCacheInfo] = useState<{ size_bytes: number; file_count: number } | null>(null)
   const [maxBytes, setMaxBytes] = useState<number>(1_073_741_824)
   const [isClearing, setIsClearing] = useState(false)
+
+  const {
+    normalizationEnabled, setNormalizationEnabled,
+    crossfadeWindowMs, setCrossfadeWindowMs,
+    sameAlbumCrossfade, setSameAlbumCrossfade,
+    preampDb, setPreampDb,
+  } = useAudioSettingsStore()
 
   useEffect(() => {
     // Restore and apply saved cache limit.
@@ -112,48 +131,129 @@ function PlaybackSection() {
     }
   }
 
+  const pillBase = "rounded-full px-4 py-1.5 text-sm transition-colors"
+  const pillActive = "bg-[#1db954] text-black font-semibold"
+  const pillInactive = "bg-white/10 text-white hover:bg-white/20"
+
   return (
     <div className="flex flex-col gap-8">
-      {/* Cache size limit */}
+
+      {/* ── Audio Processing ── */}
       <div>
-        <h3 className="text-base font-semibold text-white mb-1">Audio Cache Size</h3>
-        <p className="text-sm text-white/40 mb-3">
-          Tracks are cached to disk for instant replay. Older files are removed automatically when the limit is reached.
-        </p>
-        <div className="flex gap-2 flex-wrap">
-          {CACHE_OPTIONS.map(opt => (
-            <button
-              key={opt.bytes}
-              onClick={() => void handleMaxChange(opt.bytes)}
-              className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
-                maxBytes === opt.bytes
-                  ? "bg-[#1db954] text-black font-semibold"
-                  : "bg-white/10 text-white hover:bg-white/20"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <h3 className="text-base font-semibold text-white mb-4">Audio Processing</h3>
+        <div className="flex flex-col gap-5">
+
+          {/* Normalization */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Normalization</p>
+            <p className="text-xs text-white/35 mb-2">
+              Volume-levels tracks using ReplayGain data from the Plex server so loud and quiet tracks play at a consistent loudness.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setNormalizationEnabled(true)} className={`${pillBase} ${normalizationEnabled ? pillActive : pillInactive}`}>On</button>
+              <button onClick={() => setNormalizationEnabled(false)} className={`${pillBase} ${!normalizationEnabled ? pillActive : pillInactive}`}>Off</button>
+            </div>
+          </div>
+
+          {/* Pre-amp */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Pre-amp</p>
+            <p className="text-xs text-white/35 mb-2">
+              Adjust the output level before the EQ. Lower this if heavy EQ boosts cause clipping.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              {PREAMP_OPTIONS.map(db => (
+                <button
+                  key={db}
+                  onClick={() => setPreampDb(db)}
+                  className={`${pillBase} ${preampDb === db ? pillActive : pillInactive}`}
+                >
+                  {db > 0 ? `+${db}` : db} dB
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Cache usage + clear */}
+      {/* ── Crossfade ── */}
       <div>
-        <h3 className="text-base font-semibold text-white mb-1">Cache Usage</h3>
-        {cacheInfo ? (
-          <p className="text-sm text-white/40 mb-3">
-            {formatBytes(cacheInfo.size_bytes)} used · {cacheInfo.file_count} {cacheInfo.file_count === 1 ? "file" : "files"}
-          </p>
-        ) : (
-          <p className="text-sm text-white/30 mb-3">Loading…</p>
-        )}
-        <button
-          onClick={() => void handleClear()}
-          disabled={isClearing || cacheInfo?.file_count === 0}
-          className="rounded-md bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {isClearing ? "Clearing…" : "Clear Audio Cache"}
-        </button>
+        <h3 className="text-base font-semibold text-white mb-4">Crossfade</h3>
+        <div className="flex flex-col gap-5">
+
+          {/* Duration */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Duration</p>
+            <div className="flex gap-2 flex-wrap">
+              {CROSSFADE_OPTIONS.map(opt => (
+                <button
+                  key={opt.ms}
+                  onClick={() => setCrossfadeWindowMs(opt.ms)}
+                  className={`${pillBase} ${crossfadeWindowMs === opt.ms ? pillActive : pillInactive}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Same-album */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Same-album tracks</p>
+            <p className="text-xs text-white/35 mb-2">
+              Suppressing crossfade preserves gapless playback for live albums and classical works.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setSameAlbumCrossfade(false)} className={`${pillBase} ${!sameAlbumCrossfade ? pillActive : pillInactive}`}>Suppress</button>
+              <button onClick={() => setSameAlbumCrossfade(true)} className={`${pillBase} ${sameAlbumCrossfade ? pillActive : pillInactive}`}>Allow</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Audio Cache ── */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-4">Audio Cache</h3>
+        <div className="flex flex-col gap-5">
+
+          {/* Cache size limit */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Cache Size Limit</p>
+            <p className="text-xs text-white/35 mb-2">
+              Tracks are cached to disk for instant replay. Older files are removed automatically when the limit is reached.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              {CACHE_OPTIONS.map(opt => (
+                <button
+                  key={opt.bytes}
+                  onClick={() => void handleMaxChange(opt.bytes)}
+                  className={`${pillBase} ${maxBytes === opt.bytes ? pillActive : pillInactive}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cache usage + clear */}
+          <div>
+            <p className="text-sm font-medium text-white/70 mb-2">Cache Usage</p>
+            {cacheInfo ? (
+              <p className="text-xs text-white/40 mb-3">
+                {formatBytes(cacheInfo.size_bytes)} used · {cacheInfo.file_count} {cacheInfo.file_count === 1 ? "file" : "files"}
+              </p>
+            ) : (
+              <p className="text-xs text-white/30 mb-3">Loading…</p>
+            )}
+            <button
+              onClick={() => void handleClear()}
+              disabled={isClearing || cacheInfo?.file_count === 0}
+              className="rounded-md bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isClearing ? "Clearing…" : "Clear Audio Cache"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

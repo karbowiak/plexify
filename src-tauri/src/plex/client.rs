@@ -1,6 +1,7 @@
 //! Plex API HTTP client with retry logic and connection pooling
 #![allow(dead_code)]
 
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::RetryTransientMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
@@ -10,6 +11,9 @@ use tracing::{debug, instrument};
 
 use crate::plex::models::PlexApiResponse;
 
+const PRODUCT_NAME: &str = "Plexify";
+const PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Configuration for the PlexClient
 #[derive(Debug, Clone)]
 pub struct PlexClientConfig {
@@ -17,6 +21,9 @@ pub struct PlexClientConfig {
     pub base_url: String,
     /// Plex authentication token
     pub token: String,
+    /// Stable per-installation UUID used as X-Plex-Client-Identifier.
+    /// Required by Plex for timeline/session tracking.
+    pub client_id: String,
     /// Maximum concurrent connections (default: 100)
     pub max_connections: usize,
     /// Enable debug logging (default: false)
@@ -30,6 +37,7 @@ impl Default for PlexClientConfig {
         Self {
             base_url: String::from("http://localhost:32400"),
             token: String::new(),
+            client_id: String::from("plexify-client"),
             max_connections: 100,
             debug: false,
             accept_invalid_certs: false,
@@ -42,6 +50,7 @@ impl Default for PlexClientConfig {
 pub struct PlexClient {
     base_url: String,
     pub token: String,
+    pub client_id: String,
     pub client: ClientWithMiddleware,
 }
 
@@ -83,6 +92,19 @@ impl PlexClient {
 
         let retry_middleware = RetryTransientMiddleware::new_with_policy(retry_policy);
 
+        // Build default headers sent on every request so Plex can identify
+        // and name this client in its dashboard / sessions view.
+        let platform = std::env::consts::OS; // "macos", "linux", "windows"
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert("X-Plex-Product",      HeaderValue::from_static(PRODUCT_NAME));
+        default_headers.insert("X-Plex-Version",      HeaderValue::from_static(PRODUCT_VERSION));
+        default_headers.insert("X-Plex-Platform",     HeaderValue::from_str(platform).unwrap_or(HeaderValue::from_static("Desktop")));
+        default_headers.insert("X-Plex-Device",       HeaderValue::from_static("Desktop"));
+        default_headers.insert("X-Plex-Device-Name",  HeaderValue::from_static(PRODUCT_NAME));
+        if let Ok(v) = HeaderValue::from_str(&config.client_id) {
+            default_headers.insert("X-Plex-Client-Identifier", v);
+        }
+
         // Build HTTP client
         let client = reqwest::Client::builder()
             .pool_max_idle_per_host(config.max_connections)
@@ -90,6 +112,7 @@ impl PlexClient {
             // evaluate server-side even with correct pagination params.
             .timeout(std::time::Duration::from_secs(120))
             .danger_accept_invalid_certs(config.accept_invalid_certs)
+            .default_headers(default_headers)
             .build()
             .context("Failed to build HTTP client")?;
 
@@ -101,6 +124,7 @@ impl PlexClient {
         Ok(Self {
             base_url: config.base_url,
             token: config.token,
+            client_id: config.client_id,
             client,
         })
     }
@@ -145,6 +169,17 @@ impl PlexClient {
             .context("Failed to parse JSON response")?;
 
         Ok(wrapper.container)
+    }
+
+    /// Fetch raw response text — for debugging API responses in tests.
+    #[cfg(test)]
+    pub async fn get_raw(&self, path: &str) -> Result<String> {
+        let url = self.build_url(path);
+        let response = self.client.get(&url)
+            .header("X-Plex-Token", &self.token)
+            .header("Accept", "application/json")
+            .send().await.context("GET request failed")?;
+        response.text().await.context("Failed to read response text")
     }
 
     /// Perform a POST request with a JSON body.

@@ -523,6 +523,107 @@ mod integration_tests {
         .expect("Failed to create PlexClient")
     }
 
+    /// Dump every raw JSON field for the first few tracks in a real playlist.
+    ///
+    /// Run with:
+    ///   PLEX_URL=https://... PLEX_TOKEN=... cargo test -p plexmusicclient-lib \
+    ///     test_playlist_item_raw_fields -- --nocapture --ignored
+    ///
+    /// Look at the output for any date/timestamp field that differs from
+    /// `addedAt` (library add date) — e.g. a playlist-specific add timestamp.
+    #[tokio::test]
+    #[ignore]
+    async fn test_playlist_item_raw_fields() {
+        let base_url = match std::env::var("PLEX_URL") {
+            Ok(v) => v,
+            Err(_) => { println!("PLEX_URL not set — skipping"); return; }
+        };
+        let token = match std::env::var("PLEX_TOKEN") {
+            Ok(v) => v,
+            Err(_) => { println!("PLEX_TOKEN not set — skipping"); return; }
+        };
+        let section_id: i64 = std::env::var("PLEX_SECTION_ID")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+
+        let client = get_client();
+
+        // Find a non-smart playlist that has at least one track.
+        let playlists = match client.list_playlists(section_id, Some(50)).await {
+            Ok(p) => p,
+            Err(e) => { println!("list_playlists failed: {}", e); return; }
+        };
+        let playlist = match playlists.iter().find(|p| p.leaf_count > 0 && !p.smart) {
+            Some(p) => p,
+            None => { println!("No non-smart playlists with items found"); return; }
+        };
+        println!("\nUsing playlist: '{}' (id={}, {} tracks)", playlist.title, playlist.rating_key, playlist.leaf_count);
+
+        // Fetch the first 3 items as raw JSON — bypass the deserializer so we
+        // see every field Plex actually returns.
+        let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        let items_url = format!(
+            "{}/playlists/{}/items?X-Plex-Container-Size=3&X-Plex-Container-Start=0&X-Plex-Token={}",
+            base_url.trim_end_matches('/'),
+            playlist.rating_key,
+            token,
+        );
+
+        let raw: serde_json::Value = http
+            .get(&items_url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .expect("HTTP request failed")
+            .json()
+            .await
+            .expect("JSON parse failed");
+
+        let container = match raw.get("MediaContainer") {
+            Some(c) => c,
+            None => { println!("No MediaContainer in response:\n{}", raw); return; }
+        };
+
+        // Print non-array container-level attributes.
+        println!("\n=== MediaContainer scalars ===");
+        if let Some(obj) = container.as_object() {
+            for (k, v) in obj {
+                if !v.is_array() && !v.is_object() {
+                    println!("  {}: {}", k, v);
+                }
+            }
+        }
+
+        // Print every field on the first track, sorted alphabetically.
+        let items = container
+            .get("Metadata")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for (idx, item) in items.iter().take(3).enumerate() {
+            println!("\n=== Track {} — all scalar fields ===", idx + 1);
+            if let Some(obj) = item.as_object() {
+                let mut pairs: Vec<_> = obj.iter().collect();
+                pairs.sort_by_key(|(k, _)| k.as_str());
+                for (k, v) in &pairs {
+                    if v.is_array() {
+                        println!("  {}: [array, len={}]", k, v.as_array().map_or(0, |a| a.len()));
+                    } else if v.is_object() {
+                        println!("  {}: {{object}}", k);
+                    } else {
+                        println!("  {}: {}", k, v);
+                    }
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_list_playlists() {
         let client = get_client();

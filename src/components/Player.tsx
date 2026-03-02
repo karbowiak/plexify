@@ -1,8 +1,16 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { DJ_MODES, type DjMode } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
+import { useEqStore } from "../stores/eqStore"
+import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { reportTimeline, audioSetCacheMaxBytes } from "../lib/plex"
+import type { Level } from "../types/plex"
+import EqPanel from "./EqPanel"
+import SleepTimerPanel from "./SleepTimerPanel"
+import { useSleepTimerStore } from "../stores/sleepTimerStore"
 
 const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
 
@@ -23,9 +31,116 @@ function sliderToGain(slider: number): number {
   return Math.pow(slider / 100, 3)
 }
 
+const WAVEFORM_BARS = 128
+
+/** Linear interpolation resize — matches PlexAmp's `interpolate(data, 128)`. */
+function interpolateBars(src: number[], targetLen: number): number[] {
+  if (src.length === 0) return []
+  if (src.length === targetLen) return src
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t
+  const out: number[] = new Array(targetLen)
+  const step = (src.length - 1) / (targetLen - 1)
+  out[0] = src[0]
+  for (let i = 1; i < targetLen - 1; i++) {
+    const pos = i * step
+    out[i] = lerp(src[Math.floor(pos)], src[Math.ceil(pos)], pos - Math.floor(pos))
+  }
+  out[targetLen - 1] = src[src.length - 1]
+  return out
+}
+
+/**
+ * Mirrors PlexAmp's `ProcessLoudnessData` exactly:
+ *   1. Clamp at −35 dBFS floor, map linearly to 0–100
+ *   2. Quadratic boost (×1.5) for visual contrast
+ *   3. Normalise, then power-1.2 curve
+ *   4. Normalise to [0, 1]
+ */
+function processLoudness(raw: number[]): number[] {
+  // Step 1+2: dBFS (floor −35) → quadratic-boosted range
+  let vals = raw.map(e => {
+    const t = (Math.max(e, -35) + 35) * (100 / 35)
+    const boosted = t * t / 100 * 1.5
+    return isFinite(boosted) ? boosted : 3
+  })
+
+  // Step 3: normalize to ~0–41 range (90/2.2)
+  const max1 = Math.max(...vals)
+  if (max1 > 0) vals = vals.map(v => v * (90 / 2.2) / max1)
+
+  // Step 4: power-1.2 curve (emphasises louder sections)
+  const curved = vals.map(v => Math.pow(Math.max(0, v), 1.2) / 2.4)
+  const max2 = Math.max(...curved)
+
+  // Return normalized 0–1
+  return curved.map(v => (max2 > 0 ? v / max2 : 0))
+}
+
+const BAR_W = 3
+const GAP = 1
+const STRIDE = BAR_W + GAP
+const WAVEFORM_H = 28
+const MIN_BAR_H = 2
+
+// Three fill states
+const C_PLAYED  = "#1db954"            // green  — left of playhead
+const C_HOVER   = "rgba(29,185,84,.4)" // muted green — left of hover cursor
+const C_UNPLAYED = "#404040"           // gray   — right of hover/playhead
+
+/**
+ * Waveform bar chart used as the seek bar.
+ *
+ * - No hover: bars left of `progress` = green, rest = gray
+ * - Hovering:  bars left of `hoverPct` = muted green, rest = gray
+ *   (hover preview replaces the green so the destination is unambiguous)
+ */
+function WaveformSVG({ levels, progress, hoverPct }: {
+  levels: Level[]
+  progress: number       // 0-100
+  hoverPct: number | null // 0-100 or null
+}) {
+  if (levels.length === 0) return null
+
+  const bars = interpolateBars(processLoudness(levels.map(l => l.loudness)), WAVEFORM_BARS)
+
+  return (
+    <svg
+      viewBox={`0 0 ${WAVEFORM_BARS * STRIDE} ${WAVEFORM_H}`}
+      preserveAspectRatio="none"
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      aria-hidden
+    >
+      {bars.map((h, i) => {
+        const pct = (i / WAVEFORM_BARS) * 100
+        let fill: string
+        if (hoverPct !== null) {
+          fill = pct < hoverPct ? C_HOVER : C_UNPLAYED
+        } else {
+          fill = pct < progress ? C_PLAYED : C_UNPLAYED
+        }
+        const barH = Math.max(MIN_BAR_H, h * WAVEFORM_H)
+        return (
+          <rect
+            key={i}
+            x={i * STRIDE}
+            y={(WAVEFORM_H - barH) / 2}
+            width={BAR_W}
+            height={barH}
+            rx={1}
+            fill={fill}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
 export function Player() {
   const positionRef = useRef(0)
   const volumeAreaRef = useRef<HTMLDivElement>(null)
+  const djButtonRef = useRef<HTMLButtonElement>(null)
+  const [djMenuPos, setDjMenuPos] = useState<{ bottom: number; right: number } | null>(null)
+  const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
 
   const {
     currentTrack,
@@ -35,7 +150,11 @@ export function Player() {
     shuffle,
     repeat,
     isRadioMode,
-    guestDjEnabled,
+    djMode,
+    playerError,
+    contextName,
+    contextHref,
+    waveformLevels,
     pause,
     resume,
     next,
@@ -44,12 +163,19 @@ export function Player() {
     setVolume,
     toggleShuffle,
     cycleRepeat,
-    toggleGuestDj,
+    setDjMode,
+    stopRadio,
     initAudioEvents,
   } = usePlayerStore()
 
+  const [djMenuOpen, setDjMenuOpen] = useState(false)
+  const [sleepTimerOpen, setSleepTimerOpen] = useState(false)
+  const { endsAt: sleepEndsAt, hydrate: hydrateSleepTimer } = useSleepTimerStore(useShallow(s => ({ endsAt: s.endsAt, hydrate: s.hydrate })))
+
   const { baseUrl, token } = useConnectionStore()
   const { isQueueOpen, setQueueOpen } = useUIStore(useShallow(s => ({ isQueueOpen: s.isQueueOpen, setQueueOpen: s.setQueueOpen })))
+  const { isEqOpen, setEqOpen, enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ isEqOpen: s.isEqOpen, setEqOpen: s.setEqOpen, enabled: s.enabled, syncToEngine: s.syncToEngine })))
+  const syncAudioSettings = useAudioSettingsStore(s => s.syncToEngine)
 
   // Keep positionRef in sync for the timeline reporting interval
   positionRef.current = positionMs
@@ -64,8 +190,11 @@ export function Player() {
     }
 
     let cleanup: (() => void) | undefined
+    hydrateSleepTimer()
     initAudioEvents().then((fn) => {
       cleanup = fn
+      syncToEngine()
+      syncAudioSettings()
     })
     return () => {
       cleanup?.()
@@ -109,6 +238,28 @@ export function Player() {
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused"
   }, [currentTrack?.rating_key, isPlaying])
 
+  // Global space bar → play/pause (ignored when focus is in a text field)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return
+      e.preventDefault()
+      if (!currentTrack) return
+      if (isPlaying) pause()
+      else resume()
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [currentTrack, isPlaying])
+
+  // Close sleep timer panel on outside click (SleepTimerPanel dispatches a custom event)
+  useEffect(() => {
+    const handler = () => setSleepTimerOpen(false)
+    document.addEventListener("sleep-timer-outside-click", handler)
+    return () => document.removeEventListener("sleep-timer-outside-click", handler)
+  }, [])
+
   // Scroll wheel on volume area — must be non-passive to call preventDefault()
   useEffect(() => {
     const el = volumeAreaRef.current
@@ -128,6 +279,9 @@ export function Player() {
   const thumbPath = currentTrack?.thumb ?? currentTrack?.parent_thumb
   const thumbUrl = thumbPath ? buildPlexImageUrl(baseUrl, token, thumbPath) : null
 
+  const artistId = currentTrack?.grandparent_key?.split("/").pop()
+  const albumId = currentTrack?.parent_key?.split("/").pop()
+
   const progressPct = currentTrack?.duration
     ? (positionMs / currentTrack.duration) * 100
     : 0
@@ -136,7 +290,15 @@ export function Player() {
   const shuffleActive = shuffle
 
   return (
-    <div className="border-t border-[#282828]">
+    <div className="relative border-t border-[#282828]">
+      {/* Error toast — shown briefly when playRadio or other player actions fail */}
+      {playerError && (
+        <div className="absolute bottom-28 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-900/90 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm max-w-md text-center">
+          {playerError}
+        </div>
+      )}
+      {/* EQ panel — floats above the player bar */}
+      {isEqOpen && <EqPanel />}
       <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip rounded-b-lg bg-[#181818]">
         <div className="h-24">
           <div className="flex h-full items-center justify-between px-4">
@@ -152,13 +314,40 @@ export function Player() {
                       <div className="h-full w-full bg-[#282828]" />
                     )}
                   </div>
-                  <div>
-                    <h6 className="line-clamp-1 text-sm text-white">
-                      {currentTrack?.title ?? ""}
+                  <div className="min-w-0">
+                    <h6 className="line-clamp-1 text-sm font-medium text-white">
+                      {albumId ? (
+                        <Link href={`/album/${albumId}`} className="hover:underline">
+                          {currentTrack?.title ?? ""}
+                        </Link>
+                      ) : (currentTrack?.title ?? "")}
                     </h6>
-                    <p className="text-[0.688rem] text-white text-opacity-70">
-                      {currentTrack?.grandparent_title ?? ""}
+                    <p className="truncate text-[0.688rem] text-white/60 mt-0.5">
+                      {artistId ? (
+                        <Link href={`/artist/${artistId}`} className="hover:text-white hover:underline transition-colors">
+                          {currentTrack?.grandparent_title ?? ""}
+                        </Link>
+                      ) : (currentTrack?.grandparent_title ?? "")}
+                      {currentTrack?.parent_title && albumId && (
+                        <>
+                          <span className="mx-1 text-white/30">·</span>
+                          <Link href={`/album/${albumId}`} className="hover:text-white hover:underline transition-colors">
+                            {currentTrack.parent_title}
+                          </Link>
+                        </>
+                      )}
                     </p>
+                    {contextName && (
+                      <p className="text-[0.625rem] text-white/35 truncate mt-0.5">
+                        {contextHref ? (
+                          <Link href={contextHref} className="hover:text-white/60 hover:underline transition-colors">
+                            {contextName}
+                          </Link>
+                        ) : (
+                          contextName
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -226,22 +415,52 @@ export function Player() {
                 </button>
               </div>
 
-              {/* Progress bar */}
+              {/* Progress / seek bar */}
               <div className="mt-1.5 flex w-full items-center gap-x-2">
                 <div className="text-[0.688rem] text-white text-opacity-70">
-                  {formatMs(positionMs)}
+                  {formatMs(seekHoverPct !== null
+                    ? (currentTrack?.duration ?? 0) * seekHoverPct / 100
+                    : positionMs)}
                 </div>
-                <div className="flex h-7 w-full items-center">
+                <div
+                  className="relative flex h-7 w-full cursor-pointer items-center"
+                  onMouseMove={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    setSeekHoverPct(Math.max(0, Math.min(100, (e.clientX - rect.left) / rect.width * 100)))
+                  }}
+                  onMouseLeave={() => setSeekHoverPct(null)}
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                    seekTo((currentTrack?.duration ?? 0) * pct)
+                  }}
+                >
+                  {waveformLevels ? (
+                    <WaveformSVG
+                      levels={waveformLevels}
+                      progress={progressPct}
+                      hoverPct={seekHoverPct}
+                    />
+                  ) : (
+                    /* Flat gradient bar — fallback when no waveform data */
+                    <div
+                      className="absolute inset-0 m-auto h-1 w-full rounded-full"
+                      style={{
+                        background: seekHoverPct !== null
+                          ? `linear-gradient(to right, rgba(29,185,84,.4) 0%, rgba(29,185,84,.4) ${seekHoverPct}%, #535353 ${seekHoverPct}%, #535353 100%)`
+                          : `linear-gradient(to right, #1db954 0%, #1db954 ${progressPct}%, #535353 ${progressPct}%, #535353 100%)`,
+                      }}
+                    />
+                  )}
+                  {/* Hidden range input — keyboard seek accessibility only */}
                   <input
                     type="range"
                     min={0}
                     max={currentTrack?.duration ?? 0}
                     value={positionMs}
                     onChange={(e) => seekTo(parseFloat(e.target.value))}
-                    className="h-1 w-full cursor-pointer appearance-none rounded-full bg-[#535353] accent-[#1db954]"
-                    style={{
-                      background: `linear-gradient(to right, #1db954 0%, #1db954 ${progressPct}%, #535353 ${progressPct}%, #535353 100%)`,
-                    }}
+                    className="absolute inset-0 h-full w-full opacity-0"
+                    aria-label="Seek"
                   />
                 </div>
                 <div className="text-[0.688rem] text-white text-opacity-70">
@@ -253,26 +472,110 @@ export function Player() {
             {/* Right: queue toggle + volume */}
             <div ref={volumeAreaRef} className="flex w-[30%] min-w-[11.25rem] items-center justify-end gap-1">
 
-              {/* Radio mode indicator — shown when a station is active */}
+              {/* Radio mode indicator — click to turn off auto-refill */}
               {isRadioMode && (
-                <span className="mr-1 flex-shrink-0 flex items-center gap-1 rounded-full bg-[#1db954]/15 border border-[#1db954]/30 px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-[#1db954]">
+                <button
+                  onClick={stopRadio}
+                  title="Radio is on — click to stop"
+                  className="mr-1 flex-shrink-0 flex items-center gap-1 rounded-full bg-[#1db954]/15 border border-[#1db954]/30 px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-[#1db954] hover:bg-[#1db954]/30 transition-colors"
+                >
                   <svg viewBox="0 0 16 16" width="8" height="8" fill="currentColor">
                     <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
                   </svg>
-                  {guestDjEnabled ? "DJ" : "Radio"}
-                </span>
+                  {djMode ? (DJ_MODES.find(d => d.key === djMode)?.name.replace('DJ ', '') ?? 'DJ') : 'Radio'}
+                </button>
               )}
 
-              {/* Guest DJ toggle — AI smart-shuffle for radio mode */}
+              {/* Guest DJ menu — click headphones to open DJ personality picker */}
+              <div className="flex-shrink-0">
+                <button
+                  ref={djButtonRef}
+                  onClick={() => {
+                    const rect = djButtonRef.current?.getBoundingClientRect()
+                    if (rect) setDjMenuPos({ bottom: window.innerHeight - rect.top + 8, right: window.innerWidth - rect.right })
+                    setDjMenuOpen(v => !v)
+                  }}
+                  title="Guest DJ"
+                  className={`flex h-8 w-8 items-center justify-center transition-colors ${djMode ? "text-[#1db954]" : "text-white/40 hover:text-white/70"}`}
+                  aria-label="Guest DJ"
+                >
+                  <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor">
+                    <path d="M8 1a6 6 0 0 0-6 6v2.5a2.5 2.5 0 0 0 2.5 2.5H5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H3.05A5 5 0 0 1 13 7H11a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h.5A2.5 2.5 0 0 0 14 9.5V7a6 6 0 0 0-6-6z" />
+                  </svg>
+                </button>
+
+                {djMenuOpen && djMenuPos && (
+                  <>
+                    <div className="fixed inset-0 z-[200]" onClick={() => setDjMenuOpen(false)} />
+                    <div
+                      className="fixed z-[201] w-72 rounded-xl bg-[#1a1a1a] border border-white/10 shadow-2xl py-2"
+                      style={{ bottom: djMenuPos.bottom, right: djMenuPos.right }}
+                    >
+                      <div className="px-3 pb-1.5 text-[0.625rem] font-semibold uppercase tracking-widest text-gray-500">Guest DJ</div>
+                      {DJ_MODES.map(dj => (
+                        <button
+                          key={dj.key}
+                          onClick={() => { setDjMode(djMode === dj.key ? null : dj.key as DjMode); setDjMenuOpen(false) }}
+                          className={`w-full text-left px-3 py-2 hover:bg-white/[0.08] transition-colors ${djMode === dj.key ? "bg-white/5" : ""}`}
+                        >
+                          <div className={`flex items-center gap-2 text-sm font-medium ${djMode === dj.key ? "text-[#1db954]" : "text-white"}`}>
+                            {djMode === dj.key ? (
+                              <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" className="flex-shrink-0">
+                                <path d="M13.78 3.22a.75.75 0 0 1 0 1.06l-8 8a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06L5.25 10.69l7.47-7.47a.75.75 0 0 1 1.06 0z"/>
+                              </svg>
+                            ) : (
+                              <span className="w-[10px] flex-shrink-0" />
+                            )}
+                            {dj.name}
+                          </div>
+                          <div className="text-xs text-gray-500 pl-[18px] mt-0.5">{dj.desc}</div>
+                        </button>
+                      ))}
+                      {djMode && (
+                        <div className="border-t border-white/10 mt-1 pt-1">
+                          <button
+                            onClick={() => { setDjMode(null); setDjMenuOpen(false) }}
+                            className="w-full text-left px-3 py-1.5 text-xs text-gray-500 hover:text-white transition-colors"
+                          >
+                            Turn off Guest DJ
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Sleep timer toggle */}
+              <div className="relative flex-shrink-0">
+                {sleepTimerOpen && <SleepTimerPanel />}
+                <button
+                  onClick={() => setSleepTimerOpen(v => !v)}
+                  title="Sleep Timer"
+                  className={`flex h-8 w-8 items-center justify-center transition-colors ${sleepEndsAt ? "text-[#1db954]" : "text-white/40 hover:text-white/70"}`}
+                  aria-label="Sleep Timer"
+                >
+                  {/* Moon icon */}
+                  <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor">
+                    <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"/>
+                  </svg>
+                </button>
+              </div>
+
+              {/* EQ toggle */}
               <button
-                onClick={toggleGuestDj}
-                title={guestDjEnabled ? "Guest DJ: On — click to disable" : "Guest DJ: Off — click for AI-curated radio"}
-                className={`flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors ${guestDjEnabled ? "text-[#1db954]" : "text-white/40 hover:text-white/70"}`}
-                aria-label="Toggle Guest DJ"
+                onClick={() => setEqOpen(!isEqOpen)}
+                title="Equalizer"
+                className={`flex-shrink-0 flex h-8 w-8 items-center justify-center transition-colors ${isEqOpen || eqEnabled ? "text-[#1db954]" : "text-white/40 hover:text-white/70"}`}
+                aria-label="Equalizer"
               >
-                {/* Headphones icon */}
-                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor">
-                  <path d="M8 1a6 6 0 0 0-6 6v2.5a2.5 2.5 0 0 0 2.5 2.5H5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H3.05A5 5 0 0 1 13 7H11a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h.5A2.5 2.5 0 0 0 14 9.5V7a6 6 0 0 0-6-6z" />
+                {/* EQ bars icon */}
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                  <rect x="1"  y="6" width="2" height="8" rx="1"/>
+                  <rect x="4"  y="3" width="2" height="11" rx="1"/>
+                  <rect x="7"  y="1" width="2" height="13" rx="1"/>
+                  <rect x="10" y="4" width="2" height="10" rx="1"/>
+                  <rect x="13" y="7" width="2" height="7" rx="1"/>
                 </svg>
               </button>
 
@@ -304,7 +607,7 @@ export function Player() {
                   </svg>
                 )}
               </button>
-              <div className="w-[5.813rem]">
+              <div className="flex h-7 w-[5.813rem] items-center">
                 <input
                   type="range"
                   min={0}
@@ -313,7 +616,7 @@ export function Player() {
                   onChange={e => setVolume(parseInt(e.target.value, 10))}
                   className="h-1 w-full cursor-pointer appearance-none rounded-full"
                   style={{
-                    background: `linear-gradient(to right, white 0%, white ${volume}%, #535353 ${volume}%, #535353 100%)`,
+                    background: `linear-gradient(to right, #1db954 0%, #1db954 ${volume}%, #535353 ${volume}%, #535353 100%)`,
                   }}
                 />
               </div>

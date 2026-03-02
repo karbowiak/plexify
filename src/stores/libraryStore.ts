@@ -4,18 +4,22 @@ import {
   createPlaylist as createPlaylistApi,
   getHubs,
   getLikedTracks,
+  getLikedArtists,
+  getLikedAlbums,
   getPlaylistItems,
   getPlaylists,
   getRecentlyAdded,
 } from "../lib/plex"
-import type { Hub, Playlist, PlexMedia, Track } from "../types/plex"
+import type { Album, Artist, Hub, Playlist, PlexMedia, Track } from "../types/plex"
 import { idbJSONStorage } from "./idbStorage"
 
 const TTL_MS = {
-  playlists: 5 * 60_000,     //  5 minutes
-  recentlyAdded: 10 * 60_000, // 10 minutes
-  hubs: 15 * 60_000,          // 15 minutes
-  likedTracks: 10 * 60_000,   // 10 minutes
+  playlists: 5 * 60_000,       //  5 minutes
+  recentlyAdded: 10 * 60_000,  // 10 minutes
+  hubs: 15 * 60_000,           // 15 minutes
+  likedTracks: 10 * 60_000,    // 10 minutes
+  likedArtists: 10 * 60_000,   // 10 minutes
+  likedAlbums: 10 * 60_000,    // 10 minutes
 }
 
 /**
@@ -68,6 +72,8 @@ interface LibraryState {
   recentlyAdded: PlexMedia[]
   hubs: Hub[]
   likedTracks: Track[]
+  likedArtists: Artist[]
+  likedAlbums: Album[]
   currentPlaylist: Playlist | null
   currentPlaylistItems: Track[]
   currentPlaylistId: number | null
@@ -87,11 +93,15 @@ interface LibraryState {
   _recentlyAddedFetchedAt: number | null
   _hubsFetchedAt: number | null
   _likedTracksFetchedAt: number | null
+  _likedArtistsFetchedAt: number | null
+  _likedAlbumsFetchedAt: number | null
 
   fetchPlaylists: (sectionId: number, opts?: FetchOpts) => Promise<void>
   fetchRecentlyAdded: (sectionId: number, limit?: number, opts?: FetchOpts) => Promise<void>
   fetchHubs: (sectionId: number, opts?: FetchOpts) => Promise<void>
   fetchLikedTracks: (sectionId: number, limit?: number, opts?: FetchOpts) => Promise<void>
+  fetchLikedArtists: (sectionId: number, opts?: FetchOpts) => Promise<void>
+  fetchLikedAlbums: (sectionId: number, opts?: FetchOpts) => Promise<void>
   fetchPlaylistItems: (playlistId: number) => Promise<void>
   fetchMorePlaylistItems: (playlistId: number) => Promise<void>
   prefetchAllPlaylists: () => Promise<void>
@@ -106,6 +116,8 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   recentlyAdded: [],
   hubs: [],
   likedTracks: [],
+  likedArtists: [],
+  likedAlbums: [],
   currentPlaylist: null,
   currentPlaylistItems: [],
   currentPlaylistId: null,
@@ -119,6 +131,8 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   _recentlyAddedFetchedAt: null,
   _hubsFetchedAt: null,
   _likedTracksFetchedAt: null,
+  _likedArtistsFetchedAt: null,
+  _likedAlbumsFetchedAt: null,
 
   fetchPlaylists: async (sectionId: number, opts: FetchOpts = {}) => {
     const { _playlistsFetchedAt } = get()
@@ -159,6 +173,28 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     try {
       const likedTracks = await getLikedTracks(sectionId, limit)
       set({ likedTracks, _likedTracksFetchedAt: Date.now() })
+    } catch (err) {
+      set({ error: String(err) })
+    }
+  },
+
+  fetchLikedArtists: async (sectionId: number, opts: FetchOpts = {}) => {
+    const { _likedArtistsFetchedAt } = get()
+    if (!opts.force && _likedArtistsFetchedAt !== null && Date.now() - _likedArtistsFetchedAt < TTL_MS.likedArtists) return
+    try {
+      const likedArtists = await getLikedArtists(sectionId)
+      set({ likedArtists, _likedArtistsFetchedAt: Date.now() })
+    } catch (err) {
+      set({ error: String(err) })
+    }
+  },
+
+  fetchLikedAlbums: async (sectionId: number, opts: FetchOpts = {}) => {
+    const { _likedAlbumsFetchedAt } = get()
+    if (!opts.force && _likedAlbumsFetchedAt !== null && Date.now() - _likedAlbumsFetchedAt < TTL_MS.likedAlbums) return
+    try {
+      const likedAlbums = await getLikedAlbums(sectionId)
+      set({ likedAlbums, _likedAlbumsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
@@ -286,6 +322,8 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     _recentlyAddedFetchedAt: null,
     _hubsFetchedAt: null,
     _likedTracksFetchedAt: null,
+    _likedArtistsFetchedAt: null,
+    _likedAlbumsFetchedAt: null,
     playlistItemsCache: {},
     playlistIsFullyLoaded: {},
   }),
@@ -299,9 +337,13 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     recentlyAdded: state.recentlyAdded,
     hubs: state.hubs,
     likedTracks: state.likedTracks,
+    likedArtists: state.likedArtists,
+    likedAlbums: state.likedAlbums,
     _playlistsFetchedAt: state._playlistsFetchedAt,
     _recentlyAddedFetchedAt: state._recentlyAddedFetchedAt,
     _hubsFetchedAt: state._hubsFetchedAt,
     _likedTracksFetchedAt: state._likedTracksFetchedAt,
+    _likedArtistsFetchedAt: state._likedArtistsFetchedAt,
+    _likedAlbumsFetchedAt: state._likedAlbumsFetchedAt,
   }),
 }))
