@@ -45,10 +45,9 @@ export function MixPage() {
   const [mixItem] = useState<MusicPlaylist | null>(() => _selectedMix)
   const provider = useProviderStore(s => s.provider)
 
-  const { playTrack, playFromUri, addToQueue, currentTrack } = usePlayerStore(
+  const { playTrack, addToQueue, currentTrack } = usePlayerStore(
     useShallow(s => ({
       playTrack: s.playTrack,
-      playFromUri: s.playFromUri,
       addToQueue: s.addToQueue,
       currentTrack: s.currentTrack,
     }))
@@ -146,11 +145,6 @@ export function MixPage() {
     void playTrack(shuffled[0], shuffled, mixItem!.title, "/mix")
   }
 
-  function handlePlayRadio() {
-    if (!mixKey || !provider?.buildItemUri) return
-    void playFromUri(provider.buildItemUri(mixKey))
-  }
-
   return (
     <div className="pb-12">
       {/* Header */}
@@ -232,17 +226,6 @@ export function MixPage() {
                   </svg>
                 </button>
 
-                {/* Continuous radio — server generates an endless stream */}
-                <button
-                  onClick={handlePlayRadio}
-                  disabled={!mixKey || !provider?.buildItemUri}
-                  title="Play as continuous radio"
-                  className="flex h-11 w-11 items-center justify-center rounded-full bg-black/30 backdrop-blur-sm border border-white/10 text-accent hover:bg-black/45 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                    <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
-                  </svg>
-                </button>
               </div>
             </div>
           </div>
