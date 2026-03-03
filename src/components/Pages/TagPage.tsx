@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, startTransition } from "react"
-import { useShallow } from "zustand/react/shallow"
-import { useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
-import { getItemsByTag, buildTagFilterUri } from "../../lib/plex"
+import { useLocation } from "wouter"
+import { usePlayerStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
+import { useCapability } from "../../hooks/useCapability"
 import { prefetchAlbum } from "../../stores/metadataCache"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
-import type { Album, PlexMedia } from "../../types/plex"
+import type { MusicAlbum } from "../../types/music"
 
 type TagType = "genre" | "mood" | "style"
 
@@ -22,40 +23,45 @@ function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
 }
 
 export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: string }) {
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
-  const { playFromUri } = usePlayerStore(useShallow(s => ({ playFromUri: s.playFromUri })))
+  const [, navigate] = useLocation()
+  const hasTags = useCapability("tags")
+  const playFromUri = usePlayerStore(s => s.playFromUri)
 
-  const [albums, setAlbums] = useState<Album[]>([])
+  const [albums, setAlbums] = useState<MusicAlbum[]>([])
   const [totalCount, setTotalCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
+  if (!hasTags) { navigate("/"); return null }
+
   // Initial fetch — reset state and load first page
   useEffect(() => {
-    if (!musicSectionId) return
+    const provider = useProviderStore.getState().provider
+    if (!provider?.getItemsByTag) return
     setIsLoading(true)
     setError(null)
     startTransition(() => { setAlbums([]); setTotalCount(0) })
-    getItemsByTag(musicSectionId, tagType, tagName, "9", PAGE_SIZE, 0)
+    provider.getItemsByTag(tagType, tagName, "9", PAGE_SIZE, 0)
       .then(({ items, total }) => {
         startTransition(() => {
-          setAlbums(items.filter((m): m is Album & { type: "album" } => m.type === "album"))
+          setAlbums(items.filter((m): m is MusicAlbum & { type: "album" } => m.type === "album"))
           setTotalCount(total)
         })
       })
       .catch(e => setError(String(e)))
       .finally(() => setIsLoading(false))
-  }, [musicSectionId, tagType, tagName])
+  }, [tagType, tagName])
 
   async function loadMore() {
-    if (!musicSectionId || isLoadingMore) return
+    const provider = useProviderStore.getState().provider
+    if (!provider?.getItemsByTag || isLoadingMore) return
     setIsLoadingMore(true)
     try {
-      const { items } = await getItemsByTag(musicSectionId, tagType, tagName, "9", PAGE_SIZE, albums.length)
+      const { items } = await provider.getItemsByTag(tagType, tagName, "9", PAGE_SIZE, albums.length)
       startTransition(() =>
-        setAlbums(prev => [...prev, ...items.filter((m): m is Album & { type: "album" } => m.type === "album")])
+        setAlbums(prev => [...prev, ...items.filter((m): m is MusicAlbum & { type: "album" } => m.type === "album")])
       )
     } finally {
       setIsLoadingMore(false)
@@ -81,8 +87,9 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
   }, [isLoading, isLoadingMore, albums.length >= totalCount])
 
   function handlePlayAll() {
-    if (!sectionUuid || !musicSectionId) return
-    const uri = buildTagFilterUri(sectionUuid, musicSectionId, tagType, tagName)
+    const provider = useProviderStore.getState().provider
+    if (!provider?.buildTagFilterUri) return
+    const uri = provider.buildTagFilterUri(tagType, tagName)
     void playFromUri(uri, true, tagName, null)
   }
 
@@ -97,7 +104,7 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
           </div>
           <h1 className="text-3xl font-bold">{tagName}</h1>
         </div>
-        {albums.length > 0 && sectionUuid && (
+        {albums.length > 0 && (
           <button
             onClick={handlePlayAll}
             title={`Shuffle all ${tagName} tracks`}
@@ -122,12 +129,12 @@ export function TagPage({ tagType, tagName }: { tagType: TagType; tagName: strin
         <MediaGrid>
           {albums.map(album => (
             <MediaCard
-              key={album.rating_key}
+              key={album.id}
               title={album.title}
-              desc={album.parent_title}
-              thumb={album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null}
-              href={`/album/${album.rating_key}`}
-              prefetch={() => prefetchAlbum(album.rating_key)}
+              desc={album.artistName}
+              thumb={album.thumbUrl}
+              href={`/album/${album.id}`}
+              prefetch={() => prefetchAlbum(album.id)}
             />
           ))}
         </MediaGrid>

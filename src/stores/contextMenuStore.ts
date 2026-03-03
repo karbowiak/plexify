@@ -1,15 +1,17 @@
 import { create } from "zustand"
-import type { Track, Album, Artist } from "../types/plex"
+import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
 
-export type ContextMenuType = "track" | "album" | "artist"
+export type ContextMenuType = "track" | "album" | "artist" | "playlist"
+
+type ContextMenuData = MusicTrack | MusicAlbum | MusicArtist | MusicPlaylist
 
 interface ContextMenuState {
   open: boolean
   x: number
   y: number
   type: ContextMenuType | null
-  data: Track | Album | Artist | null
-  show: (x: number, y: number, type: ContextMenuType, data: Track | Album | Artist) => void
+  data: ContextMenuData | null
+  show: (x: number, y: number, type: ContextMenuType, data: ContextMenuData) => void
   close: () => void
 }
 

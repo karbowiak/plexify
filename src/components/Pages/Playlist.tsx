@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
-import { buildItemUri } from "../../lib/plex"
-import { formatMs, formatTotalMs, formatDate, formatBitrate, keyToId } from "../../lib/formatters"
+import { useLibraryStore, usePlayerStore, useUIStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
+import { formatMs, formatTotalMs, formatDate, formatBitrate } from "../../lib/formatters"
 import { SortTh } from "../shared/SortTh"
 import { StarRating } from "../shared/StarRating"
 import { prefetchTrackAudio } from "../../stores/playerStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
+import { useContextMenuStore } from "../../stores/contextMenuStore"
 import { useTableSort } from "../../hooks/useTableSort"
 import { RichText } from "../RichText"
 import { UltraBlur } from "../UltraBlur"
@@ -72,7 +73,7 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
     <div ref={ref} className="relative inline-block">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-accent/10"
+        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-hl-menu"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
           <path d="M1 3.5A.5.5 0 0 1 1.5 3h13a.5.5 0 0 1 0 1h-13A.5.5 0 0 1 1 3.5zm3 3A.5.5 0 0 1 4.5 6h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5zm2 3A.5.5 0 0 1 6.5 9h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z" />
@@ -84,7 +85,7 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
           {ALL_COLUMNS.map(col => (
             <label
               key={col.id}
-              className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-accent/10 text-sm text-gray-300"
+              className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-hl-menu text-sm text-gray-300"
             >
               <input
                 type="checkbox"
@@ -109,7 +110,7 @@ function ColumnPicker({ visible, toggle }: { visible: Set<ColId>; toggle: (id: C
  */
 const ROW_HEIGHT_PX = 40
 
-export function Playlist({ playlistId }: { playlistId: number }) {
+export function Playlist({ playlistId }: { playlistId: string }) {
   // Granular selectors: changes to playlistItemsCache (background prefetch)
   // do NOT trigger re-renders of this component.
   const { fetchPlaylistItems, fetchMorePlaylistItems } = useLibraryStore(useShallow(s => ({
@@ -132,11 +133,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
     currentTrack: s.currentTrack,
   })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
-  const { baseUrl, token, sectionUuid } = useConnectionStore(useShallow(s => ({
-    baseUrl: s.baseUrl,
-    token: s.token,
-    sectionUuid: s.sectionUuid,
-  })))
+  const provider = useProviderStore(s => s.provider)
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
   const scrollContainerRef = useScrollContainer()
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -153,15 +150,15 @@ export function Playlist({ playlistId }: { playlistId: number }) {
       let cmp = 0
       switch (sortCol) {
         case "title":      cmp = a.title.localeCompare(b.title); break
-        case "artist":     cmp = a.grandparent_title.localeCompare(b.grandparent_title); break
-        case "album":      cmp = a.parent_title.localeCompare(b.parent_title); break
-        case "year":       cmp = (a.parent_year ?? a.year) - (b.parent_year ?? b.year); break
-        case "plays":      cmp = a.view_count - b.view_count; break
-        case "popularity": cmp = (a.rating_count ?? 0) - (b.rating_count ?? 0); break
-        case "label":      cmp = (a.parent_studio ?? "").localeCompare(b.parent_studio ?? ""); break
-        case "bitrate":    cmp = (a.media[0]?.bitrate ?? 0) - (b.media[0]?.bitrate ?? 0); break
-        case "format":     cmp = (a.media[0]?.audio_codec ?? "").localeCompare(b.media[0]?.audio_codec ?? ""); break
-        case "added_at":   cmp = (a.added_at ? +new Date(a.added_at) : 0) - (b.added_at ? +new Date(b.added_at) : 0); break
+        case "artist":     cmp = a.artistName.localeCompare(b.artistName); break
+        case "album":      cmp = a.albumName.localeCompare(b.albumName); break
+        case "year":       cmp = (a.albumYear ?? a.year) - (b.albumYear ?? b.year); break
+        case "plays":      cmp = a.playCount - b.playCount; break
+        case "popularity": cmp = (a.ratingCount ?? 0) - (b.ratingCount ?? 0); break
+        case "label":      cmp = (a.parentStudio ?? "").localeCompare(b.parentStudio ?? ""); break
+        case "bitrate":    cmp = (a.bitrate ?? 0) - (b.bitrate ?? 0); break
+        case "format":     cmp = (a.codec ?? "").localeCompare(b.codec ?? ""); break
+        case "added_at":   cmp = (a.addedAt ? +new Date(a.addedAt) : 0) - (b.addedAt ? +new Date(b.addedAt) : 0); break
         case "duration":   cmp = a.duration - b.duration; break
       }
       return sortDir === "asc" ? cmp : -cmp
@@ -208,18 +205,15 @@ export function Playlist({ playlistId }: { playlistId: number }) {
     return <div className="p-8 text-gray-400">Loading…</div>
   }
 
-  const artPath = currentPlaylist.thumb ?? currentPlaylist.composite
-  const thumbUrl = artPath ? buildPlexImageUrl(baseUrl, token, artPath) : null
+  const thumbUrl = currentPlaylist.thumbUrl
 
   const loadedCount = currentPlaylistItems.length
-  const totalCount = currentPlaylist.leaf_count
+  const totalCount = currentPlaylist.trackCount
   const displayCount = isFullyLoaded ? loadedCount : totalCount
   const totalMs = currentPlaylistItems.reduce((sum, t) => sum + t.duration, 0)
 
   // URI for server-side play queue — enables full-playlist shuffle regardless of loaded count.
-  const playlistUri = sectionUuid
-    ? buildItemUri(sectionUuid, `/library/metadata/${playlistId}`)
-    : null
+  const playlistUri = provider?.buildItemUri?.(`/library/metadata/${playlistId}`) ?? null
 
   // Height of the virtual spacer for unloaded tracks.
   // Zero when fully loaded — avoids leftover space when Plex's leaf_count
@@ -295,6 +289,23 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                     <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
                   </svg>
                 </button>
+
+                {/* More actions */}
+                <button
+                  onClick={e => {
+                    e.stopPropagation()
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    useContextMenuStore.getState().show(rect.right, rect.bottom + 4, "playlist", currentPlaylist)
+                  }}
+                  title="More actions"
+                  className="flex h-11 w-11 items-center justify-center rounded-full bg-black/30 backdrop-blur-sm border border-white/10 text-white/70 hover:text-white hover:bg-black/45 hover:scale-105 active:scale-95 transition-all"
+                >
+                  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                    <circle cx="3" cy="8" r="1.5" />
+                    <circle cx="8" cy="8" r="1.5" />
+                    <circle cx="13" cy="8" r="1.5" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
@@ -348,18 +359,12 @@ export function Playlist({ playlistId }: { playlistId: number }) {
               </tr>
             ))}
             {sortedItems.map((track, idx) => {
-              const rawThumb = track.thumb || track.parent_thumb || null
-              const trackThumb = rawThumb
-                ? buildPlexImageUrl(baseUrl, token, rawThumb)
-                : null
-              const albumId = keyToId(track.parent_key)
-              const artistId = keyToId(track.grandparent_key)
-              const isActive = currentTrack?.rating_key === track.rating_key
-              const isContextTarget = isCtxTarget(track.rating_key)
+              const isActive = currentTrack?.id === track.id
+              const isContextTarget = isCtxTarget(track.id)
               return (
                 <tr
-                  key={track.rating_key}
-                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
+                  key={track.id}
+                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-hl-row" : "hover:bg-hl-row"}`}
                   onClick={() => void playTrack(track, sortedItems, currentPlaylist?.title, `/playlist/${playlistId}`)}
                   onMouseEnter={() => prefetchTrackAudio(track)}
                   onContextMenu={ctxMenu("track", track)}
@@ -391,8 +396,8 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                   {/* Title cell: thumbnail + title + subtitle row (artist + fade-in actions) */}
                   <td className="p-2">
                     <div className="flex items-center gap-3">
-                      {trackThumb ? (
-                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={trackThumb} alt="" />
+                      {track.thumbUrl ? (
+                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={track.thumbUrl} alt="" />
                       ) : (
                         <div className="h-10 w-10 rounded-sm flex-shrink-0 bg-app-surface" />
                       )}
@@ -402,21 +407,21 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                             Uses opacity instead of display:none/flex so row height never changes. */}
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="truncate shrink min-w-0">
-                            {artistId ? (
+                            {track.artistId ? (
                               <Link
-                                href={`/artist/${artistId}`}
+                                href={`/artist/${track.artistId}`}
                                 className="text-gray-500 hover:text-white hover:underline transition-colors"
                                 onClick={e => e.stopPropagation()}
                               >
-                                {track.grandparent_title}
+                                {track.artistName}
                               </Link>
                             ) : (
-                              <span className="text-gray-500">{track.grandparent_title}</span>
+                              <span className="text-gray-500">{track.artistName}</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >
@@ -426,9 +431,9 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                               Queue
                             </button>
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
                               title="Track Radio"
-                              onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
+                              onClick={e => { e.stopPropagation(); void playRadio(track.id, 'track') }}
                             >
                               <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
                                 <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
@@ -436,7 +441,7 @@ export function Playlist({ playlistId }: { playlistId: number }) {
                               Radio
                             </button>
                             <span className="w-px h-3 bg-white/20 mx-0.5" />
-                            <StarRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} size={11} />
+                            <StarRating itemId={track.id} userRating={track.userRating} artist={track.artistName ?? ""} track={track.title} size={11} />
                           </div>
                         </div>
                       </div>
@@ -445,39 +450,39 @@ export function Playlist({ playlistId }: { playlistId: number }) {
 
                   {visibleCols.has("album") && (
                     <td className="p-2 truncate max-w-[200px]">
-                      {albumId ? (
+                      {track.albumId ? (
                         <Link
-                          href={`/album/${albumId}`}
+                          href={`/album/${track.albumId}`}
                           className="hover:text-white hover:underline transition-colors"
                           onClick={e => e.stopPropagation()}
                         >
-                          {track.parent_title}
+                          {track.albumName}
                         </Link>
                       ) : (
-                        track.parent_title
+                        track.albumName
                       )}
                     </td>
                   )}
                   {visibleCols.has("year") && (
-                    <td className="p-2 tabular-nums">{(track.parent_year ?? track.year) || ""}</td>
+                    <td className="p-2 tabular-nums">{(track.albumYear ?? track.year) || ""}</td>
                   )}
                   {visibleCols.has("plays") && (
-                    <td className="p-2 text-right tabular-nums">{track.view_count || ""}</td>
+                    <td className="p-2 text-right tabular-nums">{track.playCount || ""}</td>
                   )}
                   {visibleCols.has("popularity") && (
-                    <td className="p-2 text-right tabular-nums">{track.rating_count ?? ""}</td>
+                    <td className="p-2 text-right tabular-nums">{track.ratingCount ?? ""}</td>
                   )}
                   {visibleCols.has("label") && (
-                    <td className="p-2 truncate max-w-[160px]">{track.parent_studio ?? ""}</td>
+                    <td className="p-2 truncate max-w-[160px]">{track.parentStudio ?? ""}</td>
                   )}
                   {visibleCols.has("bitrate") && (
-                    <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatBitrate(track.media[0]?.bitrate)}</td>
+                    <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatBitrate(track.bitrate)}</td>
                   )}
                   {visibleCols.has("format") && (
-                    <td className="p-2 uppercase text-xs">{track.media[0]?.audio_codec ?? ""}</td>
+                    <td className="p-2 uppercase text-xs">{track.codec ?? ""}</td>
                   )}
                   {visibleCols.has("added_at") && (
-                    <td className="p-2 whitespace-nowrap">{formatDate(track.added_at)}</td>
+                    <td className="p-2 whitespace-nowrap">{formatDate(track.addedAt)}</td>
                   )}
                   <td className="p-2 text-right tabular-nums">{formatMs(track.duration)}</td>
                 </tr>

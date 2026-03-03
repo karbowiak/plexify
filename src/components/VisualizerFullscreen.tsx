@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useVisualizerStore, type FullscreenVisualizerMode } from "../stores/visualizerStore"
 import { usePlayerStore } from "../stores/playerStore"
-import { useConnectionStore, buildPlexImageUrl } from "../stores"
 import { useShallow } from "zustand/react/shallow"
 
 // Logarithmic DFT — same algorithm as VisualizerCanvas for consistency
@@ -48,10 +47,6 @@ export default function VisualizerFullscreen() {
       prev: s.prev,
     }))
   )
-  const { baseUrl, token } = useConnectionStore(
-    useShallow(s => ({ baseUrl: s.baseUrl, token: s.token }))
-  )
-
   // Separate canvases: 2D canvas for spectrum/oscilloscope/vu, WebGL canvas for milkdrop.
   // A canvas cannot share WebGL and 2D contexts — using one canvas causes getContext("2d")
   // to return null once butterchurn has claimed it with WebGL.
@@ -274,9 +269,7 @@ export default function VisualizerFullscreen() {
 
   const MODES: FullscreenVisualizerMode[] = ["spectrum", "oscilloscope", "vu", "milkdrop"]
 
-  const thumbUrl = currentTrack?.thumb
-    ? buildPlexImageUrl(baseUrl ?? "", token ?? "", currentTrack.thumb)
-    : null
+  const thumbUrl = currentTrack?.thumbUrl ?? null
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col hero-overlay">
@@ -295,7 +288,7 @@ export default function VisualizerFullscreen() {
               {currentTrack?.title ?? "—"}
             </div>
             <div className="text-white/50 text-xs truncate max-w-[200px]">
-              {currentTrack?.grandparent_title}
+              {currentTrack?.artistName}
             </div>
           </div>
         </div>

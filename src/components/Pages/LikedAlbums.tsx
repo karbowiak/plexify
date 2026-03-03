@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
+import { useLibraryStore, useUIStore } from "../../stores"
 import { prefetchAlbum } from "../../stores/metadataCache"
 import { useAlbumImage } from "../../hooks/useMediaImage"
 import { starsFromRating } from "../../lib/formatters"
@@ -32,13 +32,12 @@ function AlbumThumb({ artist, title, thumb }: { artist: string; title: string; t
 
 export function LikedAlbums() {
   const { likedAlbums, fetchLikedAlbums } = useLibraryStore(useShallow(s => ({ likedAlbums: s.likedAlbums, fetchLikedAlbums: s.fetchLikedAlbums })))
-  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
   const { handler: ctxMenu } = useContextMenu()
 
   useEffect(() => {
-    if (musicSectionId !== null) void fetchLikedAlbums(musicSectionId)
-  }, [musicSectionId, pageRefreshKey])
+    void fetchLikedAlbums()
+  }, [pageRefreshKey])
 
   const count = likedAlbums.length
 
@@ -76,27 +75,24 @@ export function LikedAlbums() {
         ) : (
           <MediaGrid>
             {likedAlbums.map(album => {
-              const thumbUrl = album.thumb
-                ? buildPlexImageUrl(baseUrl, token, album.thumb)
-                : null
-              const stars = starsFromRating(album.user_rating)
+              const stars = starsFromRating(album.userRating)
               return (
                 <Link
-                  key={album.rating_key}
-                  href={`/album/${album.rating_key}`}
-                  onMouseEnter={() => prefetchAlbum(album.rating_key)}
+                  key={album.id}
+                  href={`/album/${album.id}`}
+                  onMouseEnter={() => prefetchAlbum(album.id)}
                   onContextMenu={ctxMenu("album", album)}
-                  className="group flex flex-col gap-2 rounded-md p-3 no-underline transition-colors hover:bg-accent/[0.06]"
+                  className="group flex flex-col gap-2 rounded-md p-3 no-underline transition-colors hover:bg-hl-card"
                 >
                   <div className="relative w-full aspect-square overflow-hidden rounded-md bg-app-surface shadow-lg">
-                    <AlbumThumb artist={album.parent_title} title={album.title} thumb={thumbUrl} />
+                    <AlbumThumb artist={album.artistName} title={album.title} thumb={album.thumbUrl} />
                   </div>
                   <div className="w-full min-w-0">
                     <div className="truncate font-semibold text-sm text-white">
                       {album.title}
                     </div>
                     <div className="truncate text-xs text-gray-400">
-                      {album.parent_title}
+                      {album.artistName}
                       {album.year ? ` · ${album.year}` : ""}
                     </div>
                     {stars > 0 && (

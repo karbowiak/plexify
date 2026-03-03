@@ -13,15 +13,19 @@ import { ContextMenu } from "./components/ContextMenu"
 import { DebugPanel } from "./components/DebugPanel"
 import { useDebugPanelStore } from "./stores/debugPanelStore"
 import { createAppMenu } from "./lib/appMenu"
-import { addItemsToPlaylist } from "./lib/plex"
 import { recordRecentPlaylist } from "./lib/recentPlaylists"
+import { useProviderStore } from "./stores/providerStore"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
-import { useLastfmStore } from "./stores/lastfmStore"
+import { useLastfmStore } from "./backends/lastfm/authStore"
 import "./stores/accentStore"    // import so the module runs applyAccent() on load
 import "./stores/themeStore"    // import so the module runs applyTheme() on load
 import "./stores/fontStore"     // import so the module runs applyFont() on load
 import "./stores/cardSizeStore" // import so the module sets --card-size CSS var on load
+import "./stores/highlightStore" // import so the module sets --hl-* CSS vars on load
+import "./backends/init"         // registers all backends (side-effect import)
+import { IS_WINDOWS } from "./lib/platform"
+import { WindowTitleBar } from "./components/WindowTitleBar"
 
 function App() {
   const debugPanelOpen = useDebugPanelStore(s => s.open)
@@ -45,15 +49,14 @@ function App() {
 
   useEffect(() => {
     if (isConnected && musicSectionId !== null) {
-      const id = musicSectionId
       // Fetch all home-page data in parallel, THEN start background prefetch.
       // Starting prefetch early was competing with fetchHubs/fetchRecentlyAdded
       // for Plex server connections, causing hubs to silently fail.
       void Promise.all([
-        fetchPlaylists(id),
-        fetchRecentlyAdded(id, 50),
-        fetchHubs(id),
-        fetchTags(id),    // 24h TTL — rarely hits network after first load
+        fetchPlaylists(),
+        fetchRecentlyAdded(50),
+        fetchHubs(),
+        fetchTags(),    // 24h TTL — rarely hits network after first load
       ]).then(() => {
         void prefetchAllPlaylists()
         void prefetchMixTracks()
@@ -79,6 +82,7 @@ function App() {
         - Bottom: Player — always visible, never overlaps content
       */}
       <div className="flex h-screen flex-col overflow-hidden text-white">
+        {IS_WINDOWS && <WindowTitleBar />}
         {/* Sidebar + main content + optional pinned queue */}
         <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
           <SideBar onCreatePlaylist={() => setShowCreatePlaylist(true)} />
@@ -102,10 +106,13 @@ function App() {
         <CreatePlaylist
           onClose={() => { setShowCreatePlaylist(false); setPendingPlaylistItemIds(null) }}
           onCreated={pendingPlaylistItemIds ? (playlist) => {
-            void addItemsToPlaylist(playlist.rating_key, pendingPlaylistItemIds)
-              .then(() => useLibraryStore.getState().invalidatePlaylistItems(playlist.rating_key))
-              .catch(() => {})
-            recordRecentPlaylist(playlist.rating_key)
+            const provider = useProviderStore.getState().provider
+            if (provider) {
+              void provider.addToPlaylist(playlist.id, pendingPlaylistItemIds.map(String))
+                .then(() => useLibraryStore.getState().invalidatePlaylistItems(playlist.id))
+                .catch(() => {})
+            }
+            recordRecentPlaylist(playlist.id)
             setPendingPlaylistItemIds(null)
           } : undefined}
         />

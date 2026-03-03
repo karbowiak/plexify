@@ -1,12 +1,17 @@
 import { useState } from "react"
-import { rateItem } from "../lib/plex"
+import { useLibraryStore } from "../stores/libraryStore"
+import { useProviderStore } from "../stores/providerStore"
+import { useCapability } from "../hooks/useCapability"
 
 interface HeroRatingProps {
-  ratingKey: number
+  itemId: string
   userRating: number | null | undefined
+  itemType?: "album" | "artist" | "track"
 }
 
-export function HeroRating({ ratingKey, userRating }: HeroRatingProps) {
+export function HeroRating({ itemId, userRating, itemType }: HeroRatingProps) {
+  const hasRatings = useCapability("ratings")
+  if (!hasRatings) return null
   const [local, setLocal] = useState<number | null | undefined>(undefined)
   const [hovered, setHovered] = useState<number | null>(null)
   const display = local !== undefined ? local : (userRating ?? null)
@@ -16,12 +21,20 @@ export function HeroRating({ ratingKey, userRating }: HeroRatingProps) {
   function rate(star: number) {
     const value = filled === star ? null : star * 2
     setLocal(value)
-    void rateItem(ratingKey, value).catch(() => setLocal(undefined))
+    const provider = useProviderStore.getState().provider
+    if (!provider) return
+    void provider.rate(itemId, value).then(() => {
+      if (itemType) useLibraryStore.getState().onItemRated(itemId, itemType, value)
+    }).catch(() => setLocal(undefined))
   }
 
   function clear() {
     setLocal(null)
-    void rateItem(ratingKey, null).catch(() => setLocal(undefined))
+    const provider = useProviderStore.getState().provider
+    if (!provider) return
+    void provider.rate(itemId, null).then(() => {
+      if (itemType) useLibraryStore.getState().onItemRated(itemId, itemType, null)
+    }).catch(() => setLocal(undefined))
   }
 
   return (

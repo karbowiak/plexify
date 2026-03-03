@@ -1,5 +1,6 @@
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
+import { useLibraryStore, usePlayerStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { MediaCard } from "../MediaCard"
@@ -8,19 +9,17 @@ import { getMediaInfo } from "./Home"
 
 export function RecentlyAddedPage() {
   const recentlyAdded = useLibraryStore(s => s.recentlyAdded)
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
+  const provider = useProviderStore(s => s.provider)
   const { playFromUri, playTrack, playPlaylist } = usePlayerStore(useShallow(s => ({
     playFromUri:  s.playFromUri,
     playTrack:    s.playTrack,
     playPlaylist: s.playPlaylist,
   })))
 
-  const sectionId = musicSectionId ?? 0
-
   function makePrefetch(info: ReturnType<typeof getMediaInfo>) {
     if (!info) return undefined
-    if (info.itemType === "artist") return () => prefetchArtist(info.ratingKey, sectionId)
-    if (info.itemType === "album") return () => prefetchAlbum(info.ratingKey)
+    if (info.itemType === "artist") return () => prefetchArtist(info.id)
+    if (info.itemType === "album") return () => prefetchAlbum(info.id)
     return undefined
   }
 
@@ -32,18 +31,18 @@ export function RecentlyAddedPage() {
       ) : (
         <MediaGrid>
           {recentlyAdded.map((item, idx) => {
-            const info = getMediaInfo(item, baseUrl, token)
+            const info = getMediaInfo(item)
             if (!info) return null
             return (
               <MediaCard
-                key={"rating_key" in item ? (item.rating_key || `ra-${idx}`) : idx}
+                key={`${item.id}-${idx}`}
                 title={info.title}
                 desc={info.desc}
                 thumb={info.thumb}
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
-                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
+                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
               />
             )
           })}

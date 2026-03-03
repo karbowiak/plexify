@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useEqStore, EQ_LABELS, EQ_PRESETS, type EqGains } from "../stores/eqStore"
-import { audioGetOutputDevices } from "../lib/plex"
+import { audioGetOutputDevices } from "../lib/audio"
 
 const MIN_DB = -12
 const MAX_DB = 12

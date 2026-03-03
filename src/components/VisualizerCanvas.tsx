@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useMemo } from "react"
-import type { Level } from "../types/plex"
+import type { LevelData } from "../providers/types"
 import { useVisualizerStore, type CompactVisualizerMode } from "../stores/visualizerStore"
 
 // ---------------------------------------------------------------------------
@@ -10,7 +10,7 @@ const WAVEFORM_BARS = 200
 const MIN_AMP = 1.5
 const WAVEFORM_SCALE = 0.78 // cap waveform at 78% of half-height — leaves breathing room like PlexAmp
 
-function processLoudnessData(levels: Level[]): number[] {
+function processLoudnessData(levels: LevelData[]): number[] {
   if (levels.length === 0) return Array(WAVEFORM_BARS).fill(MIN_AMP / 14)
   // Mirrors PlexAmp's ProcessLoudnessData: dBFS floor → quadratic boost → power curve → normalise
   let vals = levels.map(l => {
@@ -140,7 +140,7 @@ interface Props {
   /** Hover position 0–100, or null when not hovering */
   hoverPct: number | null
   /** Waveform levels from Plex */
-  levels: Level[] | null
+  levels: LevelData[] | null
   mode: CompactVisualizerMode
 }
 

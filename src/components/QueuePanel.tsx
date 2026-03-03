@@ -14,7 +14,7 @@ import {
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 import { useShallow } from "zustand/react/shallow"
-import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { usePlayerStore } from "../stores"
 import { formatMs } from "../lib/formatters"
 import { useUIStore } from "../stores/uiStore"
 import { isDjGenerated, isRadioGenerated } from "../stores/playerStore"
@@ -61,7 +61,7 @@ function SortableItem({
     <div
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer hover:bg-accent/5 group ${isCurrent ? "border-l-2 border-accent" : ""}`}
+      className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer hover:bg-hl-queue group ${isCurrent ? "border-l-2 border-accent" : ""}`}
       onClick={onJump}
     >
       {/* Drag handle */}
@@ -150,7 +150,6 @@ export function QueuePanel() {
     queueActiveTab: s.queueActiveTab,
     setQueueActiveTab: s.setQueueActiveTab,
   })))
-  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const { width: queueWidth, onMouseDown: onResizeMouseDown, isDragging: isResizing } = useResizable({
     key: "plex-queue-width",
     defaultWidth: 320,
@@ -256,8 +255,7 @@ export function QueuePanel() {
           {displayItems.map((track, relIdx) => {
             const absoluteIndex = queueIndex + relIdx
             const isCurrent = absoluteIndex === queueIndex
-            const thumbPath = track.thumb ?? track.parent_thumb
-            const thumb = thumbPath ? buildPlexImageUrl(baseUrl, token, thumbPath) : null
+            const thumb = track.thumbUrl
             return (
               <SortableItem
                 key={absoluteIndex}
@@ -265,11 +263,11 @@ export function QueuePanel() {
                 index={relIdx}
                 absoluteIndex={absoluteIndex}
                 isCurrent={isCurrent}
-                isGuestDj={isDjGenerated(track.rating_key)}
-                isRadio={isRadioGenerated(track.rating_key)}
+                isGuestDj={isDjGenerated(track.id)}
+                isRadio={isRadioGenerated(track.id)}
                 thumb={thumb}
                 title={track.title}
-                artist={track.grandparent_title}
+                artist={track.artistName}
                 durationMs={track.duration}
                 onJump={() => jumpToQueueItem(absoluteIndex)}
                 onRemove={() => removeFromQueue(absoluteIndex)}

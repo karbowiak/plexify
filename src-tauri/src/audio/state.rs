@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::formats::FormatReader;
 
-use super::eq::BiquadCoeffs;
+use super::eq::{BiquadCoeffs, BiquadState};
 use super::resampler::SincResampler;
-use super::types::TrackMeta;
+use super::types::{CrossfadeStyle, TrackMeta};
 
 // ---------------------------------------------------------------------------
 // DecoderShared
@@ -67,6 +67,8 @@ pub struct DecoderShared {
     pub eq_pregain_millths: AtomicI64,
     /// When false (default), crossfade is suppressed for consecutive same-album tracks.
     pub same_album_crossfade: AtomicBool,
+    /// When true (default), crossfade uses track analysis to skip silence and adapt duration.
+    pub smart_crossfade_enabled: AtomicBool,
     /// Gates the PCM IPC bridge — only emit audio://vis-frame when true.
     pub vis_enabled: AtomicBool,
     /// Channel sender for PCM data to the visualizer relay thread.
@@ -84,6 +86,8 @@ pub struct DecoderShared {
     pub eq_postgain_auto: AtomicBool,
     /// The actual OS audio device currently in use (resolved from preferred or system default).
     pub current_device_name: Mutex<String>,
+    /// Crossfade mixing style (0=Smooth, 1=DjFilter, 2=EchoOut, 3=HardCut).
+    pub crossfade_style: AtomicU64,
 }
 
 impl DecoderShared {
@@ -113,6 +117,7 @@ impl DecoderShared {
             preamp_gain_millths: AtomicI64::new(1_000),
             eq_pregain_millths: AtomicI64::new(1_000),
             same_album_crossfade: AtomicBool::new(false),
+            smart_crossfade_enabled: AtomicBool::new(true),
             vis_enabled: AtomicBool::new(false),
             vis_sender: Mutex::new(None),
             preferred_device_name: Mutex::new(None),
@@ -121,6 +126,7 @@ impl DecoderShared {
             eq_postgain_millths: AtomicI64::new(1_000),
             eq_postgain_auto: AtomicBool::new(true),
             current_device_name: Mutex::new(String::new()),
+            crossfade_style: AtomicU64::new(0),
         }
     }
 
@@ -149,6 +155,49 @@ impl DecoderShared {
 }
 
 // ---------------------------------------------------------------------------
+// EchoDelayBuffer
+// ---------------------------------------------------------------------------
+
+/// Ring buffer sized to one beat period for echo-out crossfade effect.
+/// Stores stereo (or N-channel) interleaved samples.
+pub struct EchoDelayBuffer {
+    buf: Vec<f32>,
+    write_pos: usize,
+    channels: usize,
+}
+
+impl EchoDelayBuffer {
+    /// Create a new echo buffer sized for one beat at the given BPM and sample rate.
+    /// `channels` is the number of interleaved channels.
+    pub fn new(bpm: f64, sample_rate: u32, channels: usize) -> Self {
+        let beat_samples = ((60.0 / bpm) * sample_rate as f64) as usize;
+        let buf_len = beat_samples * channels;
+        Self {
+            buf: vec![0.0; buf_len],
+            write_pos: 0,
+            channels,
+        }
+    }
+
+    /// Process a single frame (all channels), adding the input to the buffer
+    /// and returning the delayed output mixed with feedback.
+    /// `feedback` controls how much of the delayed signal is fed back (0.0–1.0).
+    #[inline]
+    pub fn process_frame(&mut self, input: &[f32], feedback: f32) -> [f32; 8] {
+        let ch = self.channels.min(8);
+        let mut out = [0.0f32; 8];
+        for c in 0..ch {
+            let idx = self.write_pos + c;
+            let delayed = self.buf[idx];
+            out[c] = delayed;
+            self.buf[idx] = input.get(c).copied().unwrap_or(0.0) + delayed * feedback;
+        }
+        self.write_pos = (self.write_pos + self.channels) % self.buf.len();
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CrossfadeState
 // ---------------------------------------------------------------------------
 
@@ -170,6 +219,18 @@ pub struct CrossfadeState {
     pub pending: Vec<f32>,
     /// ReplayGain linear gain for the next track (1.0 = no change)
     pub norm_gain: f32,
+    /// Crossfade mixing style — snapshot at crossfade start.
+    pub style: CrossfadeStyle,
+    /// DJ Filter: current low-pass coefficients (sweep out on old track)
+    pub lp_coeffs: BiquadCoeffs,
+    /// DJ Filter: current high-pass coefficients (sweep in on new track)
+    pub hp_coeffs: BiquadCoeffs,
+    /// DJ Filter: per-channel biquad state for LP (max 8 channels)
+    pub lp_state: [BiquadState; 8],
+    /// DJ Filter: per-channel biquad state for HP (max 8 channels)
+    pub hp_state: [BiquadState; 8],
+    /// Echo Out: delay buffer for the outgoing track
+    pub echo_buffer: Option<EchoDelayBuffer>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-export { useConnectionStore, buildPlexImageUrl } from "./connectionStore"
+export { useConnectionStore } from "./connectionStore"
 export { useLibraryStore } from "./libraryStore"
 export { usePlayerStore } from "./playerStore"
 export { useSearchStore } from "./searchStore"

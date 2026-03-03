@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
+import { useLibraryStore, useUIStore } from "../../stores"
 import { prefetchArtist } from "../../stores/metadataCache"
 import { useArtistImage } from "../../hooks/useMediaImage"
 import { starsFromRating } from "../../lib/formatters"
@@ -32,16 +32,14 @@ function ArtistThumb({ title, thumb }: { title: string; thumb: string | null }) 
 
 export function LikedArtists() {
   const { likedArtists, fetchLikedArtists } = useLibraryStore(useShallow(s => ({ likedArtists: s.likedArtists, fetchLikedArtists: s.fetchLikedArtists })))
-  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
   const { handler: ctxMenu } = useContextMenu()
 
   useEffect(() => {
-    if (musicSectionId !== null) void fetchLikedArtists(musicSectionId)
-  }, [musicSectionId, pageRefreshKey])
+    void fetchLikedArtists()
+  }, [pageRefreshKey])
 
   const count = likedArtists.length
-  const sectionId = musicSectionId ?? 0
 
   return (
     <div className="pb-12">
@@ -77,20 +75,17 @@ export function LikedArtists() {
         ) : (
           <MediaGrid>
             {likedArtists.map(artist => {
-              const thumbUrl = artist.thumb
-                ? buildPlexImageUrl(baseUrl, token, artist.thumb)
-                : null
-              const stars = starsFromRating(artist.user_rating)
+              const stars = starsFromRating(artist.userRating)
               return (
                 <Link
-                  key={artist.rating_key}
-                  href={`/artist/${artist.rating_key}`}
-                  onMouseEnter={() => prefetchArtist(artist.rating_key, sectionId)}
+                  key={artist.id}
+                  href={`/artist/${artist.id}`}
+                  onMouseEnter={() => prefetchArtist(artist.id)}
                   onContextMenu={ctxMenu("artist", artist)}
-                  className="group flex flex-col items-center gap-2 rounded-md p-3 no-underline transition-colors hover:bg-accent/[0.06]"
+                  className="group flex flex-col items-center gap-2 rounded-md p-3 no-underline transition-colors hover:bg-hl-card"
                 >
                   <div className="relative w-full aspect-square overflow-hidden rounded-full bg-app-surface shadow-lg">
-                    <ArtistThumb title={artist.title} thumb={thumbUrl} />
+                    <ArtistThumb title={artist.title} thumb={artist.thumbUrl} />
                   </div>
                   <div className="w-full text-center">
                     <div className="truncate font-semibold text-sm text-white group-hover:text-white">

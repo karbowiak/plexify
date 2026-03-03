@@ -3,10 +3,13 @@ import { persist } from "zustand/middleware"
 import {
   audioSetNormalizationEnabled,
   audioSetCrossfadeWindow,
+  audioSetCrossfadeStyle,
   audioSetSameAlbumCrossfade,
+  audioSetSmartCrossfade,
   audioSetPreampGain,
   audioSetOutputDevice,
-} from "../lib/plex"
+} from "../lib/audio"
+import { fireAndForget } from "../lib/async"
 
 // ---------------------------------------------------------------------------
 // Store
@@ -15,14 +18,18 @@ import {
 interface AudioSettingsState {
   normalizationEnabled: boolean
   crossfadeWindowMs: number
+  crossfadeStyle: number
   sameAlbumCrossfade: boolean
+  smartCrossfade: boolean
   preampDb: number
   albumGainMode: boolean
   preferredDevice: string | null
 
   setNormalizationEnabled: (enabled: boolean) => void
   setCrossfadeWindowMs: (ms: number) => void
+  setCrossfadeStyle: (style: number) => void
   setSameAlbumCrossfade: (enabled: boolean) => void
+  setSmartCrossfade: (enabled: boolean) => void
   setPreampDb: (db: number) => void
   setAlbumGainMode: (enabled: boolean) => void
   setPreferredDevice: (name: string | null) => void
@@ -34,29 +41,41 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
     (set, get) => ({
       normalizationEnabled: true,
       crossfadeWindowMs: 8000,
+      crossfadeStyle: 0,
       sameAlbumCrossfade: false,
+      smartCrossfade: true,
       preampDb: 0,
       albumGainMode: false,
       preferredDevice: null,
 
       setNormalizationEnabled: (enabled) => {
         set({ normalizationEnabled: enabled })
-        void audioSetNormalizationEnabled(enabled)
+        fireAndForget(audioSetNormalizationEnabled(enabled))
       },
 
       setCrossfadeWindowMs: (ms) => {
         set({ crossfadeWindowMs: ms })
-        void audioSetCrossfadeWindow(ms)
+        fireAndForget(audioSetCrossfadeWindow(ms))
+      },
+
+      setCrossfadeStyle: (style) => {
+        set({ crossfadeStyle: style })
+        fireAndForget(audioSetCrossfadeStyle(style))
       },
 
       setSameAlbumCrossfade: (enabled) => {
         set({ sameAlbumCrossfade: enabled })
-        void audioSetSameAlbumCrossfade(enabled)
+        fireAndForget(audioSetSameAlbumCrossfade(enabled))
+      },
+
+      setSmartCrossfade: (enabled) => {
+        set({ smartCrossfade: enabled })
+        fireAndForget(audioSetSmartCrossfade(enabled))
       },
 
       setPreampDb: (db) => {
         set({ preampDb: db })
-        void audioSetPreampGain(db)
+        fireAndForget(audioSetPreampGain(db))
       },
 
       setAlbumGainMode: (enabled) => {
@@ -66,16 +85,18 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
 
       setPreferredDevice: (name) => {
         set({ preferredDevice: name })
-        void audioSetOutputDevice(name)
+        fireAndForget(audioSetOutputDevice(name))
       },
 
       syncToEngine: () => {
-        const { normalizationEnabled, crossfadeWindowMs, sameAlbumCrossfade, preampDb, preferredDevice } = get()
-        void audioSetNormalizationEnabled(normalizationEnabled)
-        void audioSetCrossfadeWindow(crossfadeWindowMs)
-        void audioSetSameAlbumCrossfade(sameAlbumCrossfade)
-        void audioSetPreampGain(preampDb)
-        void audioSetOutputDevice(preferredDevice)
+        const { normalizationEnabled, crossfadeWindowMs, crossfadeStyle, sameAlbumCrossfade, smartCrossfade, preampDb, preferredDevice } = get()
+        fireAndForget(audioSetNormalizationEnabled(normalizationEnabled))
+        fireAndForget(audioSetCrossfadeWindow(crossfadeWindowMs))
+        fireAndForget(audioSetCrossfadeStyle(crossfadeStyle))
+        fireAndForget(audioSetSameAlbumCrossfade(sameAlbumCrossfade))
+        fireAndForget(audioSetSmartCrossfade(smartCrossfade))
+        fireAndForget(audioSetPreampGain(preampDb))
+        fireAndForget(audioSetOutputDevice(preferredDevice))
       },
     }),
     {
@@ -83,7 +104,9 @@ export const useAudioSettingsStore = create<AudioSettingsState>()(
       partialize: (state) => ({
         normalizationEnabled: state.normalizationEnabled,
         crossfadeWindowMs: state.crossfadeWindowMs,
+        crossfadeStyle: state.crossfadeStyle,
         sameAlbumCrossfade: state.sameAlbumCrossfade,
+        smartCrossfade: state.smartCrossfade,
         preampDb: state.preampDb,
         albumGainMode: state.albumGainMode,
         preferredDevice: state.preferredDevice,

@@ -5,7 +5,7 @@ interface MediaCardProps {
   title: string
   desc: string
   thumb: string | null
-  /** Fallback image URL shown when `thumb` is null (e.g. a metaimg:// cached external URL). */
+  /** Fallback image URL shown when `thumb` is null (e.g. an image:// cached external URL). */
   thumbFallback?: string | null
   isArtist?: boolean
   /** When true, fixes card at 160px wide and prevents flex shrink (for scroll rows) */
@@ -32,7 +32,7 @@ export function MediaCard({ title, desc, thumb, thumbFallback, isArtist, scrollI
       onContextMenu={onContextMenu}
       style={scrollStyle}
       className={clsx(
-        "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-accent/[0.06]",
+        "group cursor-pointer rounded-md bg-app-card p-3 transition-colors hover:bg-hl-card",
         scrollItem && "flex-shrink-0"
       )}
     >

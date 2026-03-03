@@ -1,22 +1,21 @@
 import { useState } from "react"
-import { useLibraryStore, useConnectionStore } from "../../stores"
-import type { Playlist } from "../../types/plex"
+import { useLibraryStore } from "../../stores"
+import type { MusicPlaylist } from "../../types/music"
 
-export function CreatePlaylist({ onClose, onCreated }: { onClose: () => void; onCreated?: (playlist: Playlist) => void }) {
+export function CreatePlaylist({ onClose, onCreated }: { onClose: () => void; onCreated?: (playlist: MusicPlaylist) => void }) {
   const [playlistName, setPlaylistName] = useState("")
   const [created, setCreated] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const createPlaylist = useLibraryStore(s => s.createPlaylist)
-  const musicSectionId = useConnectionStore(s => s.musicSectionId)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!playlistName.trim() || musicSectionId === null) return
+    if (!playlistName.trim()) return
     setIsCreating(true)
     setError(null)
     try {
-      const playlist = await createPlaylist(playlistName.trim(), musicSectionId)
+      const playlist = await createPlaylist(playlistName.trim())
       onCreated?.(playlist)
       setCreated(true)
       setTimeout(onClose, 1200)
@@ -72,7 +71,7 @@ export function CreatePlaylist({ onClose, onCreated }: { onClose: () => void; on
               </button>
               <button
                 type="submit"
-                disabled={!playlistName.trim() || isCreating || musicSectionId === null}
+                disabled={!playlistName.trim() || isCreating}
                 className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black transition-opacity disabled:opacity-40 hover:scale-105 active:scale-95"
               >
                 {isCreating ? "Creating…" : "Create"}

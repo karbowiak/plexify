@@ -4,21 +4,20 @@ import { open } from "@tauri-apps/plugin-shell"
 import { useShallow } from "zustand/react/shallow"
 import { useContextMenuStore } from "../stores/contextMenuStore"
 import { usePlayerStore, useLibraryStore } from "../stores"
-import { useConnectionStore } from "../stores/connectionStore"
-import { useDeezerMetadataStore } from "../stores/deezerMetadataStore"
+import { useDeezerMetadataStore } from "../backends/deezer/store"
 import { useUIStore } from "../stores/uiStore"
 import { useDebugStore } from "../stores/debugStore"
 import { useDebugPanelStore } from "../stores/debugPanelStore"
-import { addItemsToPlaylist, getAlbumTracks, buildItemUri } from "../lib/plex"
-import { keyToId } from "../lib/formatters"
+import { useProviderStore } from "../stores/providerStore"
+import { useCapability } from "../hooks/useCapability"
 import { StarRating } from "./shared/StarRating"
 import {
   MenuItem as Item, MenuDivider as Divider, MenuSectionLabel as SectionLabel,
   IconPlay, IconNext, IconQueue, IconNewPlaylist, IconRadio, IconShare,
-  IconArtist, IconAlbum, IconPlaylist, IconBug,
+  IconArtist, IconAlbum, IconPlaylist, IconBug, IconShuffle, IconEdit, IconDelete,
 } from "./shared/ContextMenuPrimitives"
 import { getRecentPlaylistIds, recordRecentPlaylist } from "../lib/recentPlaylists"
-import type { Track, Album, Artist, Playlist } from "../types/plex"
+import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,27 +36,28 @@ function lfmUrl(type: "artist" | "album" | "track", artist: string, albumOrTrack
 // ---------------------------------------------------------------------------
 
 interface PlaylistSectionProps {
-  itemIds: number[]
+  itemIds: string[]
   close: () => void
   onNewPlaylist: () => void
 }
 
 function PlaylistSection({ itemIds, close, onNewPlaylist }: PlaylistSectionProps) {
-  const playlists = useLibraryStore(s => s.playlists).filter(p => !p.smart && !p.radio)
+  const playlists = useLibraryStore(s => s.playlists).filter(p => !p.smart)
+  const provider = useProviderStore(s => s.provider)
   const recentIds = getRecentPlaylistIds()
 
   const recentPlaylists = recentIds
-    .map(id => playlists.find(p => p.rating_key === id))
-    .filter((p): p is Playlist => p !== undefined)
+    .map(id => playlists.find(p => p.id === id))
+    .filter((p): p is MusicPlaylist => p !== undefined)
 
   const otherPlaylists = playlists
-    .filter(p => !recentIds.includes(p.rating_key))
-    .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
+    .filter(p => !recentIds.includes(p.id))
 
-  async function addTo(playlist: Playlist) {
-    recordRecentPlaylist(playlist.rating_key)
-    await addItemsToPlaylist(playlist.rating_key, itemIds).catch(() => {})
-    useLibraryStore.getState().invalidatePlaylistItems(playlist.rating_key)
+  async function addTo(playlist: MusicPlaylist) {
+    if (!provider) return
+    recordRecentPlaylist(playlist.id)
+    await provider.addToPlaylist(playlist.id, itemIds).catch(() => {})
+    useLibraryStore.getState().invalidatePlaylistItems(playlist.id)
     close()
   }
 
@@ -69,14 +69,14 @@ function PlaylistSection({ itemIds, close, onNewPlaylist }: PlaylistSectionProps
           <Divider />
           <SectionLabel label="Recent" />
           {recentPlaylists.map(pl => (
-            <Item key={pl.rating_key} icon={IconPlaylist} label={pl.title} onClick={() => void addTo(pl)} />
+            <Item key={pl.id} icon={IconPlaylist} label={pl.title} onClick={() => void addTo(pl)} />
           ))}
           {otherPlaylists.length > 0 && <Divider />}
         </>
       )}
       {otherPlaylists.length > 0 && recentPlaylists.length === 0 && <Divider />}
       {otherPlaylists.map(pl => (
-        <Item key={pl.rating_key} icon={IconPlaylist} label={pl.title} onClick={() => void addTo(pl)} />
+        <Item key={pl.id} icon={IconPlaylist} label={pl.title} onClick={() => void addTo(pl)} />
       ))}
     </div>
   )
@@ -90,6 +90,9 @@ export function ContextMenu() {
   const { open: isOpen, x, y, type, data, close } = useContextMenuStore()
   const debugEnabled = useDebugStore(s => s.debugEnabled)
   const showDebugPanel = useDebugPanelStore(s => s.show)
+  const provider = useProviderStore(s => s.provider)
+  const hasRadio = useCapability("radio")
+  const hasRatings = useCapability("ratings")
   const { playTrack, playFromUri, playRadio, addNext, addToQueue } = usePlayerStore(useShallow(s => ({
     playTrack: s.playTrack,
     playFromUri: s.playFromUri,
@@ -97,7 +100,6 @@ export function ContextMenu() {
     addNext: s.addNext,
     addToQueue: s.addToQueue,
   })))
-  const { sectionUuid } = useConnectionStore(useShallow(s => ({ sectionUuid: s.sectionUuid })))
   const { setShowCreatePlaylist, setPendingPlaylistItemIds } = useUIStore(useShallow(s => ({
     setShowCreatePlaylist: s.setShowCreatePlaylist,
     setPendingPlaylistItemIds: s.setPendingPlaylistItemIds,
@@ -131,9 +133,10 @@ export function ContextMenu() {
 
   if (!isOpen || !type || !data) return null
 
-  const track = type === "track" ? (data as Track) : null
-  const album = type === "album" ? (data as Album) : null
-  const artist = type === "artist" ? (data as Artist) : null
+  const playlist = type === "playlist" ? (data as MusicPlaylist) : null
+  const track = type === "track" ? (data as MusicTrack) : null
+  const album = type === "album" ? (data as MusicAlbum) : null
+  const artist = type === "artist" ? (data as MusicArtist) : null
 
   // Deezer URLs (synchronous cache read)
   const deezerState = useDeezerMetadataStore.getState()
@@ -142,11 +145,11 @@ export function ContextMenu() {
     const cached = deezerState.artists[artist.title.toLowerCase()]
     deezerUrl = cached?.data.deezer_url ?? null
   } else if (album) {
-    const key = `${album.parent_title.toLowerCase()}::${album.title.toLowerCase()}`
+    const key = `${album.artistName.toLowerCase()}::${album.title.toLowerCase()}`
     const cached = deezerState.albums[key]
     deezerUrl = cached?.data.deezer_url ?? null
   } else if (track) {
-    const key = `${(track.grandparent_title ?? "").toLowerCase()}::${(track.parent_title ?? "").toLowerCase()}`
+    const key = `${(track.artistName ?? "").toLowerCase()}::${(track.albumName ?? "").toLowerCase()}`
     const cached = deezerState.albums[key]
     deezerUrl = cached?.data.deezer_url ?? null
   }
@@ -155,12 +158,12 @@ export function ContextMenu() {
 
   function doPlay() {
     if (track) void playTrack(track)
-    else if (album) {
-      const uri = buildItemUri(sectionUuid, album.key)
-      void playFromUri(uri, false, album.title, `/album/${album.rating_key}`)
-    } else if (artist) {
-      const uri = buildItemUri(sectionUuid, artist.key)
-      void playFromUri(uri, false, artist.title, `/artist/${artist.rating_key}`)
+    else if (album && provider?.buildItemUri) {
+      const uri = provider.buildItemUri(album.providerKey ?? `/library/metadata/${album.id}`)
+      void playFromUri(uri, false, album.title, `/album/${album.id}`)
+    } else if (artist && provider?.buildItemUri) {
+      const uri = provider.buildItemUri(artist.providerKey ?? `/library/metadata/${artist.id}`)
+      void playFromUri(uri, false, artist.title, `/artist/${artist.id}`)
     }
     close()
   }
@@ -169,8 +172,8 @@ export function ContextMenu() {
     if (track) {
       addNext([track])
       close()
-    } else if (album) {
-      void getAlbumTracks(album.rating_key).then(tracks => { addNext(tracks); close() })
+    } else if (album && provider) {
+      void provider.getAlbumTracks(album.id).then(tracks => { addNext(tracks); close() })
     }
   }
 
@@ -178,23 +181,22 @@ export function ContextMenu() {
     if (track) {
       addToQueue([track])
       close()
-    } else if (album) {
-      void getAlbumTracks(album.rating_key).then(tracks => {
+    } else if (album && provider) {
+      void provider.getAlbumTracks(album.id).then(tracks => {
         addToQueue(tracks)
         close()
       })
-    } else if (artist) {
-      // For artists, play from URI in shuffle mode which enqueues all tracks
-      const uri = buildItemUri(sectionUuid, artist.key)
-      void playFromUri(uri, true, artist.title, `/artist/${artist.rating_key}`)
+    } else if (artist && provider?.buildItemUri) {
+      const uri = provider.buildItemUri(artist.providerKey ?? `/library/metadata/${artist.id}`)
+      void playFromUri(uri, true, artist.title, `/artist/${artist.id}`)
       close()
     }
   }
 
   function doRadio() {
-    const key = track?.rating_key ?? album?.rating_key ?? artist?.rating_key
+    const id = track?.id ?? album?.id ?? artist?.id
     const radioType = track ? "track" : album ? "album" : "artist"
-    if (key) void playRadio(key, radioType as "track" | "album" | "artist")
+    if (id) void playRadio(id, radioType as "track" | "album" | "artist")
     close()
   }
 
@@ -204,28 +206,28 @@ export function ContextMenu() {
   }
 
   function goToArtist() {
-    if (track) navigate(`/artist/${keyToId(track.grandparent_key)}`)
+    if (track?.artistId) navigate(`/artist/${track.artistId}`)
     close()
   }
 
   function goToAlbum() {
-    if (track) navigate(`/album/${keyToId(track.parent_key)}`)
+    if (track?.albumId) navigate(`/album/${track.albumId}`)
     close()
   }
 
   // Determine item IDs for "add to playlist"
   const itemIds = track
-    ? [track.rating_key]
+    ? [track.id]
     : album
-    ? [album.rating_key]
+    ? [album.id]
     : artist
-    ? [artist.rating_key]
+    ? [artist.id]
     : []
 
   // Rating data
-  const ratingKey = data.rating_key
-  const userRating = data.user_rating ?? null
-  const artistName = track?.grandparent_title ?? album?.parent_title ?? artist?.title ?? ""
+  const itemId = data.id
+  const userRating = (data as MusicTrack | MusicAlbum | MusicArtist).userRating ?? null
+  const artistName = track?.artistName ?? album?.artistName ?? artist?.title ?? ""
   const itemTitle = track?.title ?? album?.title ?? artist?.title ?? ""
 
   // Share URLs
@@ -235,6 +237,90 @@ export function ContextMenu() {
     : album
     ? lfmUrl("album", artistName, itemTitle)
     : null
+
+  // ── Playlist menu (separate, simpler layout) ──────────────────────────
+  if (playlist) {
+    const isEditable = !playlist.smart
+    const href = `/playlist/${playlist.id}`
+
+    function doPlayPlaylist() {
+      if (!provider?.buildItemUri) return
+      void playFromUri(
+        provider.buildItemUri(playlist!.providerKey ?? `/library/metadata/${playlist!.id}`),
+        false,
+        playlist!.title,
+        href,
+      )
+      close()
+    }
+
+    function doShufflePlaylist() {
+      if (!provider?.buildItemUri) return
+      void playFromUri(
+        provider.buildItemUri(playlist!.providerKey ?? `/library/metadata/${playlist!.id}`),
+        true,
+        playlist!.title,
+        href,
+      )
+      close()
+    }
+
+    function doRenamePlaylist() {
+      if (!provider) return
+      const newName = window.prompt("Rename playlist", playlist!.title)
+      if (!newName || newName === playlist!.title) { close(); return }
+      void provider.editPlaylist(playlist!.id, newName).then(() => {
+        useLibraryStore.getState().renamePlaylist(playlist!.id, newName)
+      })
+      close()
+    }
+
+    function doDeletePlaylist() {
+      if (!provider) return
+      if (!window.confirm(`Delete "${playlist!.title}"?`)) { close(); return }
+      void provider.deletePlaylist(playlist!.id).then(() => {
+        useLibraryStore.getState().removePlaylist(playlist!.id)
+        // Navigate away if currently viewing this playlist
+        if (window.location.hash.includes(`/playlist/${playlist!.id}`) ||
+            window.location.pathname.includes(`/playlist/${playlist!.id}`)) {
+          navigate("/")
+        }
+      })
+      close()
+    }
+
+    return (
+      <>
+        <div className="fixed inset-0 z-[9998]" onContextMenu={e => { e.preventDefault(); close() }} onClick={close} />
+        <div
+          ref={menuRef}
+          style={{ left: menuPos.left, top: menuPos.top }}
+          className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-[#1a1a1f] shadow-2xl py-1 text-sm select-none"
+        >
+          <Item icon={IconPlay} label="Play" onClick={doPlayPlaylist} />
+          <Item icon={IconShuffle} label="Play shuffled" onClick={doShufflePlaylist} />
+          {hasRadio && <Item icon={IconRadio} label="Start radio" onClick={() => {
+            void playRadio(playlist.id, "track")
+            close()
+          }} />}
+          <Divider />
+          {isEditable && <Item icon={IconEdit} label="Rename" onClick={doRenamePlaylist} />}
+          <Item icon={IconDelete} label="Delete" onClick={doDeletePlaylist} danger />
+          {debugEnabled && (
+            <>
+              <Divider />
+              <SectionLabel label="Debug" />
+              <Item
+                icon={IconBug}
+                label="Debug Info"
+                onClick={() => { showDebugPanel(type!, data!); close() }}
+              />
+            </>
+          )}
+        </div>
+      </>
+    )
+  }
 
   return (
     <>
@@ -255,20 +341,20 @@ export function ContextMenu() {
         />
         {(track || album) && <Item icon={IconNext} label="Play next" onClick={doAddNext} />}
         <Item icon={IconQueue} label="Add to bottom" onClick={doQueue} />
-        <Item icon={IconRadio} label="Start radio" onClick={doRadio} />
+        {hasRadio && <Item icon={IconRadio} label="Start radio" onClick={doRadio} />}
 
         <Divider />
 
         {/* Rating */}
-        <StarRating
-          ratingKey={ratingKey}
+        {hasRatings && <StarRating
+          itemId={itemId}
           userRating={userRating}
           enableLove={type === "track"}
           artist={artistName}
           track={itemTitle}
           size={14}
           onRated={close}
-        />
+        />}
 
         {/* Add to playlist — tracks only */}
         {track && (
@@ -317,7 +403,7 @@ export function ContextMenu() {
             <Item
               icon={IconArtist}
               label="Go to artist"
-              onClick={() => { navigate(`/artist/${keyToId(album.parent_key)}`); close() }}
+              onClick={() => { if (album.artistId) navigate(`/artist/${album.artistId}`); close() }}
             />
           </>
         )}

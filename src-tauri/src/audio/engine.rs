@@ -158,6 +158,11 @@ impl AudioEngine {
         let _ = self.cmd_tx.send(AudioCommand::SetCrossfadeWindow(ms));
     }
 
+    /// Set the crossfade mixing style (0=Smooth, 1=DjFilter, 2=EchoOut, 3=HardCut).
+    pub fn set_crossfade_style(&self, style: u64) {
+        let _ = self.cmd_tx.send(AudioCommand::SetCrossfadeStyle(style));
+    }
+
     /// Enable or disable ReplayGain audio normalization.
     pub fn set_normalization_enabled(&self, enabled: bool) {
         let _ = self.cmd_tx.send(AudioCommand::SetNormalizationEnabled(enabled));
@@ -199,6 +204,17 @@ impl AudioEngine {
     /// When false (default), gapless transitions are used for same-album tracks.
     pub fn set_same_album_crossfade(&self, enabled: bool) {
         let _ = self.cmd_tx.send(AudioCommand::SetSameAlbumCrossfade(enabled));
+    }
+
+    /// Enable or disable smart crossfade (track analysis for adaptive timing).
+    /// When true (default), crossfade skips silence and adapts duration to track energy.
+    pub fn set_smart_crossfade(&self, enabled: bool) {
+        let _ = self.cmd_tx.send(AudioCommand::SetSmartCrossfade(enabled));
+    }
+
+    /// Trigger background analysis for a lookahead track.
+    pub fn analyze_track(&self, url: String, rating_key: i64, duration_ms: i64) {
+        super::analyzer::analyze_lookahead_bg(url, rating_key, duration_ms, Arc::clone(&self.shared));
     }
 
     /// Enable or disable the PCM IPC bridge for the visualizer.
@@ -312,12 +328,13 @@ impl AudioEngine {
         (total_bytes, file_count)
     }
 
-    /// Delete all `.audio` files from the cache directory.
+    /// Delete all `.audio` and `.analysis` files from the cache directory.
     pub fn clear_cache(&self) {
         let Some(ref cache_dir) = self.shared.cache_dir else { return; };
         let Ok(rd) = std::fs::read_dir(cache_dir) else { return; };
         for entry in rd.filter_map(|e| e.ok()) {
-            if entry.path().extension().and_then(|x| x.to_str()) == Some("audio") {
+            let ext = entry.path().extension().and_then(|x| x.to_str()).map(String::from);
+            if ext.as_deref() == Some("audio") || ext.as_deref() == Some("analysis") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

@@ -15,39 +15,29 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { idbJSONStorage } from "./idbStorage"
-import {
-  getArtist,
-  getArtistAlbumsInSection,
-  getArtistPopularTracksInSection,
-  getArtistSimilar,
-  getArtistSonicallySimilar,
-  getRelatedHubs,
-  getArtistStations,
-  getAlbum,
-  getAlbumTracks,
-} from "../lib/plex"
-import type { Artist, Album, Track, Hub, Playlist } from "../types/plex"
+import { useProviderStore } from "./providerStore"
+import type { MusicArtist, MusicAlbum, MusicTrack, MusicHub, MusicPlaylist } from "../types/music"
 
 // ---------------------------------------------------------------------------
 // Cache entry types
 // ---------------------------------------------------------------------------
 
 export interface ArtistCacheEntry {
-  artist: Artist
-  albums: Album[]
-  singles: Album[]
-  popularTracks: Track[]
-  similarArtists: Artist[]
-  sonicallySimilar: Artist[]
-  relatedHubs: Hub[]
-  stations: Playlist[]
+  artist: MusicArtist
+  albums: MusicAlbum[]
+  singles: MusicAlbum[]
+  popularTracks: MusicTrack[]
+  similarArtists: MusicArtist[]
+  sonicallySimilar: MusicArtist[]
+  relatedHubs: MusicHub[]
+  stations: MusicPlaylist[]
   fetchedAt: number
 }
 
 export interface AlbumCacheEntry {
-  album: Album
-  tracks: Track[]
-  relatedHubs: Hub[]
+  album: MusicAlbum
+  tracks: MusicTrack[]
+  relatedHubs: MusicHub[]
   fetchedAt: number
 }
 
@@ -68,12 +58,16 @@ const MAX_ALBUMS = 100
 // Inflight dedup (module-level, not persisted)
 // ---------------------------------------------------------------------------
 
-const artistInflight = new Set<number>()
-const albumInflight = new Set<number>()
+const artistInflight = new Set<string>()
+const albumInflight = new Set<string>()
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function getProvider() {
+  return useProviderStore.getState().provider
+}
 
 function dedupeBy<T>(items: T[], key: (item: T) => unknown): T[] {
   const seen = new Set()
@@ -86,12 +80,11 @@ function dedupeBy<T>(items: T[], key: (item: T) => unknown): T[] {
 }
 
 function evictRecord<T extends { fetchedAt: number }>(
-  record: Record<number, T>,
+  record: Record<string, T>,
   maxEntries: number,
-): Record<number, T> {
+): Record<string, T> {
   const now = Date.now()
   const entries = Object.entries(record)
-    .map(([k, v]) => [Number(k), v] as [number, T])
     .filter(([, v]) => now - v.fetchedAt < EVICT_MS)
     .sort((a, b) => b[1].fetchedAt - a[1].fetchedAt)
     .slice(0, maxEntries)
@@ -103,14 +96,14 @@ function evictRecord<T extends { fetchedAt: number }>(
 // ---------------------------------------------------------------------------
 
 interface MetadataCacheState {
-  artists: Record<number, ArtistCacheEntry>
-  albums: Record<number, AlbumCacheEntry>
+  artists: Record<string, ArtistCacheEntry>
+  albums: Record<string, AlbumCacheEntry>
 
-  setArtistCache: (id: number, entry: Omit<ArtistCacheEntry, "fetchedAt">) => void
-  setAlbumCache: (id: number, entry: Omit<AlbumCacheEntry, "fetchedAt">) => void
+  setArtistCache: (id: string, entry: Omit<ArtistCacheEntry, "fetchedAt">) => void
+  setAlbumCache: (id: string, entry: Omit<AlbumCacheEntry, "fetchedAt">) => void
 }
 
-const useMetadataCacheStore = create<MetadataCacheState>()(persist((set, get) => ({
+const useMetadataCacheStore = create<MetadataCacheState>()(persist((set) => ({
   artists: {},
   albums: {},
 
@@ -140,19 +133,19 @@ function isStale(fetchedAt: number): boolean {
   return Date.now() - fetchedAt > STALE_MS
 }
 
-export function getCachedArtist(id: number): ArtistCacheEntry | undefined {
+export function getCachedArtist(id: string): ArtistCacheEntry | undefined {
   return useMetadataCacheStore.getState().artists[id]
 }
 
-export function getCachedAlbum(id: number): AlbumCacheEntry | undefined {
+export function getCachedAlbum(id: string): AlbumCacheEntry | undefined {
   return useMetadataCacheStore.getState().albums[id]
 }
 
-export function setArtistCache(id: number, entry: Omit<ArtistCacheEntry, "fetchedAt">): void {
+export function setArtistCache(id: string, entry: Omit<ArtistCacheEntry, "fetchedAt">): void {
   useMetadataCacheStore.getState().setArtistCache(id, entry)
 }
 
-export function setAlbumCache(id: number, entry: Omit<AlbumCacheEntry, "fetchedAt">): void {
+export function setAlbumCache(id: string, entry: Omit<AlbumCacheEntry, "fetchedAt">): void {
   useMetadataCacheStore.getState().setAlbumCache(id, entry)
 }
 
@@ -160,34 +153,37 @@ export function setAlbumCache(id: number, entry: Omit<AlbumCacheEntry, "fetchedA
  * Fire-and-forget: pre-fetch ALL data the artist page needs.
  * Includes popular tracks, similar artists, hubs, stations — everything.
  */
-export function prefetchArtist(id: number, sectionId: number): void {
+export function prefetchArtist(id: string): void {
   if (artistInflight.has(id)) return
   const existing = useMetadataCacheStore.getState().artists[id]
   if (existing && !isStale(existing.fetchedAt)) return
 
+  const provider = getProvider()
+  if (!provider) return
+
   artistInflight.add(id)
 
   Promise.all([
-    getArtist(id),
-    getArtistAlbumsInSection(sectionId, id).catch(() => [] as Album[]),
-    getArtistAlbumsInSection(sectionId, id, "EP,Single").catch(() => [] as Album[]),
-    getArtistPopularTracksInSection(sectionId, id, 15).catch(() => [] as Track[]),
-    getArtistSimilar(id).catch(() => [] as Artist[]),
-    getArtistSonicallySimilar(id, 20).catch(() => [] as Artist[]),
-    getRelatedHubs(id, 20).catch(() => [] as Hub[]),
-    getArtistStations(id).catch(() => [] as Playlist[]),
+    provider.getArtist(id),
+    provider.getArtistAlbumsInSection ? provider.getArtistAlbumsInSection(id) : provider.getArtistAlbums(id),
+    provider.getArtistAlbumsInSection ? provider.getArtistAlbumsInSection(id, "EP,Single") : Promise.resolve([] as MusicAlbum[]),
+    provider.getArtistPopularTracksInSection ? provider.getArtistPopularTracksInSection(id, 15) : provider.getArtistPopularTracks(id, 15),
+    provider.getArtistSimilar(id).catch(() => [] as MusicArtist[]),
+    provider.getArtistSonicallySimilar ? provider.getArtistSonicallySimilar(id, 20).catch(() => [] as MusicArtist[]) : Promise.resolve([] as MusicArtist[]),
+    provider.getRelatedHubs(id).catch(() => [] as MusicHub[]),
+    provider.getArtistStations ? provider.getArtistStations(id).catch(() => [] as MusicPlaylist[]) : Promise.resolve([] as MusicPlaylist[]),
   ])
     .then(([artist, allAlbums, singleList, tracks, sim, sonic, hubs, stations]) => {
-      const dedupedSingles = dedupeBy(singleList, (a: Album) => a.rating_key)
-      const singleKeys = new Set(dedupedSingles.map((s: Album) => s.rating_key))
-      const albums = dedupeBy(allAlbums, (a: Album) => a.rating_key)
-        .filter((a: Album) => !singleKeys.has(a.rating_key))
+      const dedupedSingles = dedupeBy(singleList, (a: MusicAlbum) => a.id)
+      const singleKeys = new Set(dedupedSingles.map((s: MusicAlbum) => s.id))
+      const albums = dedupeBy(allAlbums, (a: MusicAlbum) => a.id)
+        .filter((a: MusicAlbum) => !singleKeys.has(a.id))
 
       useMetadataCacheStore.getState().setArtistCache(id, {
         artist,
         albums,
         singles: dedupedSingles,
-        popularTracks: dedupeBy(tracks, (t: Track) => t.rating_key),
+        popularTracks: dedupeBy(tracks, (t: MusicTrack) => t.id),
         similarArtists: sim,
         sonicallySimilar: sonic,
         relatedHubs: hubs,
@@ -202,17 +198,20 @@ export function prefetchArtist(id: number, sectionId: number): void {
  * Fire-and-forget: pre-fetch ALL data the album page needs.
  * Includes tracks and related hubs.
  */
-export function prefetchAlbum(id: number): void {
+export function prefetchAlbum(id: string): void {
   if (albumInflight.has(id)) return
   const existing = useMetadataCacheStore.getState().albums[id]
   if (existing && !isStale(existing.fetchedAt)) return
 
+  const provider = getProvider()
+  if (!provider) return
+
   albumInflight.add(id)
 
   Promise.all([
-    getAlbum(id),
-    getAlbumTracks(id),
-    getRelatedHubs(id, 20).catch(() => [] as Hub[]),
+    provider.getAlbum(id),
+    provider.getAlbumTracks(id),
+    provider.getRelatedHubs(id).catch(() => [] as MusicHub[]),
   ])
     .then(([album, tracks, hubs]) => {
       useMetadataCacheStore.getState().setAlbumCache(id, {

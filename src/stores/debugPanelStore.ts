@@ -1,11 +1,13 @@
 import { create } from "zustand"
-import type { Track, Album, Artist } from "../types/plex"
+import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
+
+type DebugData = MusicTrack | MusicAlbum | MusicArtist | MusicPlaylist
 
 interface DebugPanelState {
   open: boolean
-  type: "track" | "album" | "artist" | null
-  data: Track | Album | Artist | null
-  show: (type: "track" | "album" | "artist", data: Track | Album | Artist) => void
+  type: "track" | "album" | "artist" | "playlist" | null
+  data: DebugData | null
+  show: (type: "track" | "album" | "artist" | "playlist", data: DebugData) => void
   close: () => void
 }
 

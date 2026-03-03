@@ -1,38 +1,38 @@
 import { useState, useEffect, useRef } from "react"
 import { useLocation } from "wouter"
-import { useShallow } from "zustand/react/shallow"
 import { open } from "@tauri-apps/plugin-shell"
 import clsx from "clsx"
-import { useConnectionStore, useLibraryStore } from "../../stores"
-import { plexAuthPoll, plexGetResources, testServerConnection, audioCacheInfo, audioClearCache, audioSetCacheMaxBytes, audioGetOutputDevices, getImageCacheInfo, clearMetaImageCache, clearImageCache, type ImageCacheInfo } from "../../lib/plex"
-import type { PlexResource } from "../../types/plex"
+import { audioCacheInfo, audioClearCache, audioSetCacheMaxBytes, audioGetOutputDevices } from "../../lib/audio"
+import { clearImageCache, getImageCacheInfo, type ImageCacheInfo } from "../../lib/imageCache"
 import { getVersion } from "@tauri-apps/api/app"
 import { useAudioSettingsStore } from "../../stores/audioSettingsStore"
 import { useUpdateStore } from "../../stores/updateStore"
-import { useLastfmStore } from "../../stores/lastfmStore"
-import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
-import { lastfmSaveCredentials, lastfmGetToken } from "../../lib/lastfm"
-import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
-import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
+import { useLastfmStore } from "../../backends/lastfm/authStore"
 import { useAccentStore, ACCENT_PRESETS } from "../../stores/accentStore"
 import { getTheme, setTheme, subscribeTheme } from "../../stores/themeStore"
 import { getFont, setFont, subscribeFont, FONT_PRESETS } from "../../stores/fontStore"
 import type { FontPreset } from "../../stores/fontStore"
-import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
 import { useCardSizeStore, CARD_SIZE_MIN, CARD_SIZE_MAX } from "../../stores/cardSizeStore"
+import { useHighlightStore, HIGHLIGHT_DEFAULTS, type HighlightCategory } from "../../stores/highlightStore"
 import { useNotificationStore } from "../../stores/notificationStore"
 import { useDebugStore } from "../../stores/debugStore"
+import { getBackends, getMetadataBackends, getMetadataBackend, getBackend } from "../../backends/registry"
+import type { ProviderCapabilities } from "../../providers/types"
+import type { MetadataCapabilities, MetadataBackendDefinition, BackendDefinition } from "../../backends/types"
+import { useMetadataSourceStore, type MetadataSource, SOURCE_LABELS, SOURCE_DESCRIPTIONS } from "../../stores/metadataSourceStore"
 
-type Section = "account" | "playback" | "lastfm" | "metadata" | "downloads" | "ai" | "experience" | "notifications" | "debug" | "about"
-type AuthState = "idle" | "polling" | "picking"
+type Section =
+  | "backends" | `backends/${string}`
+  | "playback" | "downloads" | "ai" | "experience"
+  | "notifications" | "debug" | "about"
 
 const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
   {
-    id: "account",
-    label: "Account",
+    id: "backends",
+    label: "Backends",
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-5.33 0-8 2.67-8 4v1h16v-1c0-1.33-2.67-4-8-4z" />
+        <path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z" />
       </svg>
     ),
   },
@@ -42,25 +42,6 @@ const NAV: { id: Section; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
         <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-      </svg>
-    ),
-  },
-  {
-    id: "lastfm" as Section,
-    label: "Last.fm",
-    icon: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
-        {/* Last.fm-style waveform/radio icon */}
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
-      </svg>
-    ),
-  },
-  {
-    id: "metadata" as Section,
-    label: "Metadata",
-    icon: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M4 6h16v2H4zm2 5h12v2H6zm4 5h4v2h-4z" />
       </svg>
     ),
   },
@@ -151,6 +132,9 @@ const CROSSFADE_OPTIONS = [
   { label: "8s",   ms: 8000 },
   { label: "10s",  ms: 10000 },
   { label: "15s",  ms: 15000 },
+  { label: "20s",  ms: 20000 },
+  { label: "25s",  ms: 25000 },
+  { label: "30s",  ms: 30000 },
 ] as const
 
 function PlaybackSection() {
@@ -162,7 +146,9 @@ function PlaybackSection() {
   const {
     normalizationEnabled, setNormalizationEnabled,
     crossfadeWindowMs, setCrossfadeWindowMs,
+    crossfadeStyle, setCrossfadeStyle,
     sameAlbumCrossfade, setSameAlbumCrossfade,
+    smartCrossfade, setSmartCrossfade,
     preampDb, setPreampDb,
     albumGainMode, setAlbumGainMode,
     preferredDevice, setPreferredDevice,
@@ -261,7 +247,7 @@ function PlaybackSection() {
 
           {/* Duration */}
           <div>
-            <p className="text-sm font-medium text-white/70 mb-2">Duration</p>
+            <p className="text-sm font-medium text-white/70 mb-2">{smartCrossfade && crossfadeWindowMs > 0 ? "Maximum duration (min 2s)" : "Duration"}</p>
             <div className="flex gap-2 flex-wrap">
               {CROSSFADE_OPTIONS.map(opt => (
                 <button
@@ -274,6 +260,46 @@ function PlaybackSection() {
               ))}
             </div>
           </div>
+
+          {/* Crossfade style */}
+          {crossfadeWindowMs > 0 && (
+            <div>
+              <p className="text-sm font-medium text-white/70 mb-2">Style</p>
+              <p className="text-xs text-white/35 mb-2">
+                Controls how the two tracks are blended during a crossfade transition.
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                {([
+                  { value: 0, label: "Smooth" },
+                  { value: 1, label: "DJ Filter" },
+                  { value: 2, label: "Echo Out" },
+                  { value: 3, label: "Hard Cut" },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setCrossfadeStyle(opt.value)}
+                    className={`${pillBase} ${crossfadeStyle === opt.value ? pillActive : pillInactive}`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Smart crossfade */}
+          {crossfadeWindowMs > 0 && (
+            <div>
+              <p className="text-sm font-medium text-white/70 mb-2">Smart crossfade</p>
+              <p className="text-xs text-white/35 mb-2">
+                Analyses tracks to skip trailing silence, align crossfades to natural fade-outs, and adapt duration to each transition.
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setSmartCrossfade(true)} className={`${pillBase} ${smartCrossfade ? pillActive : pillInactive}`}>On</button>
+                <button onClick={() => setSmartCrossfade(false)} className={`${pillBase} ${!smartCrossfade ? pillActive : pillInactive}`}>Off</button>
+              </div>
+            </div>
+          )}
 
           {/* Same-album */}
           <div>
@@ -555,435 +581,503 @@ function ExperienceSection() {
           <span className="text-xs text-white/25">Large</span>
         </div>
       </div>
+
+      {/* ── Highlight Intensity ── */}
+      <HighlightSection />
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Account section — connection + Plex OAuth
+// Highlight Intensity
 // ---------------------------------------------------------------------------
 
-function AccountSection() {
-  const {
-    connect,
-    disconnectAndClear,
-    startPlexAuth,
-    isLoading,
-    isConnected,
-    error,
-    clearError,
-    baseUrl: savedUrl,
-    token: savedToken,
-  } = useConnectionStore(useShallow(s => ({
-    connect: s.connect,
-    disconnectAndClear: s.disconnectAndClear,
-    startPlexAuth: s.startPlexAuth,
-    isLoading: s.isLoading,
-    isConnected: s.isConnected,
-    error: s.error,
-    clearError: s.clearError,
-    baseUrl: s.baseUrl,
-    token: s.token,
-  })))
-  const { fetchPlaylists, fetchRecentlyAdded, fetchHubs } = useLibraryStore(useShallow(s => ({ fetchPlaylists: s.fetchPlaylists, fetchRecentlyAdded: s.fetchRecentlyAdded, fetchHubs: s.fetchHubs })))
-  const [, navigate] = useLocation()
+const HL_CATEGORIES: { key: HighlightCategory; label: string; desc: string }[] = [
+  { key: "card",  label: "Card hover",  desc: "Album/artist cards" },
+  { key: "row",   label: "Track row",   desc: "Track list rows" },
+  { key: "menu",  label: "Menu / dropdown", desc: "Context menu, dropdowns" },
+  { key: "queue", label: "Queue",       desc: "Queue panel items" },
+]
 
-  const [url, setUrl] = useState(savedUrl)
-  const [token, setToken] = useState(savedToken)
-  const [showToken, setShowToken] = useState(false)
-  const [isDisconnecting, setIsDisconnecting] = useState(false)
-  const [showManual, setShowManual] = useState(false)
+function HighlightSection() {
+  const { intensity, setIntensity, setCategory, reset, ...cats } = useHighlightStore()
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const [authState, setAuthState] = useState<AuthState>("idle")
-  const [resources, setResources] = useState<PlexResource[]>([])
-  const [pendingToken, setPendingToken] = useState("")
-  const [authError, setAuthError] = useState<string | null>(null)
-  const [connectingServer, setConnectingServer] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const pinIdRef = useRef<number | null>(null)
-  const pollCountRef = useRef(0)
-  const MAX_POLLS = 150
+  const pct = Math.round(intensity * 100)
+  const isDefault = intensity === 1
+    && cats.card === HIGHLIGHT_DEFAULTS.card
+    && cats.row === HIGHLIGHT_DEFAULTS.row
+    && cats.menu === HIGHLIGHT_DEFAULTS.menu
+    && cats.queue === HIGHLIGHT_DEFAULTS.queue
+
+  return (
+    <div>
+      <h3 className="text-base font-semibold text-white mb-1">Highlight Intensity</h3>
+      <p className="text-xs text-white/35 mb-4">
+        Scale how visible the accent-coloured highlights are across the entire UI.
+      </p>
+
+      {/* Global intensity slider */}
+      <div className="flex items-center gap-4">
+        <input
+          type="range"
+          min={25}
+          max={200}
+          step={5}
+          value={pct}
+          onChange={e => setIntensity(parseInt(e.target.value, 10) / 100)}
+          className="flex-1 accent-[var(--accent)] cursor-pointer"
+        />
+        <span className="text-sm font-mono text-white/60 w-14 text-right">{pct}%</span>
+      </div>
+      <div className="flex justify-between mt-1">
+        <span className="text-xs text-white/25">Subtle</span>
+        <span className="text-xs text-white/25">Vivid</span>
+      </div>
+
+      {/* Live preview */}
+      <div className="mt-5 rounded-xl bg-white/5 p-4 border border-white/5">
+        <span className="text-xs text-white/40 block mb-3">Preview</span>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-3 px-3 py-2 rounded-md bg-hl-card">
+            <div className="h-8 w-8 rounded bg-white/10 flex-shrink-0" />
+            <div>
+              <div className="text-xs font-medium text-white">Card hover</div>
+              <div className="text-[10px] text-white/40">Album or artist card</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 px-3 py-1.5 rounded bg-hl-row">
+            <div className="text-xs text-white/50 w-4 text-center">1</div>
+            <div className="h-7 w-7 rounded-sm bg-white/10 flex-shrink-0" />
+            <div className="text-xs font-medium text-white">Track row highlight</div>
+          </div>
+          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded bg-hl-menu">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" className="text-white/60"><polygon points="3,2 13,8 3,14" /></svg>
+            <span className="text-xs text-white/85">Menu item</span>
+          </div>
+          <div className="flex items-center gap-3 px-3 py-2 rounded-md bg-hl-queue">
+            <div className="h-7 w-7 rounded-sm bg-white/10 flex-shrink-0" />
+            <div className="text-xs font-medium text-white">Queue item</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Advanced per-category sliders */}
+      <button
+        onClick={() => setShowAdvanced(o => !o)}
+        className="mt-4 flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors"
+      >
+        <svg
+          viewBox="0 0 16 16" width="10" height="10" fill="currentColor"
+          className={`transition-transform ${showAdvanced ? "rotate-90" : ""}`}
+        >
+          <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06z"/>
+        </svg>
+        Per-element fine tuning
+      </button>
+
+      {showAdvanced && (
+        <div className="mt-3 flex flex-col gap-4 pl-2 border-l border-white/10">
+          {HL_CATEGORIES.map(({ key, label, desc }) => {
+            const val = cats[key]
+            const defVal = HIGHLIGHT_DEFAULTS[key]
+            return (
+              <div key={key}>
+                <div className="flex items-baseline justify-between mb-1">
+                  <span className="text-xs font-medium text-white/70">{label}</span>
+                  <span className="text-[10px] text-white/30">{desc}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={1}
+                    max={40}
+                    step={1}
+                    value={Math.round(val * 100)}
+                    onChange={e => setCategory(key, parseInt(e.target.value, 10) / 100)}
+                    className="flex-1 accent-[var(--accent)] cursor-pointer"
+                  />
+                  <span className="text-xs font-mono text-white/50 w-10 text-right">{Math.round(val * 100)}%</span>
+                  {val !== defVal && (
+                    <button
+                      onClick={() => setCategory(key, defVal)}
+                      className="text-[10px] text-white/30 hover:text-white/60 transition-colors"
+                      title="Reset to default"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Reset all button */}
+      {!isDefault && (
+        <button
+          onClick={reset}
+          className="mt-4 text-xs text-white/40 hover:text-white/70 transition-colors underline underline-offset-2"
+        >
+          Reset all to defaults
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Backends section — backend cards, capabilities, inline settings
+// ---------------------------------------------------------------------------
+
+const CAPABILITY_LABELS: Record<keyof ProviderCapabilities, string> = {
+  search: "Search",
+  playlists: "Playlists",
+  playlistEdit: "Edit Playlists",
+  ratings: "Ratings",
+  radio: "Radio",
+  sonicSimilarity: "Sonic Similarity",
+  djModes: "DJ Modes",
+  playQueues: "Play Queues",
+  lyrics: "Lyrics",
+  streamLevels: "Waveforms",
+  hubs: "Home Hubs",
+  stations: "Stations",
+  tags: "Tag Browsing",
+  scrobble: "Scrobble",
+  mixTracks: "Mix Tracks",
+  browseArtists: "Artists",
+  browseAlbums: "Albums",
+  browseTracks: "Tracks",
+  syncArtists: "Sync Artists",
+  syncAlbums: "Sync Albums",
+  syncTracks: "Sync Tracks",
+}
+
+const METADATA_CAPABILITY_LABELS: Record<keyof MetadataCapabilities, string> = {
+  artistBio: "Artist Bio",
+  artistImages: "Artist Images",
+  albumCovers: "Album Covers",
+  genres: "Genres",
+  tags: "Tags",
+  fanCounts: "Fan Counts",
+  listenerCounts: "Listener Counts",
+  similarArtists: "Similar Artists",
+  trackInfo: "Track Info",
+  scrobble: "Scrobble",
+}
+
+const SOURCE_ICONS: Record<MetadataSource, React.ReactNode> = {
+  plex: (
+    <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-yellow-400">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
+    </svg>
+  ),
+  deezer: (
+    <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-[#EF5466]">
+      <rect x="2" y="14" width="3" height="6" rx="1" />
+      <rect x="6.5" y="11" width="3" height="9" rx="1" />
+      <rect x="11" y="8" width="3" height="12" rx="1" />
+      <rect x="15.5" y="5" width="3" height="15" rx="1" />
+      <rect x="20" y="2" width="2" height="18" rx="1" />
+    </svg>
+  ),
+  lastfm: (
+    <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-red-500">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+    </svg>
+  ),
+  apple: (
+    <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-pink-400">
+      <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+    </svg>
+  ),
+}
+
+function CapabilityGrid({ caps, labels }: { caps: { [k: string]: boolean }; labels: { [k: string]: string } }) {
+  const entries = Object.entries(labels)
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {entries.map(([key, label]) => {
+        const supported = caps[key as keyof typeof caps]
+        return (
+          <div key={key} className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2">
+            {supported ? (
+              <svg height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-accent flex-shrink-0">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            ) : (
+              <span className="text-white/20 flex-shrink-0 text-xs font-bold w-3.5 text-center">-</span>
+            )}
+            <span className={`text-xs ${supported ? "text-white/70" : "text-white/25"}`}>{label}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function BackendsListView({ setSection }: { setSection: (s: Section) => void }) {
+  const backends = getBackends()
+  const metadataBackends = getMetadataBackends()
+  const { hasApiKey: lastfmHasApiKey } = useLastfmStore()
+  const { priority, setPriority } = useMetadataSourceStore()
+
+  const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
+  const [imgClearing, setImgClearing] = useState(false)
+
+  // Pointer-based drag for source priority
+  const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const sortListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    setUrl(savedUrl)
-    setToken(savedToken)
-  }, [savedUrl, savedToken])
-
-  useEffect(() => {
-    useConnectionStore.setState({ isLoading: false })
+    void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
   }, [])
 
-  useEffect(() => () => stopPolling(), [])
-
-  const isDirty = url.trim() !== savedUrl || token.trim() !== savedToken
-
-  function stopPolling() {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    pinIdRef.current = null
-    pollCountRef.current = 0
-  }
-
-  function afterConnect() {
-    const { isConnected: ok, musicSectionId } = useConnectionStore.getState()
-    if (ok && musicSectionId !== null) {
-      void fetchPlaylists(musicSectionId)
-      void fetchRecentlyAdded(musicSectionId, 50)
-      void fetchHubs(musicSectionId)
-      navigate("/")
-    }
-  }
-
-  const handlePlexSignIn = async () => {
-    clearError()
-    setAuthError(null)
+  async function handleClearImages() {
+    setImgClearing(true)
     try {
-      const pin = await startPlexAuth()
-      pinIdRef.current = pin.pin_id
-      pollCountRef.current = 0
-      await open(pin.auth_url)
-      setAuthState("polling")
-
-      pollRef.current = setInterval(async () => {
-        if (pinIdRef.current === null) return
-        pollCountRef.current += 1
-        if (pollCountRef.current >= MAX_POLLS) {
-          stopPolling()
-          setAuthState("idle")
-          setAuthError("Sign-in timed out after 5 minutes. Please try again.")
-          return
-        }
-        try {
-          const authToken = await plexAuthPoll(pinIdRef.current)
-          if (!authToken) return
-          stopPolling()
-          setPendingToken(authToken)
-          const servers = await plexGetResources(authToken)
-          if (servers.length === 0) {
-            setAuthState("idle")
-            setAuthError("No Plex servers found on your account. Try connecting manually.")
-            return
-          }
-          if (servers.length === 1) {
-            setAuthState("idle")
-            await connectToServer(servers[0], authToken)
-          } else {
-            setResources(servers)
-            setAuthState("picking")
-          }
-        } catch (err) {
-          stopPolling()
-          setAuthState("idle")
-          setAuthError(String(err))
-        }
-      }, 2000)
-    } catch (err) {
-      setAuthError(String(err))
-    }
-  }
-
-  const connectToServer = async (resource: PlexResource, authToken: string) => {
-    setConnectingServer(resource.name)
-    setAuthError(null)
-
-    interface Candidate { url: string; isLocal: boolean; isHttps: boolean; isRelay: boolean }
-    const seen = new Set<string>()
-    const candidates: Candidate[] = []
-
-    for (const conn of resource.connections) {
-      if (conn.local) {
-        const httpUrl = `http://${conn.address}:${conn.port}`
-        if (!seen.has(httpUrl)) {
-          seen.add(httpUrl)
-          candidates.push({ url: httpUrl, isLocal: true, isHttps: false, isRelay: false })
-        }
-      }
-      if (conn.uri && !seen.has(conn.uri)) {
-        seen.add(conn.uri)
-        candidates.push({ url: conn.uri, isLocal: conn.local, isHttps: conn.uri.startsWith("https://"), isRelay: conn.relay })
-      }
-    }
-
-    if (candidates.length === 0) {
-      setConnectingServer(null)
-      setAuthError(`No connection URLs found for ${resource.name}.`)
-      return
-    }
-
-    const results = await Promise.allSettled(
-      candidates.map(async c => ({ ...c, latency: await testServerConnection(c.url, authToken) }))
-    )
-    const successful = results
-      .filter((r): r is PromiseFulfilledResult<Candidate & { latency: number }> => r.status === "fulfilled")
-      .map(r => r.value)
-      .sort((a, b) => {
-        if (a.isRelay !== b.isRelay) return a.isRelay ? 1 : -1
-        if (a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1
-        if (a.isHttps !== b.isHttps) return a.isHttps ? -1 : 1
-        return a.latency - b.latency
-      })
-
-    if (successful.length === 0) {
-      setConnectingServer(null)
-      setAuthError(`Could not reach ${resource.name}. All ${candidates.length} connection URL${candidates.length === 1 ? "" : "s"} failed.`)
-      return
-    }
-
-    try {
-      await connect(successful[0].url, authToken, successful.map(c => c.url))
-      afterConnect()
-    } catch (err) {
-      setAuthError(String(err))
+      await clearImageCache()
+      const info = await getImageCacheInfo()
+      setImgCacheInfo(info)
     } finally {
-      setConnectingServer(null)
+      setImgClearing(false)
     }
   }
 
-  const handlePickServer = (resource: PlexResource) => void connectToServer(resource, pendingToken)
-
-  const handleManualSave = async (e: React.FormEvent) => {
-    e.preventDefault()
-    clearError()
-    await connect(url.trim(), token.trim())
-    afterConnect()
+  function getHoveredIndex(clientY: number): number | null {
+    if (!sortListRef.current) return null
+    const children = Array.from(sortListRef.current.children) as HTMLElement[]
+    for (let i = 0; i < children.length; i++) {
+      const rect = children[i].getBoundingClientRect()
+      if (clientY >= rect.top && clientY <= rect.bottom) return i
+    }
+    return null
   }
 
-  const handleDisconnect = async () => {
-    setIsDisconnecting(true)
-    await disconnectAndClear()
-    setUrl("")
-    setToken("")
-    setIsDisconnecting(false)
+  function onHandlePointerDown(e: React.PointerEvent, idx: number) {
+    e.preventDefault()
+    sortListRef.current?.setPointerCapture(e.pointerId)
+    setDraggingIdx(idx)
+    setHoverIdx(idx)
+  }
+
+  function onListPointerMove(e: React.PointerEvent) {
+    if (draggingIdx === null) return
+    const idx = getHoveredIndex(e.clientY)
+    if (idx !== null) setHoverIdx(idx)
+  }
+
+  function onListPointerUp(e: React.PointerEvent) {
+    if (draggingIdx === null) return
+    const toIdx = getHoveredIndex(e.clientY) ?? draggingIdx
+    if (toIdx !== draggingIdx) {
+      const next = [...priority]
+      const [item] = next.splice(draggingIdx, 1)
+      next.splice(toIdx, 0, item)
+      setPriority(next)
+    }
+    setDraggingIdx(null)
+    setHoverIdx(null)
   }
 
   return (
-    <div className="max-w-xl space-y-8">
-      {/* Connection status */}
-      <div className="flex items-center gap-3 rounded-xl bg-white/5 px-5 py-4">
-        <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${isConnected ? "bg-accent" : "bg-red-500"}`} />
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-white">
-            {isConnected ? "Connected" : "Not connected"}
-          </p>
-          {isConnected && (
-            <p className="mt-0.5 truncate text-xs text-white/40">{savedUrl}</p>
-          )}
+    <div className="max-w-2xl space-y-10">
+
+      {/* Metadata Source Priority */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Metadata Source Priority</h3>
+        <p className="text-xs text-white/40 mb-5">
+          Drag to reorder. Higher sources take precedence for bios, images, genres, and tags.
+          Artist, album, and track names always come from Plex.
+        </p>
+        <div
+          ref={sortListRef}
+          className="flex flex-col gap-2 touch-none"
+          onPointerMove={onListPointerMove}
+          onPointerUp={onListPointerUp}
+          onPointerCancel={onListPointerUp}
+        >
+          {priority.map((source, idx) => (
+            <div
+              key={source}
+              className={clsx(
+                "flex items-center gap-3 rounded-xl border px-4 py-3 transition-colors select-none",
+                draggingIdx === idx
+                  ? "border-accent/60 bg-accent/15 opacity-70"
+                  : hoverIdx === idx && draggingIdx !== null
+                    ? "border-accent/50 bg-accent/10"
+                    : "border-white/10 bg-white/3"
+              )}
+            >
+              <div
+                className="cursor-grab active:cursor-grabbing p-0.5 -ml-0.5 flex-shrink-0"
+                onPointerDown={e => onHandlePointerDown(e, idx)}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-white/30 pointer-events-none">
+                  <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
+                </svg>
+              </div>
+              <span className="flex-shrink-0">{SOURCE_ICONS[source]}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-white">{SOURCE_LABELS[source]}</p>
+                <p className="text-xs text-white/40 truncate">{SOURCE_DESCRIPTIONS[source]}</p>
+              </div>
+              <span className="text-xs font-mono text-white/20 tabular-nums">#{idx + 1}</span>
+              {source === "lastfm" && !lastfmHasApiKey && (
+                <span className="rounded-full bg-white/8 px-2 py-0.5 text-xs text-white/35 flex-shrink-0">No API key</span>
+              )}
+            </div>
+          ))}
         </div>
-        {isConnected && !showManual && (
-          <button
-            onClick={handleDisconnect}
-            disabled={isDisconnecting}
-            className="ml-auto flex-shrink-0 rounded-full border border-white/20 px-4 py-1.5 text-xs font-semibold text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30 transition-colors"
-          >
-            {isDisconnecting ? "Disconnecting…" : "Disconnect"}
-          </button>
-        )}
       </div>
 
-      {/* ── Polling ── */}
-      {authState === "polling" && (
-        <div className="space-y-4">
-          <div className="flex flex-col items-center gap-3 py-8">
-            <svg className="animate-spin text-[#e5a00d]" height="36" width="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-              <path d="M12 2a10 10 0 0 1 10 10" />
-            </svg>
-            <p className="text-sm text-white/70 text-center">
-              A browser window has opened.<br />
-              Sign in to Plex, then return here.
+      {/* Music Backends */}
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Music Backends</h3>
+        <div className="space-y-3">
+          {backends.map(backend => {
+            const connected = backend.useIsConnected()
+            const Icon = backend.icon
+            return (
+              <button
+                key={backend.id}
+                onClick={() => setSection(`backends/${backend.id}` as Section)}
+                className="w-full rounded-xl bg-white/5 px-5 py-4 text-left hover:bg-white/8 transition-colors group"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-white/60"><Icon size={20} /></span>
+                  <span className="text-sm font-semibold text-white">{backend.name}</span>
+                  <span className="ml-auto flex items-center gap-1.5 text-xs">
+                    <span className={`h-2 w-2 rounded-full ${connected ? "bg-accent" : "bg-white/20"}`} />
+                    <span className={connected ? "text-accent" : "text-white/30"}>
+                      {connected ? "Connected" : "Not connected"}
+                    </span>
+                  </span>
+                  <svg height="14" width="14" viewBox="0 0 24 24" fill="currentColor" className="text-white/20 group-hover:text-white/40 transition-colors">
+                    <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+                  </svg>
+                </div>
+                <p className="mt-1.5 text-xs text-white/35">{backend.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Metadata Backends */}
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Metadata Backends</h3>
+        <div className="space-y-3">
+          {metadataBackends.map(mb => {
+            const enabled = mb.useIsEnabled()
+            const Icon = mb.icon
+            return (
+              <button
+                key={mb.id}
+                onClick={() => setSection(`backends/${mb.id}` as Section)}
+                className="w-full rounded-xl bg-white/5 px-5 py-4 text-left hover:bg-white/8 transition-colors group"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-white/60"><Icon size={20} /></span>
+                  <span className="text-sm font-semibold text-white">{mb.name}</span>
+                  <span className="ml-auto flex items-center gap-1.5 text-xs">
+                    <span className={`h-2 w-2 rounded-full ${enabled ? "bg-accent" : "bg-white/20"}`} />
+                    <span className={enabled ? "text-accent" : "text-white/30"}>
+                      {enabled ? (mb.id === "lastfm" ? "Enabled" : "Always on") : "Disabled"}
+                    </span>
+                  </span>
+                  <svg height="14" width="14" viewBox="0 0 24 24" fill="currentColor" className="text-white/20 group-hover:text-white/40 transition-colors">
+                    <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+                  </svg>
+                </div>
+                <p className="mt-1.5 text-xs text-white/35">{mb.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Image Cache */}
+      <div>
+        <h3 className="text-base font-semibold text-white mb-1">Image Cache</h3>
+        <p className="text-xs text-white/40 mb-4">
+          Artwork fetched from Plex and external metadata sources is saved to disk.
+        </p>
+        <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-white">Cached Images</p>
+            <p className="text-xs text-white/40 mt-0.5">
+              {imgCacheInfo
+                ? `${formatBytes(imgCacheInfo.bytes)} · ${imgCacheInfo.files} ${imgCacheInfo.files === 1 ? "file" : "files"}`
+                : "Loading..."}
             </p>
           </div>
           <button
-            onClick={() => { stopPolling(); setAuthState("idle"); setAuthError(null) }}
-            className="w-full rounded-full border border-white/20 py-2.5 text-sm font-semibold text-white/60 hover:bg-white/10 hover:text-white transition-colors"
+            onClick={() => void handleClearImages()}
+            disabled={imgClearing || (imgCacheInfo?.files ?? 0) === 0}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
           >
-            Cancel
+            {imgClearing ? "Clearing..." : "Clear"}
           </button>
         </div>
-      )}
+      </div>
+    </div>
+  )
+}
 
-      {/* ── Server picker ── */}
-      {authState === "picking" && (
-        <div className="space-y-3">
-          <p className="text-sm text-white/60">Choose a server to connect to:</p>
-          <ul className="space-y-2">
-            {resources.map(r => {
-              const localConns = r.connections.filter(c => c.local && !c.relay)
-              const remoteConns = r.connections.filter(c => !c.local && !c.relay)
-              const relayConns = r.connections.filter(c => c.relay)
-              const isConnectingThis = connectingServer === r.name
-              const isDisabled = connectingServer !== null
-              return (
-                <li key={r.client_identifier}>
-                  <button
-                    onClick={() => handlePickServer(r)}
-                    disabled={isDisabled}
-                    className="w-full rounded-xl bg-white/5 px-5 py-3.5 text-left hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-white">{r.name}</span>
-                      {isConnectingThis && (
-                        <svg className="animate-spin text-[#e5a00d] flex-shrink-0" height="14" width="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                          <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                          <path d="M12 2a10 10 0 0 1 10 10" />
-                        </svg>
-                      )}
-                    </div>
-                    <div className="mt-1 text-xs text-white/40 flex flex-wrap gap-x-3">
-                      {localConns.length > 0 && (
-                        <span>{localConns[0].address}:{localConns[0].port} <span className="text-accent">local</span></span>
-                      )}
-                      {remoteConns.length > 0 && <span>{remoteConns.length} remote</span>}
-                      {relayConns.length > 0 && <span>{relayConns.length} relay</span>}
-                    </div>
-                    {isConnectingThis && (
-                      <p className="mt-1 text-xs text-[#e5a00d]/80">
-                        Testing {r.connections.length + localConns.length} URLs…
-                      </p>
-                    )}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-          {authError && (
-            <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
-              {authError}
-            </div>
-          )}
-          <button
-            onClick={() => { setAuthState("idle"); setAuthError(null) }}
-            disabled={connectingServer !== null}
-            className="w-full rounded-full border border-white/20 py-2.5 text-sm font-semibold text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            Back
-          </button>
+function BackendSubPage({ backendId, goBack }: { backendId: string; goBack: () => void }) {
+  // Try music backend first, then metadata backend
+  const musicBackend = getBackend(backendId)
+  const metaBackend = getMetadataBackend(backendId)
+
+  if (!musicBackend && !metaBackend) {
+    return (
+      <div className="max-w-2xl">
+        <button onClick={goBack} className="mb-6 flex items-center gap-1.5 text-sm text-white/50 hover:text-white transition-colors">
+          <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" /></svg>
+          Back to Backends
+        </button>
+        <p className="text-sm text-white/50">Backend not found.</p>
+      </div>
+    )
+  }
+
+  const name = musicBackend?.name ?? metaBackend!.name
+  const Icon = musicBackend?.icon ?? metaBackend!.icon
+  const Settings = musicBackend?.SettingsComponent ?? metaBackend!.SettingsComponent
+
+  return (
+    <div className="max-w-2xl space-y-8">
+      {/* Back button + header */}
+      <div>
+        <button onClick={goBack} className="mb-4 flex items-center gap-1.5 text-sm text-white/50 hover:text-white transition-colors">
+          <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" /></svg>
+          Back to Backends
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-white/60"><Icon size={24} /></span>
+          <h2 className="text-2xl font-bold">{name}</h2>
         </div>
-      )}
+      </div>
 
-      {/* ── Idle ── */}
-      {authState === "idle" && (
-        <div className="space-y-4">
-          {connectingServer !== null ? (
-            <div className="flex flex-col items-center gap-3 py-8">
-              <svg className="animate-spin text-[#e5a00d]" height="36" width="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-                <path d="M12 2a10 10 0 0 1 10 10" />
-              </svg>
-              <p className="text-sm text-white/70 text-center">
-                Connecting to <span className="text-white font-medium">{connectingServer}</span>…
-              </p>
-            </div>
-          ) : (
-            <button
-              onClick={() => void handlePlexSignIn()}
-              className="flex w-full items-center justify-center gap-3 rounded-full bg-[#e5a00d] py-3 text-sm font-bold text-black hover:bg-[#f0aa10] active:scale-95 transition-all"
-            >
-              <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M11.994 2C6.477 2 2 6.477 2 11.994S6.477 22 11.994 22 22 17.523 22 12.006 17.523 2 11.994 2zm5.284 12.492l-7.285 4.206a.566.566 0 0 1-.567 0 .572.572 0 0 1-.284-.491V5.793c0-.202.109-.39.284-.491a.566.566 0 0 1 .567 0l7.285 4.206a.572.572 0 0 1 .284.491c0 .204-.108.39-.284.493z" />
-              </svg>
-              Sign in with Plex
-            </button>
-          )}
+      {/* Capabilities */}
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Capabilities</h3>
+        {musicBackend ? (
+          <CapabilityGrid caps={musicBackend.capabilities as unknown as { [k: string]: boolean }} labels={CAPABILITY_LABELS} />
+        ) : metaBackend ? (
+          <CapabilityGrid caps={metaBackend.capabilities as unknown as { [k: string]: boolean }} labels={METADATA_CAPABILITY_LABELS} />
+        ) : null}
+      </div>
 
-          {authError && connectingServer === null && (
-            <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
-              {authError}
-            </div>
-          )}
-
-          {connectingServer === null && <>
-            <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-white/10" />
-              <button
-                onClick={() => setShowManual(v => !v)}
-                className="text-xs text-white/30 hover:text-white/60 transition-colors"
-              >
-                {showManual ? "hide manual" : "or connect manually"}
-              </button>
-              <div className="h-px flex-1 bg-white/10" />
-            </div>
-
-            {showManual && (
-              <form onSubmit={handleManualSave} className="space-y-4">
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-white/50 uppercase tracking-wider">
-                    Server URL
-                  </label>
-                  <input
-                    type="text"
-                    value={url}
-                    onChange={e => setUrl(e.target.value)}
-                    placeholder="http://192.168.1.100:32400"
-                    className="w-full rounded-xl bg-white/10 px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-1 focus:ring-white/30 transition-colors"
-                    autoFocus={!isConnected}
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-white/50 uppercase tracking-wider">
-                    Plex Token
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showToken ? "text" : "password"}
-                      value={token}
-                      onChange={e => setToken(e.target.value)}
-                      placeholder="Your Plex auth token"
-                      className="w-full rounded-xl bg-white/10 px-4 py-3 pr-11 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-1 focus:ring-white/30 transition-colors"
-                      spellCheck={false}
-                      autoComplete="off"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowToken(v => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 transition-colors"
-                      tabIndex={-1}
-                    >
-                      {showToken ? (
-                        <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" />
-                        </svg>
-                      ) : (
-                        <svg height="16" width="16" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" />
-                        </svg>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {error && (
-                  <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
-                    {error}
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    type="button"
-                    onClick={handleDisconnect}
-                    disabled={isDisconnecting || (!isConnected && !savedUrl)}
-                    className="rounded-full px-4 py-2 text-sm font-semibold text-white/50 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isDisconnecting ? "Disconnecting…" : "Disconnect"}
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isLoading || !url.trim() || !token.trim()}
-                    className="rounded-full bg-accent px-6 py-2 text-sm font-semibold text-black disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-95 transition-all"
-                  >
-                    {isLoading ? "Connecting…" : isConnected && !isDirty ? "Reconnect" : "Save & Connect"}
-                  </button>
-                </div>
-              </form>
-            )}
-          </>}
-        </div>
-      )}
+      {/* Settings */}
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-white/25 mb-4">Settings</h3>
+        <Settings />
+      </div>
     </div>
   )
 }
@@ -1231,546 +1325,19 @@ function AboutSection() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Last.fm section
-// ---------------------------------------------------------------------------
 
-type LastfmAuthStep = "idle" | "waiting"
-
-function LastfmSection() {
-  const {
-    isAuthenticated, isEnabled, username, loveThreshold,
-    setEnabled, completeAuth, disconnect, setLoveThreshold,
-  } = useLastfmStore()
-
-  const [apiKey, setApiKey] = useState("")
-  const [apiSecret, setApiSecret] = useState("")
-  const [authStep, setAuthStep] = useState<LastfmAuthStep>("idle")
-  const [pendingToken, setPendingToken] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [isConnecting, setIsConnecting] = useState(false)
-
-  async function handleConnect() {
-    if (!apiKey.trim() || !apiSecret.trim()) {
-      setError("Please enter both API Key and API Secret.")
-      return
-    }
-    setError(null)
-    setIsConnecting(true)
-    try {
-      await lastfmSaveCredentials(apiKey.trim(), apiSecret.trim())
-      const { token, auth_url } = await lastfmGetToken()
-      setPendingToken(token)
-      await open(auth_url)
-      setAuthStep("waiting")
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setIsConnecting(false)
-    }
-  }
-
-  async function handleComplete() {
-    setError(null)
-    setIsConnecting(true)
-    try {
-      await completeAuth(pendingToken)
-      setAuthStep("idle")
-      setPendingToken("")
-      setApiKey("")
-      setApiSecret("")
-    } catch (e) {
-      setError(`Could not complete auth: ${String(e)}`)
-    } finally {
-      setIsConnecting(false)
-    }
-  }
-
-  function handleCancel() {
-    setAuthStep("idle")
-    setPendingToken("")
-    setError(null)
-  }
-
-  // Star value (1–5) to Plex scale (0–10)
-  const thresholdStars = Math.round(loveThreshold / 2)
-
-  return (
-    <div className="space-y-8 max-w-2xl">
-      {/* Panel A — Account & Scrobbling */}
-      <div className="space-y-5">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-white/30">Account</h2>
-
-        {!isAuthenticated ? (
-          authStep === "idle" ? (
-            <div className="space-y-4">
-              <p className="text-sm text-white/50">
-                Connect your Last.fm account to enable scrobbling and metadata enrichment.{" "}
-                <button
-                  className="text-accent/80 hover:text-accent underline-offset-2 hover:underline"
-                  onClick={() => void open("https://www.last.fm/api/account/create")}
-                >
-                  Get your free API key
-                </button>
-              </p>
-              <div className="space-y-3">
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-white/50">API Key</label>
-                  <input
-                    type="text"
-                    value={apiKey}
-                    onChange={e => setApiKey(e.target.value)}
-                    placeholder="32-character hex key"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/20 focus:border-accent/50 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-white/50">API Secret</label>
-                  <input
-                    type="password"
-                    value={apiSecret}
-                    onChange={e => setApiSecret(e.target.value)}
-                    placeholder="32-character secret"
-                    className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/20 focus:border-accent/50 focus:outline-none"
-                  />
-                </div>
-              </div>
-              {error && <p className="text-sm text-red-400">{error}</p>}
-              <button
-                onClick={() => void handleConnect()}
-                disabled={isConnecting || !apiKey.trim() || !apiSecret.trim()}
-                className="rounded-lg bg-accent/80 hover:bg-accent px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
-              >
-                {isConnecting ? "Opening browser…" : "Connect to Last.fm"}
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="rounded-lg border border-white/10 bg-white/5 p-4 space-y-2">
-                <p className="text-sm font-medium text-white">Complete Connection</p>
-                <ol className="text-sm text-white/60 space-y-1 list-decimal list-inside">
-                  <li>Approve the request in your browser.</li>
-                  <li>Return here and click <strong className="text-white">Complete</strong>.</li>
-                </ol>
-              </div>
-              {error && <p className="text-sm text-red-400">{error}</p>}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => void handleComplete()}
-                  disabled={isConnecting}
-                  className="rounded-lg bg-accent/80 hover:bg-accent px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
-                >
-                  {isConnecting ? "Connecting…" : "Complete Connection"}
-                </button>
-                <button
-                  onClick={handleCancel}
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-white/60 hover:text-white hover:border-white/25 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )
-        ) : (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-full bg-red-600 flex items-center justify-center text-white text-xs font-bold">
-                lfm
-              </div>
-              <div>
-                <p className="text-sm font-medium text-white">{username}</p>
-                <p className="text-xs text-white/40">Connected to Last.fm</p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between py-2">
-              <div>
-                <p className="text-sm font-medium text-white">Scrobbling</p>
-                <p className="text-xs text-white/40">Report what you're listening to Last.fm</p>
-              </div>
-              <button
-                onClick={() => void setEnabled(!isEnabled)}
-                className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  isEnabled ? "bg-accent" : "bg-white/20"
-                }`}
-                role="switch"
-                aria-checked={isEnabled}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    isEnabled ? "translate-x-4" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </div>
-
-            {isEnabled && (
-              <div className="flex items-center justify-between py-2">
-                <div>
-                  <p className="text-sm font-medium text-white">Love tracks rated ≥</p>
-                  <p className="text-xs text-white/40">Automatically love/unlove tracks on Last.fm when rated</p>
-                </div>
-                <div className="flex gap-1">
-                  {[1, 2, 3, 4, 5].map(star => (
-                    <button
-                      key={star}
-                      title={`${star} star${star > 1 ? "s" : ""}`}
-                      onClick={() => void setLoveThreshold(star * 2)}
-                      className={`transition-colors ${thresholdStars >= star ? "text-accent" : "text-white/20 hover:text-accent/50"}`}
-                    >
-                      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
-                        <path d="M3.612 15.443c-.386.198-.824-.149-.746-.592l.83-4.73L.173 6.765c-.329-.314-.158-.888.283-.95l4.898-.696L7.538.792c.197-.39.73-.39.927 0l2.184 4.327 4.898.696c.441.062.612.636.282.95l-3.522 3.356.83 4.73c.078.443-.36.79-.746.592L8 13.187l-4.389 2.256z" />
-                      </svg>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={() => void disconnect()}
-              className="text-sm text-red-400 hover:text-red-300 transition-colors"
-            >
-              Disconnect
-            </button>
-          </div>
-        )}
-      </div>
-
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Metadata section — source priority, metadata caches, image caches
-// ---------------------------------------------------------------------------
-
-function MetadataSection() {
-  const lastfmMetadata = useLastfmMetadataStore()
-  const deezerMetadata = useDeezerMetadataStore()
-  const itunesMetadata = useItunesMetadataStore()
-  const { hasApiKey: lastfmHasApiKey } = useLastfmStore()
-  const { priority, setPriority } = useMetadataSourceStore()
-
-  const [lastfmClearing, setLastfmClearing] = useState(false)
-  const [deezerClearing, setDeezerClearing] = useState(false)
-  const [itunesClearing, setItunesClearing] = useState(false)
-
-  const [imgCacheInfo, setImgCacheInfo] = useState<ImageCacheInfo | null>(null)
-  const [plexImgClearing, setPlexImgClearing] = useState(false)
-  const [metaImgClearing, setMetaImgClearing] = useState(false)
-
-  // Pointer-based drag — reliable in Tauri's WKWebView where HTML5 DnD drop events don't fire
-  const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-  const sortListRef = useRef<HTMLDivElement>(null)
-
-  const lastfmStats = lastfmMetadata.stats()
-  const deezerStats = deezerMetadata.stats()
-  const itunesStats = itunesMetadata.stats()
-
-  useEffect(() => {
-    void getImageCacheInfo().then(setImgCacheInfo).catch(() => {})
-  }, [])
-
-  function handleClearLastfm() {
-    setLastfmClearing(true)
-    lastfmMetadata.clearCache()
-    setTimeout(() => setLastfmClearing(false), 400)
-  }
-
-  function handleClearDeezer() {
-    setDeezerClearing(true)
-    deezerMetadata.clearCache()
-    setTimeout(() => setDeezerClearing(false), 400)
-  }
-
-  function handleClearItunes() {
-    setItunesClearing(true)
-    itunesMetadata.clearCache()
-    setTimeout(() => setItunesClearing(false), 400)
-  }
-
-  async function handleClearPlexImg() {
-    setPlexImgClearing(true)
-    try {
-      await clearImageCache()
-      const info = await getImageCacheInfo()
-      setImgCacheInfo(info)
-    } finally {
-      setPlexImgClearing(false)
-    }
-  }
-
-  async function handleClearMetaImg() {
-    setMetaImgClearing(true)
-    try {
-      await clearMetaImageCache()
-      const info = await getImageCacheInfo()
-      setImgCacheInfo(info)
-    } finally {
-      setMetaImgClearing(false)
-    }
-  }
-
-  // Pointer-based drag reordering — works in Tauri's WKWebView where HTML5 DnD drop events don't fire
-  function getHoveredIndex(clientY: number): number | null {
-    if (!sortListRef.current) return null
-    const children = Array.from(sortListRef.current.children) as HTMLElement[]
-    for (let i = 0; i < children.length; i++) {
-      const rect = children[i].getBoundingClientRect()
-      if (clientY >= rect.top && clientY <= rect.bottom) return i
-    }
-    return null
-  }
-
-  function onHandlePointerDown(e: React.PointerEvent, idx: number) {
-    e.preventDefault()
-    // Capture pointer on the list container so move/up fire even if cursor leaves the handle
-    sortListRef.current?.setPointerCapture(e.pointerId)
-    setDraggingIdx(idx)
-    setHoverIdx(idx)
-  }
-
-  function onListPointerMove(e: React.PointerEvent) {
-    if (draggingIdx === null) return
-    const idx = getHoveredIndex(e.clientY)
-    if (idx !== null) setHoverIdx(idx)
-  }
-
-  function onListPointerUp(e: React.PointerEvent) {
-    if (draggingIdx === null) return
-    const toIdx = getHoveredIndex(e.clientY) ?? draggingIdx
-    if (toIdx !== draggingIdx) {
-      const next = [...priority]
-      const [item] = next.splice(draggingIdx, 1)
-      next.splice(toIdx, 0, item)
-      setPriority(next)
-    }
-    setDraggingIdx(null)
-    setHoverIdx(null)
-  }
-
-  const SOURCE_ICONS: Record<MetadataSource, React.ReactNode> = {
-    plex: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-yellow-400">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
-      </svg>
-    ),
-    deezer: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-[#EF5466]">
-        <rect x="2" y="14" width="3" height="6" rx="1" />
-        <rect x="6.5" y="11" width="3" height="9" rx="1" />
-        <rect x="11" y="8" width="3" height="12" rx="1" />
-        <rect x="15.5" y="5" width="3" height="15" rx="1" />
-        <rect x="20" y="2" width="2" height="18" rx="1" />
-      </svg>
-    ),
-    lastfm: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-red-500">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
-      </svg>
-    ),
-    apple: (
-      <svg height="18" width="18" viewBox="0 0 24 24" fill="currentColor" className="text-pink-400">
-        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
-      </svg>
-    ),
-  }
-
-  return (
-    <div className="space-y-10 max-w-2xl">
-
-      {/* ── Source Priority ── */}
-      <div>
-        <h3 className="text-base font-semibold text-white mb-1">Metadata Source Priority</h3>
-        <p className="text-xs text-white/40 mb-5">
-          Drag to reorder. Higher sources take precedence for bios, images, genres, and tags.
-          Artist, album, and track names always come from Plex.
-        </p>
-        <div
-          ref={sortListRef}
-          className="flex flex-col gap-2 touch-none"
-          onPointerMove={onListPointerMove}
-          onPointerUp={onListPointerUp}
-          onPointerCancel={onListPointerUp}
-        >
-          {priority.map((source, idx) => (
-            <div
-              key={source}
-              className={clsx(
-                "flex items-center gap-3 rounded-xl border px-4 py-3 transition-colors select-none",
-                draggingIdx === idx
-                  ? "border-accent/60 bg-accent/15 opacity-70"
-                  : hoverIdx === idx && draggingIdx !== null
-                    ? "border-accent/50 bg-accent/10"
-                    : "border-white/10 bg-white/3"
-              )}
-            >
-              {/* Drag handle — pointer down here starts the drag */}
-              <div
-                className="cursor-grab active:cursor-grabbing p-0.5 -ml-0.5 flex-shrink-0"
-                onPointerDown={e => onHandlePointerDown(e, idx)}
-              >
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-white/30 pointer-events-none">
-                  <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
-                </svg>
-              </div>
-              <span className="flex-shrink-0">{SOURCE_ICONS[source]}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white">{SOURCE_LABELS[source]}</p>
-                <p className="text-xs text-white/40 truncate">{SOURCE_DESCRIPTIONS[source]}</p>
-              </div>
-              <span className="text-xs font-mono text-white/20 tabular-nums">#{idx + 1}</span>
-              {source === "lastfm" && !lastfmHasApiKey && (
-                <span className="rounded-full bg-white/8 px-2 py-0.5 text-xs text-white/35 flex-shrink-0">No API key</span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Image Cache ── */}
-      <div>
-        <h3 className="text-base font-semibold text-white mb-1">Image Cache</h3>
-        <p className="text-xs text-white/40 mb-4">
-          Artwork fetched from Plex and external metadata sources is saved to disk. Cached images load instantly without re-downloading.
-        </p>
-        <div className="flex flex-col gap-3">
-
-          {/* Plex image cache */}
-          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white">Plex Artwork</p>
-              <p className="text-xs text-white/40 mt-0.5">
-                {imgCacheInfo
-                  ? `${formatBytes(imgCacheInfo.plex_bytes)} · ${imgCacheInfo.plex_files} ${imgCacheInfo.plex_files === 1 ? "file" : "files"}`
-                  : "Loading…"}
-              </p>
-            </div>
-            <button
-              onClick={() => void handleClearPlexImg()}
-              disabled={plexImgClearing || (imgCacheInfo?.plex_files ?? 0) === 0}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-            >
-              {plexImgClearing ? "Clearing…" : "Clear"}
-            </button>
-          </div>
-
-          {/* External metadata image cache */}
-          <div className="rounded-xl border border-white/10 bg-white/3 px-5 py-4 flex items-center gap-4">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white">Metadata Images</p>
-              <p className="text-xs text-white/40 mt-0.5">
-                {imgCacheInfo
-                  ? `${formatBytes(imgCacheInfo.meta_bytes)} · ${imgCacheInfo.meta_files} ${imgCacheInfo.meta_files === 1 ? "file" : "files"}`
-                  : "Loading…"}
-              </p>
-              <p className="text-xs text-white/25 mt-0.5">Deezer, Apple Music, Last.fm artwork</p>
-            </div>
-            <button
-              onClick={() => void handleClearMetaImg()}
-              disabled={metaImgClearing || (imgCacheInfo?.meta_files ?? 0) === 0}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-            >
-              {metaImgClearing ? "Clearing…" : "Clear"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Metadata Caches ── */}
-      <div>
-        <h3 className="text-base font-semibold text-white mb-1">Metadata Cache</h3>
-        <p className="text-xs text-white/40 mb-4">
-          Artist and album info fetched from third-party sources is cached locally in IndexedDB with a 7-day TTL.
-        </p>
-
-        {/* Last.fm */}
-        <div className="mb-5">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="text-sm font-medium text-white">Last.fm</span>
-            {!lastfmHasApiKey && (
-              <span className="rounded-full bg-white/8 px-2 py-0.5 text-xs text-white/40">No API key — metadata disabled</span>
-            )}
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Artists</span>
-              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.artistCount}</span>
-            </div>
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Albums</span>
-              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.albumCount}</span>
-            </div>
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Tracks</span>
-              <span className="text-sm font-medium text-white tabular-nums">{lastfmStats.trackCount}</span>
-            </div>
-          </div>
-          <button
-            onClick={handleClearLastfm}
-            disabled={lastfmClearing || (lastfmStats.artistCount + lastfmStats.albumCount + lastfmStats.trackCount === 0)}
-            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {lastfmClearing ? "Cleared" : "Clear Last.fm Cache"}
-          </button>
-        </div>
-
-        {/* Deezer */}
-        <div className="mb-5">
-          <p className="text-sm font-medium text-white mb-3">Deezer</p>
-          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Artists</span>
-              <span className="text-sm font-medium text-white tabular-nums">{deezerStats.artistCount}</span>
-            </div>
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Albums</span>
-              <span className="text-sm font-medium text-white tabular-nums">{deezerStats.albumCount}</span>
-            </div>
-          </div>
-          <button
-            onClick={handleClearDeezer}
-            disabled={deezerClearing || (deezerStats.artistCount + deezerStats.albumCount === 0)}
-            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {deezerClearing ? "Cleared" : "Clear Deezer Cache"}
-          </button>
-        </div>
-
-        {/* iTunes / Apple Music */}
-        <div>
-          <p className="text-sm font-medium text-white mb-3">Apple Music</p>
-          <div className="rounded-xl border border-white/10 bg-white/3 divide-y divide-white/5">
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Artists</span>
-              <span className="text-sm font-medium text-white tabular-nums">{itunesStats.artistCount}</span>
-            </div>
-            <div className="flex items-center justify-between px-5 py-3">
-              <span className="text-sm text-white/60">Albums</span>
-              <span className="text-sm font-medium text-white tabular-nums">{itunesStats.albumCount}</span>
-            </div>
-          </div>
-          <button
-            onClick={handleClearItunes}
-            disabled={itunesClearing || (itunesStats.artistCount + itunesStats.albumCount === 0)}
-            className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:border-white/20 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {itunesClearing ? "Cleared" : "Clear Apple Music Cache"}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Main settings page
 // ---------------------------------------------------------------------------
 
-export function SettingsPage() {
-  const [section, setSection] = useState<Section>("account")
+export function SettingsPage({ section: sectionProp }: { section?: string }) {
+  const [, navigate] = useLocation()
+  const section: Section = (sectionProp || "backends") as Section
+
+  const setSection = (s: Section) => {
+    navigate(s === "backends" ? "/settings" : `/settings/${s}`)
+  }
 
   return (
     <div className="flex h-full">
@@ -1779,38 +1346,44 @@ export function SettingsPage() {
         <p className="mb-4 text-[11px] font-bold uppercase tracking-widest text-white/25">Settings</p>
         <nav>
           <ul className="space-y-0.5">
-            {NAV.map(item => (
-              <li key={item.id}>
-                <button
-                  onClick={() => setSection(item.id)}
-                  className={clsx(
-                    "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    section === item.id
-                      ? "bg-white/10 text-white"
-                      : "text-white/50 hover:bg-white/5 hover:text-white"
-                  )}
-                >
-                  <span className={clsx("flex-shrink-0", section === item.id ? "text-white" : "text-white/40")}>
-                    {item.icon}
-                  </span>
-                  {item.label}
-                </button>
-              </li>
-            ))}
+            {NAV.map(item => {
+              const active = section === item.id || (item.id === "backends" && section.startsWith("backends/"))
+              return (
+                <li key={item.id}>
+                  <button
+                    onClick={() => setSection(item.id)}
+                    className={clsx(
+                      "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      active
+                        ? "bg-white/10 text-white"
+                        : "text-white/50 hover:bg-white/5 hover:text-white"
+                    )}
+                  >
+                    <span className={clsx("flex-shrink-0", active ? "text-white" : "text-white/40")}>
+                      {item.icon}
+                    </span>
+                    {item.label}
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         </nav>
       </aside>
 
       {/* Content */}
       <main className="flex-1 overflow-auto p-10 pt-8">
-        <h1 className="mb-8 text-2xl font-bold">
-          {NAV.find(n => n.id === section)?.label}
-        </h1>
+        {!section.startsWith("backends/") && (
+          <h1 className="mb-8 text-2xl font-bold">
+            {NAV.find(n => n.id === section)?.label}
+          </h1>
+        )}
 
-        {section === "account" && <AccountSection />}
+        {section === "backends" && <BackendsListView setSection={setSection} />}
+        {section.startsWith("backends/") && (
+          <BackendSubPage backendId={section.slice(9)} goBack={() => navigate("/settings")} />
+        )}
         {section === "playback" && <PlaybackSection />}
-        {section === "lastfm" && <LastfmSection />}
-        {section === "metadata" && <MetadataSection />}
         {section === "downloads" && (
           <ComingSoon title="Downloads" description="Offline caching and download quality settings will appear here." />
         )}

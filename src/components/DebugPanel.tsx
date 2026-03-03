@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useDebugPanelStore } from "../stores/debugPanelStore"
-import type { Track, Album, Artist } from "../types/plex"
+import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,34 +58,41 @@ function fmt(v: string | number | null | undefined): string {
 // Per-type content
 // ---------------------------------------------------------------------------
 
-function TrackContent({ track }: { track: Track }) {
-  const media = track.media?.[0]
+function TrackContent({ track }: { track: MusicTrack }) {
+  const plex = track._providerData as any
+  const media = plex?.media?.[0]
   const part = media?.parts?.[0]
   const streams = part?.streams ?? []
 
   return (
     <>
       <Section title="IDs">
-        <Row label="rating_key" value={fmt(track.rating_key)} />
-        <Row label="key" value={fmt(track.key)} />
-        <Row label="parent_key" value={fmt(track.parent_key)} />
-        <Row label="grandparent_key" value={fmt(track.grandparent_key)} />
-        <Row label="library_section_id" value={fmt(track.library_section_id)} />
-        {track.playlist_item_id != null && <Row label="playlist_item_id" value={fmt(track.playlist_item_id)} />}
+        <Row label="id" value={fmt(track.id)} />
+        <Row label="artistId" value={fmt(track.artistId)} />
+        <Row label="albumId" value={fmt(track.albumId)} />
         {track.guid && <Row label="guid" value={fmt(track.guid)} />}
       </Section>
 
+      <Section title="Track Info">
+        <Row label="artistName" value={fmt(track.artistName)} />
+        <Row label="albumName" value={fmt(track.albumName)} />
+        <Row label="thumbUrl" value={fmt(track.thumbUrl)} />
+      </Section>
+
       <Section title="File Info">
-        <Row label="file" value={part?.file ?? "—"} />
+        <Row label="file" value={part?.file ?? "---"} />
         <Row label="container" value={fmt(media?.container)} />
-        <Row label="codec" value={fmt(media?.audio_codec)} />
-        <Row label="bitrate" value={media?.bitrate ? `${media.bitrate} kbps` : "—"} />
-        <Row label="size" value={part?.size ? `${(part.size / 1024 / 1024).toFixed(1)} MB` : "—"} />
+        <Row label="codec" value={fmt(track.codec)} />
+        <Row label="bitrate" value={track.bitrate ? `${track.bitrate} kbps` : "---"} />
+        <Row label="channels" value={fmt(track.channels)} />
+        <Row label="bitDepth" value={fmt(track.bitDepth)} />
+        <Row label="samplingRate" value={track.samplingRate ? `${track.samplingRate} Hz` : "---"} />
+        <Row label="size" value={part?.size ? `${(part.size / 1024 / 1024).toFixed(1)} MB` : "---"} />
       </Section>
 
       {streams.length > 0 && (
         <Section title="Streams">
-          {streams.map((s, i) => (
+          {streams.map((s: any, i: number) => (
             <tr key={i} className="border-b border-white/5 last:border-0">
               <td colSpan={2} className="py-1.5 font-mono text-[11px]">
                 <span className="text-white/40">#{i} type={fmt(s.stream_type)} </span>
@@ -107,97 +114,103 @@ function TrackContent({ track }: { track: Track }) {
         </Section>
       )}
 
-      <Section title="Analysis">
-        <Row label="music_analysis_version" value={fmt(track.music_analysis_version)} />
+      <Section title="Audio">
+        <Row label="gain" value={track.gain != null ? `${track.gain.toFixed(2)} dB` : "---"} />
+        <Row label="albumGain" value={track.albumGain != null ? `${track.albumGain.toFixed(2)} dB` : "---"} />
+        <Row label="peak" value={track.peak != null ? track.peak.toFixed(4) : "---"} />
+        <Row label="loudness" value={track.loudness != null ? `${track.loudness.toFixed(2)} LUFS` : "---"} />
       </Section>
 
       <Section title="Stats">
-        <Row label="view_count" value={fmt(track.view_count)} />
-        <Row label="last_viewed_at" value={fmt(track.last_viewed_at)} />
-        <Row label="added_at" value={fmt(track.added_at)} />
-        <Row label="updated_at" value={fmt(track.updated_at)} />
-        <Row label="user_rating" value={fmt(track.user_rating)} />
-        {track.distance != null && <Row label="distance" value={track.distance.toFixed(4)} />}
+        <Row label="playCount" value={fmt(track.playCount)} />
+        <Row label="lastPlayedAt" value={fmt(track.lastPlayedAt)} />
+        <Row label="addedAt" value={fmt(track.addedAt)} />
+        <Row label="userRating" value={fmt(track.userRating)} />
       </Section>
 
-      <RawJson data={track} />
+      <RawJson data={track._providerData} />
     </>
   )
 }
 
-function AlbumContent({ album }: { album: Album }) {
-  const tags = (arr: { tag: string }[]) => arr.map(t => t.tag).join(", ") || "—"
-
+function AlbumContent({ album }: { album: MusicAlbum }) {
   return (
     <>
       <Section title="IDs">
-        <Row label="rating_key" value={fmt(album.rating_key)} />
-        <Row label="key" value={fmt(album.key)} />
-        <Row label="parent_key" value={fmt(album.parent_key)} />
-        <Row label="library_section_id" value={fmt(album.library_section_id)} />
+        <Row label="id" value={fmt(album.id)} />
+        <Row label="artistId" value={fmt(album.artistId)} />
         {album.guid && <Row label="guid" value={fmt(album.guid)} />}
-        {album.parent_guid && <Row label="parent_guid" value={fmt(album.parent_guid)} />}
       </Section>
 
       <Section title="Metadata">
-        <Row label="leaf_count" value={fmt(album.leaf_count)} />
-        <Row label="loudness_analysis_version" value={fmt(album.loudness_analysis_version)} />
+        <Row label="artistName" value={fmt(album.artistName)} />
+        <Row label="trackCount" value={fmt(album.trackCount)} />
         <Row label="studio" value={fmt(album.studio)} />
+        <Row label="year" value={fmt(album.year)} />
+        <Row label="format" value={fmt(album.format)} />
+        <Row label="thumbUrl" value={fmt(album.thumbUrl)} />
       </Section>
 
       <Section title="Tags">
-        <Row label="genre" value={tags(album.genre)} />
-        <Row label="style" value={tags(album.style)} />
-        <Row label="mood" value={tags(album.mood)} />
-        <Row label="label" value={tags(album.label)} />
-        <Row label="subformat" value={tags(album.subformat)} />
+        <Row label="genres" value={album.genres.join(", ") || "---"} />
+        <Row label="styles" value={album.styles.join(", ") || "---"} />
+        <Row label="moods" value={album.moods.join(", ") || "---"} />
+        <Row label="labels" value={album.labels.join(", ") || "---"} />
       </Section>
 
       <Section title="Stats">
-        <Row label="view_count" value={fmt(album.viewed_leaf_count)} />
-        <Row label="added_at" value={fmt(album.added_at)} />
-        <Row label="updated_at" value={fmt(album.updated_at)} />
-        <Row label="user_rating" value={fmt(album.user_rating)} />
-        {album.distance != null && <Row label="distance" value={album.distance.toFixed(4)} />}
+        <Row label="addedAt" value={fmt(album.addedAt)} />
+        <Row label="userRating" value={fmt(album.userRating)} />
       </Section>
 
-      <RawJson data={album} />
+      <RawJson data={album._providerData} />
     </>
   )
 }
 
-function ArtistContent({ artist }: { artist: Artist }) {
+function ArtistContent({ artist }: { artist: MusicArtist }) {
   return (
     <>
       <Section title="IDs">
-        <Row label="rating_key" value={fmt(artist.rating_key)} />
-        <Row label="key" value={fmt(artist.key)} />
-        <Row label="library_section_id" value={fmt(artist.library_section_id)} />
+        <Row label="id" value={fmt(artist.id)} />
         {artist.guid && <Row label="guid" value={fmt(artist.guid)} />}
       </Section>
 
-      {artist.locations.length > 0 && (
-        <Section title="Files">
-          {artist.locations.map((loc, i) => (
-            <Row key={i} label={`location[${i}]`} value={loc} />
-          ))}
-        </Section>
-      )}
-
       <Section title="Media">
-        <Row label="theme" value={fmt(artist.theme)} />
-        <Row label="art" value={fmt(artist.art)} />
+        <Row label="thumbUrl" value={fmt(artist.thumbUrl)} />
+        <Row label="artUrl" value={fmt(artist.artUrl)} />
       </Section>
 
       <Section title="Stats">
-        <Row label="added_at" value={fmt(artist.added_at)} />
-        <Row label="updated_at" value={fmt(artist.updated_at)} />
-        <Row label="user_rating" value={fmt(artist.user_rating)} />
-        {artist.rating != null && <Row label="rating" value={artist.rating.toFixed(2)} />}
-        {artist.distance != null && <Row label="distance" value={artist.distance.toFixed(4)} />}
+        <Row label="addedAt" value={fmt(artist.addedAt)} />
+        <Row label="userRating" value={fmt(artist.userRating)} />
       </Section>
 
-      <RawJson data={artist} />
+      <RawJson data={artist._providerData} />
+    </>
+  )
+}
+
+function PlaylistContent({ playlist }: { playlist: MusicPlaylist }) {
+  return (
+    <>
+      <Section title="IDs">
+        <Row label="id" value={fmt(playlist.id)} />
+      </Section>
+
+      <Section title="Metadata">
+        <Row label="title" value={fmt(playlist.title)} />
+        <Row label="smart" value={playlist.smart ? "true" : "false"} />
+        <Row label="trackCount" value={fmt(playlist.trackCount)} />
+        <Row label="duration" value={playlist.duration ? `${Math.round(playlist.duration / 60000)}m` : "---"} />
+        <Row label="thumbUrl" value={fmt(playlist.thumbUrl)} />
+      </Section>
+
+      <Section title="Stats">
+        <Row label="addedAt" value={fmt(playlist.addedAt)} />
+      </Section>
+
+      <RawJson data={playlist._providerData} />
     </>
   )
 }
@@ -221,7 +234,7 @@ export function DebugPanel() {
   if (!open || !type || !data) return null
 
   const title = `Debug — ${type.charAt(0).toUpperCase() + type.slice(1)}`
-  const subtitle = (data as Track | Album | Artist).title ?? ""
+  const subtitle = (data as MusicTrack | MusicAlbum | MusicArtist | MusicPlaylist).title ?? ""
 
   function handleCopy() {
     void navigator.clipboard.writeText(JSON.stringify(data, null, 2))
@@ -267,9 +280,10 @@ export function DebugPanel() {
 
           {/* Scrollable body */}
           <div className="overflow-y-auto flex-1 px-5 py-4">
-            {type === "track" && <TrackContent track={data as Track} />}
-            {type === "album" && <AlbumContent album={data as Album} />}
-            {type === "artist" && <ArtistContent artist={data as Artist} />}
+            {type === "track" && <TrackContent track={data as MusicTrack} />}
+            {type === "album" && <AlbumContent album={data as MusicAlbum} />}
+            {type === "artist" && <ArtistContent artist={data as MusicArtist} />}
+            {type === "playlist" && <PlaylistContent playlist={data as MusicPlaylist} />}
           </div>
         </div>
       </div>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { useShallow } from "zustand/shallow"
-import { useSearchStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
+import { useSearchStore } from "../../stores"
 import { getRecentSearches, clearRecentSearches } from "../../lib/recentSearches"
-import type { PlexMedia, Track } from "../../types/plex"
+import type { MusicItem, MusicTrack } from "../../types/music"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
 import { PriorityMediaCard } from "../PriorityMediaCard"
@@ -21,8 +21,8 @@ const GROUP_LABELS: Record<MediaType, string> = {
 }
 
 
-function groupByType(results: PlexMedia[]) {
-  const groups: Record<MediaType, PlexMedia[]> = {
+function groupByType(results: MusicItem[]) {
+  const groups: Record<MediaType, MusicItem[]> = {
     artist: [],
     album: [],
     track: [],
@@ -34,16 +34,16 @@ function groupByType(results: PlexMedia[]) {
   return groups
 }
 
-function getInfo(item: PlexMedia, baseUrl: string, token: string) {
+function getInfo(item: MusicItem) {
   switch (item.type) {
     case "artist":
       return {
         title: item.title,
         desc: "Artist",
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+        thumb: item.thumbUrl,
         isArtist: true,
-        href: `/artist/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/artist/${item.id}`,
+        id: item.id,
         itemType: "artist" as const,
         artistName: item.title,
         albumName: null as string | null,
@@ -51,33 +51,33 @@ function getInfo(item: PlexMedia, baseUrl: string, token: string) {
     case "album":
       return {
         title: item.title,
-        desc: item.parent_title,
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+        desc: item.artistName,
+        thumb: item.thumbUrl,
         isArtist: false,
-        href: `/album/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/album/${item.id}`,
+        id: item.id,
         itemType: "album" as const,
-        artistName: item.parent_title,
+        artistName: item.artistName,
         albumName: item.title,
       }
     case "track":
       return {
         title: item.title,
-        desc: `${item.grandparent_title} · ${item.parent_title}`,
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+        desc: `${item.artistName} · ${item.albumName}`,
+        thumb: item.thumbUrl,
         isArtist: false,
         href: null,
-        ratingKey: item.rating_key,
+        id: item.id,
         itemType: "track" as const,
       }
     case "playlist":
       return {
         title: item.title,
         desc: "Playlist",
-        thumb: item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null,
+        thumb: item.thumbUrl,
         isArtist: false,
-        href: `/playlist/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/playlist/${item.id}`,
+        id: item.id,
         itemType: "playlist" as const,
       }
     default:
@@ -87,13 +87,6 @@ function getInfo(item: PlexMedia, baseUrl: string, token: string) {
 
 export function Search() {
   const { results, isSearching, query, search } = useSearchStore(useShallow(s => ({ results: s.results, isSearching: s.isSearching, query: s.query, search: s.search })))
-  const { baseUrl, token, musicSectionId } = useConnectionStore(
-    useShallow(s => ({
-      baseUrl: s.baseUrl,
-      token: s.token,
-      musicSectionId: s.musicSectionId,
-    }))
-  )
   const playTrack = usePlayerStore(s => s.playTrack)
   const { handler: ctxMenu } = useContextMenu()
 
@@ -119,22 +112,22 @@ export function Search() {
             const items = groups[type]
             if (!items || items.length === 0) return null
             const tracks = type === "track"
-              ? items.filter((i): i is Track & { type: "track" } => i.type === "track")
+              ? items.filter((i): i is MusicTrack & { type: "track" } => i.type === "track")
               : []
             return (
               <div key={type}>
                 <div className="mb-3 text-xl font-bold">{GROUP_LABELS[type]}</div>
                 <MediaGrid gap={3}>
                   {items.slice(0, 10).map((item) => {
-                    const info = getInfo(item, baseUrl, token)
+                    const info = getInfo(item)
                     if (!info) return null
                     const prefetch = info.itemType === "artist"
-                      ? () => prefetchArtist(info.ratingKey, musicSectionId ?? 0)
+                      ? () => prefetchArtist(info.id)
                       : info.itemType === "album"
-                        ? () => prefetchAlbum(info.ratingKey)
+                        ? () => prefetchAlbum(info.id)
                         : undefined
                     const onClick = info.itemType === "track"
-                      ? () => void playTrack(item as Track & { type: "track" }, tracks)
+                      ? () => void playTrack(item as MusicTrack & { type: "track" }, tracks)
                       : undefined
                     const onContextMenu = (item.type === "artist" || item.type === "album")
                       ? ctxMenu(item.type, item)
@@ -143,7 +136,7 @@ export function Search() {
                     const Card = usePriority ? PriorityMediaCard : MediaCard
                     return (
                       <Card
-                        key={info.ratingKey}
+                        key={info.id}
                         title={info.title}
                         desc={info.desc}
                         thumb={info.thumb}
@@ -179,8 +172,8 @@ export function Search() {
                 {recentSearches.map(q => (
                   <button
                     key={q}
-                    onClick={() => void search(musicSectionId!, q)}
-                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:border-accent/30 hover:bg-accent/10 hover:text-white transition-all"
+                    onClick={() => void search(q)}
+                    className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:border-accent/30 hover:bg-hl-menu hover:text-white transition-all"
                   >
                     {q}
                   </button>

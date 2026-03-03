@@ -23,10 +23,10 @@ import {
   type LastfmAlbumInfo,
   type LastfmArtistInfo,
   type LastfmTrackInfo,
-} from "../lib/lastfm"
-import { idbJSONStorage } from "./idbStorage"
-import { evictStaleEntries } from "./cacheUtils"
-import { useLastfmStore } from "./lastfmStore"
+} from "./api"
+import { idbJSONStorage } from "../../stores/idbStorage"
+import { evictStaleEntries } from "../../stores/cacheUtils"
+import { useLastfmStore } from "./authStore"
 
 // ---------------------------------------------------------------------------
 // TTLs

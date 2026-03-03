@@ -1,10 +1,12 @@
 import { useState } from "react"
-import { rateItem } from "../../lib/plex"
-import { lastfmLoveTrack } from "../../lib/lastfm"
-import { useLastfmStore } from "../../stores/lastfmStore"
+import { lastfmLoveTrack } from "../../backends/lastfm/api"
+import { useLastfmStore } from "../../backends/lastfm/authStore"
+import { useLibraryStore } from "../../stores/libraryStore"
+import { useProviderStore } from "../../stores/providerStore"
+import { useCapability } from "../../hooks/useCapability"
 
 interface StarRatingProps {
-  ratingKey: number
+  itemId: string
   userRating: number | null
   artist: string
   track: string
@@ -13,7 +15,9 @@ interface StarRatingProps {
   onRated?: () => void  // called after rating; ContextMenu uses to close menu
 }
 
-export function StarRating({ ratingKey, userRating, artist, track, size = 12, enableLove = true, onRated }: StarRatingProps) {
+export function StarRating({ itemId, userRating, artist, track, size = 12, enableLove = true, onRated }: StarRatingProps) {
+  const hasRatings = useCapability("ratings")
+  if (!hasRatings) return null
   const loveThreshold = useLastfmStore(s => s.loveThreshold)
   const [local, setLocal] = useState<number | null | undefined>(undefined)
   const [hoverStar, setHoverStar] = useState(0)
@@ -24,7 +28,11 @@ export function StarRating({ ratingKey, userRating, artist, track, size = 12, en
 
   function rate(value: number | null) {
     setLocal(value)
-    void rateItem(ratingKey, value).catch(() => setLocal(undefined))
+    const provider = useProviderStore.getState().provider
+    if (!provider) return
+    void provider.rate(itemId, value).then(() => {
+      useLibraryStore.getState().onItemRated(itemId, "track", value)
+    }).catch(() => setLocal(undefined))
     if (enableLove && artist && track) {
       void lastfmLoveTrack(artist, track, (value ?? 0) >= loveThreshold).catch(() => {})
     }

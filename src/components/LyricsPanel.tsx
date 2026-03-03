@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useResizable } from "../hooks/useResizable"
+import { useCapability } from "../hooks/useCapability"
 
 /** Shared lyrics body used both in the standalone panel and the queue's Lyrics tab. */
 export function LyricsContent() {
@@ -22,11 +23,11 @@ export function LyricsContent() {
     let i = Math.max(0, lastIndexRef.current)
     while (i < lyricsLines.length) {
       const line = lyricsLines[i]
-      if (positionMs >= line.start_ms && (positionMs < line.end_ms || i === lyricsLines.length - 1)) {
+      if (positionMs >= line.startMs && (positionMs < line.endMs || i === lyricsLines.length - 1)) {
         lastIndexRef.current = i
         return i
       }
-      if (positionMs < line.start_ms) break
+      if (positionMs < line.startMs) break
       i++
     }
 
@@ -34,7 +35,7 @@ export function LyricsContent() {
     let lo = 0, hi = lyricsLines.length - 1
     while (lo <= hi) {
       const mid = (lo + hi) >> 1
-      if (positionMs >= lyricsLines[mid].start_ms) lo = mid + 1
+      if (positionMs >= lyricsLines[mid].startMs) lo = mid + 1
       else hi = mid - 1
     }
     if (hi >= 0) {
@@ -72,7 +73,7 @@ export function LyricsContent() {
                   ? "text-[color:var(--text-primary)] text-base font-semibold"
                   : "text-[color:var(--text-muted)] text-sm hover:text-[color:var(--text-secondary)]"
               }`}
-              onClick={() => usePlayerStore.getState().seekTo(line.start_ms)}
+              onClick={() => usePlayerStore.getState().seekTo(line.startMs)}
             >
               {line.text}
             </p>
@@ -97,6 +98,7 @@ const CloseIcon = () => (
 )
 
 export default function LyricsPanel() {
+  const hasLyrics = useCapability("lyrics")
   const {
     isLyricsOpen, isLyricsPinned, isQueuePinned,
     setLyricsOpen, setLyricsPinned,
@@ -124,6 +126,7 @@ export default function LyricsPanel() {
     return () => document.removeEventListener("keydown", onKeyDown)
   }, [isLyricsOpen, isLyricsPinned])
 
+  if (!hasLyrics) return null
   // When queue is pinned, lyrics live in the queue's Lyrics tab — nothing to render here
   if (isQueuePinned) return null
 

@@ -3,6 +3,7 @@
 
 mod audio;
 mod commands;
+mod db;
 mod deezer;
 mod itunes;
 mod lastfm;
@@ -17,16 +18,25 @@ use tauri::Manager;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 // ---------------------------------------------------------------------------
-// Image cache — persistent disk cache for Plex artwork.
+// Image cache — persistent disk cache for all images.
 //
-// The frontend uses the `pleximg://img?src=<url-encoded-plex-url>` scheme.
+// The frontend uses a single `image://` scheme with semantic entity paths:
+//   image://localhost/artist/{id}?src=...&name=...
+//   image://localhost/album/{id}?src=...&artist=...&name=...
+//   image://localhost/track/{id}?src=...&artist=...&album=...
+//   image://localhost/playlist/{id}?src=...
+//   image://localhost/ext/img?src=...    (one-off external images, no fallback)
+//
 // This handler:
-//   1. Derives a deterministic filename from the URL path (token excluded).
-//   2. Returns cached bytes from disk if present.
-//   3. Otherwise fetches from Plex, saves to disk, then returns bytes.
+//   1. Parses path → entity type + ID.
+//   2. Parses query → src, name, artist params.
+//   3. Derives cache key: {type}_{id}_{md5(src)[..8]}.img
+//   4. Returns cached bytes from disk if present.
+//   5. Fetches from src URL → success → cache + return.
+//   6. src failed/absent + name present → metadata fallback (Deezer, iTunes).
 //
-// Cache dir: {app_cache_dir}/pleximg/
-// Clear via the `clear_image_cache` Tauri command (wired to the Refresh button).
+// Cache dir: {app_cache_dir}/imgcache/
+// Clear via `clear_image_cache` Tauri command.
 // ---------------------------------------------------------------------------
 
 /// Dedicated Tokio runtime for image fetching — isolated from Tauri's runtime.
@@ -38,7 +48,7 @@ static IMGCACHE_RT: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
         .unwrap_or(4);
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(threads)
-        .thread_name("pleximg-cache")
+        .thread_name("imgcache")
         .enable_all()
         .build()
         .expect("Failed to create image-cache async runtime")
@@ -53,29 +63,139 @@ static IMG_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         .expect("Failed to build image HTTP client")
 });
 
-/// Converts a full Plex URL into a safe, deterministic filename.
+/// Derives a deterministic cache key for an image.
 ///
-/// Strips scheme, host:port, and query string — keeping only the path.
-/// Example: `https://plex.example.com:32400/library/metadata/42/thumb?X-Plex-Token=abc`
-///       → `library_metadata_42_thumb.img`
-fn plex_img_cache_key(src_url: &str) -> String {
-    let without_query = src_url.split('?').next().unwrap_or(src_url);
-    let path = without_query
-        .split("://")
-        .nth(1)
-        .and_then(|rest| rest.splitn(2, '/').nth(1))
-        .unwrap_or(without_query);
-    format!("{}.img", path.replace('/', "_"))
+/// Format: `{entity_type}_{entity_id}_{md5(src)[..8]}.img`
+/// When src is empty (fallback-only): `{entity_type}_{entity_id}_fallback.img`
+fn img_cache_key(entity_type: &str, entity_id: &str, src: &str) -> String {
+    if src.is_empty() {
+        return format!("{}_{}_fallback.img", entity_type, entity_id);
+    }
+    use md5::{Digest, Md5};
+    let hash = format!("{:x}", Md5::digest(src.as_bytes()));
+    format!("{}_{}_{}.img", entity_type, entity_id, &hash[..8])
 }
 
-/// Derives a cache key for an external (non-Plex) image URL using MD5 of the full URL.
+/// Attempt metadata fallback — search Deezer/iTunes for an image URL by entity name.
+async fn metadata_fallback_url(
+    entity_type: &str,
+    name: &str,
+    artist: &str,
+) -> Option<String> {
+    match entity_type {
+        "artist" => {
+            // Try Deezer first
+            if let Ok(Some(info)) = crate::deezer::search_artist(name).await {
+                if let Some(url) = info.image_url {
+                    return Some(url);
+                }
+            }
+            None
+        }
+        "album" | "track" => {
+            // Deezer album search
+            let search_artist = if artist.is_empty() { name } else { artist };
+            if let Ok(Some(info)) = crate::deezer::search_album(search_artist, name).await {
+                if let Some(url) = info.cover_url {
+                    return Some(url);
+                }
+            }
+            // iTunes album search
+            if let Ok(Some(info)) = crate::itunes::search_album(search_artist, name).await {
+                if let Some(url) = info.cover_url {
+                    return Some(url);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Resolve an image: check cache → fetch src → metadata fallback → None.
 ///
-/// External CDN URLs (Deezer, Apple Music) are too long and varied to derive
-/// a human-readable key from, so we hash the full URL instead.
-fn meta_img_cache_key(src_url: &str) -> String {
-    use md5::{Digest, Md5};
-    let hash = format!("{:x}", Md5::digest(src_url.as_bytes()));
-    format!("{}.img", hash)
+/// Returns `Some(bytes)` on success, `None` on failure (no image found).
+async fn resolve_image(
+    app: &tauri::AppHandle,
+    entity_type: &str,
+    entity_id: &str,
+    src: &str,
+    name: &str,
+    artist: &str,
+) -> Option<Vec<u8>> {
+    use tauri::Manager;
+
+    // Need at least a src URL or a name for fallback
+    if src.is_empty() && name.is_empty() {
+        return None;
+    }
+
+    let cache_key = img_cache_key(entity_type, entity_id, src);
+    let cache_dir: Option<std::path::PathBuf> = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .map(|d| d.join("imgcache"));
+
+    // Helper: cache bytes to disk and return them
+    let cache_and_return = |bytes: Vec<u8>, dir: &Option<std::path::PathBuf>, key: &str| -> Vec<u8> {
+        if let Some(ref d) = dir {
+            let _ = std::fs::write(d.join(key), &bytes);
+        }
+        bytes
+    };
+
+    // Disk cache hit
+    if let Some(ref dir) = cache_dir {
+        let _ = std::fs::create_dir_all(dir);
+        let file_path = dir.join(&cache_key);
+        if file_path.exists() {
+            if let Ok(bytes) = std::fs::read(&file_path) {
+                return Some(bytes);
+            }
+        }
+    }
+
+    // Try fetching from src URL
+    if !src.is_empty() {
+        if let Ok(resp) = IMG_HTTP.get(src).send().await {
+            if resp.status().is_success() {
+                if let Ok(bytes) = resp.bytes().await {
+                    if !bytes.is_empty() {
+                        return Some(cache_and_return(bytes.to_vec(), &cache_dir, &cache_key));
+                    }
+                }
+            }
+        }
+    }
+
+    // Metadata fallback: only for entity types with names
+    if !name.is_empty() && matches!(entity_type, "artist" | "album" | "track") {
+        if let Some(fallback_url) = metadata_fallback_url(entity_type, name, artist).await {
+            let fb_cache_key = img_cache_key(entity_type, entity_id, &fallback_url);
+            // Check fallback cache
+            if let Some(ref dir) = cache_dir {
+                let fb_path = dir.join(&fb_cache_key);
+                if fb_path.exists() {
+                    if let Ok(bytes) = std::fs::read(&fb_path) {
+                        return Some(bytes);
+                    }
+                }
+            }
+            // Fetch fallback URL
+            if let Ok(resp) = IMG_HTTP.get(&fallback_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        if !bytes.is_empty() {
+                            return Some(cache_and_return(bytes.to_vec(), &cache_dir, &fb_cache_key));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -89,6 +209,18 @@ pub fn run() {
         )
         .init();
 
+    // Linux/Wayland: disable GPU compositing in WebKitGTK to avoid EGL blank-window crashes.
+    // Respects user overrides if already set.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
+            unsafe { std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1") };
+        }
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
@@ -97,6 +229,19 @@ pub fn run() {
         .manage(PlexState::new())
         .manage(AudioEngineState::new())
         .setup(|app| {
+            // Open (or create) the local SQLite database.
+            let db_path = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("Failed to get app data dir: {e}"))?
+                .join("plexmusic.db");
+            if let Some(parent) = db_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let db_state = db::DbState::open(&db_path)
+                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            app.manage(db_state);
+
             // Compute audio cache directory alongside the image cache.
             let audio_cache_dir = app.path().app_cache_dir().ok().map(|d| d.join("plexaudio"));
 
@@ -125,168 +270,48 @@ pub fn run() {
 
             Ok(())
         })
-        // ---- Custom image-caching protocol (async — does not block Tauri's handler threads) ----
-        .register_asynchronous_uri_scheme_protocol("pleximg", |ctx, request, responder| {
+        // ---- Semantic image-caching protocol (async) ----
+        //
+        // image://localhost/{entity_type}/{entity_id}?src=...&name=...&artist=...
+        // image://localhost/ext/img?src=...  (one-off external, no fallback)
+        .register_asynchronous_uri_scheme_protocol("image", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            let query = request.uri().query().unwrap_or("").to_string();
+            let uri = request.uri();
+            let raw_path = uri.path().trim_start_matches('/').to_string();
+            let query = uri.query().unwrap_or("").to_string();
 
             IMGCACHE_RT.spawn(async move {
-                let src = url::form_urlencoded::parse(query.as_bytes())
-                    .find(|(k, _)| k == "src")
-                    .map(|(_, v)| v.into_owned())
-                    .unwrap_or_default();
+                // Parse query params
+                let params: std::collections::HashMap<String, String> =
+                    url::form_urlencoded::parse(query.as_bytes())
+                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                        .collect();
+                let src = params.get("src").cloned().unwrap_or_default();
+                let name = params.get("name").cloned().unwrap_or_default();
+                let artist = params.get("artist").cloned().unwrap_or_default();
 
-                if src.is_empty() {
-                    responder.respond(
-                        tauri::http::Response::builder().status(400).body(vec![]).unwrap(),
-                    );
-                    return;
-                }
+                // Parse path → entity_type / entity_id
+                // Paths: "artist/548757", "album/123", "ext/img", etc.
+                let parts: Vec<&str> = raw_path.splitn(2, '/').collect();
+                let entity_type = parts.first().copied().unwrap_or("");
+                let entity_id = if parts.len() > 1 { parts[1] } else { "" };
 
-                let cache_key = plex_img_cache_key(&src);
-                let cache_dir: Option<std::path::PathBuf> = app
-                    .path()
-                    .app_cache_dir()
-                    .ok()
-                    .map(|d| d.join("pleximg"));
+                // Resolve the image — result is Some(bytes) on success, None on failure.
+                let result = resolve_image(&app, entity_type, entity_id, &src, &name, &artist).await;
 
-                // Disk cache hit
-                if let Some(ref dir) = cache_dir {
-                    let _ = std::fs::create_dir_all(dir);
-                    let file_path = dir.join(&cache_key);
-                    if file_path.exists() {
-                        if let Ok(bytes) = std::fs::read(&file_path) {
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .header("Content-Type", "image/jpeg")
-                                    .header("Cache-Control", "max-age=86400")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(bytes)
-                                    .unwrap(),
-                            );
-                            return;
-                        }
-                    }
-                }
-
-                // Cache miss — async fetch from Plex
-                match IMG_HTTP.get(&src).send().await {
-                    Ok(resp) => match resp.bytes().await {
-                        Ok(bytes) => {
-                            if let Some(ref dir) = cache_dir {
-                                let _ = std::fs::write(dir.join(&cache_key), &bytes);
-                            }
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .header("Content-Type", "image/jpeg")
-                                    .header("Cache-Control", "max-age=86400")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(bytes.to_vec())
-                                    .unwrap(),
-                            );
-                        }
-                        Err(_) => {
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .status(404)
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(vec![])
-                                    .unwrap(),
-                            );
-                        }
-                    },
-                    Err(_) => {
-                        responder.respond(
-                            tauri::http::Response::builder()
-                                .status(404)
-                                .header("Access-Control-Allow-Origin", "*")
-                                .body(vec![])
-                                .unwrap(),
-                        );
-                    }
-                }
-            });
-        })
-        // ---- External metadata image-caching protocol (async) ----
-        .register_asynchronous_uri_scheme_protocol("metaimg", |ctx, request, responder| {
-            let app = ctx.app_handle().clone();
-            let query = request.uri().query().unwrap_or("").to_string();
-
-            IMGCACHE_RT.spawn(async move {
-                let src = url::form_urlencoded::parse(query.as_bytes())
-                    .find(|(k, _)| k == "src")
-                    .map(|(_, v)| v.into_owned())
-                    .unwrap_or_default();
-
-                if src.is_empty() {
-                    responder.respond(
-                        tauri::http::Response::builder().status(400).body(vec![]).unwrap(),
-                    );
-                    return;
-                }
-
-                let cache_key = meta_img_cache_key(&src);
-                let cache_dir: Option<std::path::PathBuf> = app
-                    .path()
-                    .app_cache_dir()
-                    .ok()
-                    .map(|d| d.join("metaimg"));
-
-                // Disk cache hit
-                if let Some(ref dir) = cache_dir {
-                    let _ = std::fs::create_dir_all(dir);
-                    let file_path = dir.join(&cache_key);
-                    if file_path.exists() {
-                        if let Ok(bytes) = std::fs::read(&file_path) {
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .header("Content-Type", "image/jpeg")
-                                    .header("Cache-Control", "max-age=604800")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(bytes)
-                                    .unwrap(),
-                            );
-                            return;
-                        }
-                    }
-                }
-
-                // Cache miss — async fetch from external CDN
-                match IMG_HTTP.get(&src).send().await {
-                    Ok(resp) => match resp.bytes().await {
-                        Ok(bytes) => {
-                            if let Some(ref dir) = cache_dir {
-                                let _ = std::fs::write(dir.join(&cache_key), &bytes);
-                            }
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .header("Content-Type", "image/jpeg")
-                                    .header("Cache-Control", "max-age=604800")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(bytes.to_vec())
-                                    .unwrap(),
-                            );
-                        }
-                        Err(_) => {
-                            responder.respond(
-                                tauri::http::Response::builder()
-                                    .status(404)
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .body(vec![])
-                                    .unwrap(),
-                            );
-                        }
-                    },
-                    Err(_) => {
-                        responder.respond(
-                            tauri::http::Response::builder()
-                                .status(404)
-                                .header("Access-Control-Allow-Origin", "*")
-                                .body(vec![])
-                                .unwrap(),
-                        );
-                    }
-                }
+                responder.respond(match result {
+                    Some(bytes) => tauri::http::Response::builder()
+                        .header("Content-Type", "image/jpeg")
+                        .header("Cache-Control", "max-age=604800")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(bytes)
+                        .unwrap(),
+                    None => tauri::http::Response::builder()
+                        .status(if src.is_empty() && name.is_empty() { 400 } else { 404 })
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(vec![])
+                        .unwrap(),
+                });
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -323,6 +348,8 @@ pub fn run() {
             commands::get_liked_albums,
             commands::create_playlist,
             commands::add_items_to_playlist,
+            commands::delete_playlist,
+            commands::edit_playlist,
             // Play queue
             commands::create_play_queue,
             commands::get_play_queue,
@@ -355,7 +382,6 @@ pub fn run() {
             // Cache
             commands::clear_image_cache,
             commands::get_image_cache_info,
-            commands::clear_meta_image_cache,
             // Plex.tv OAuth
             commands::plex_auth_start,
             commands::plex_auth_poll,
@@ -375,6 +401,7 @@ pub fn run() {
             commands::audio_clear_cache,
             commands::audio_set_cache_max_bytes,
             commands::audio_set_crossfade_window,
+            commands::audio_set_crossfade_style,
             commands::audio_set_normalization_enabled,
             commands::audio_set_eq,
             commands::audio_set_eq_enabled,
@@ -383,6 +410,9 @@ pub fn run() {
             commands::audio_set_eq_postgain_auto,
             commands::audio_get_current_device,
             commands::audio_set_same_album_crossfade,
+            commands::audio_get_track_analysis,
+            commands::audio_analyze_track,
+            commands::audio_set_smart_crossfade,
             commands::get_lyrics,
             commands::audio_get_output_devices,
             commands::audio_set_output_device,
@@ -408,6 +438,33 @@ pub fn run() {
             commands::deezer_search_album,
             commands::itunes_search_artist,
             commands::itunes_search_album,
+            // Local SQLite database
+            commands::db_kv_get,
+            commands::db_kv_set,
+            commands::db_get_info,
+            commands::db_upsert_artist,
+            commands::db_upsert_artists,
+            commands::db_get_artist,
+            commands::db_search_artists,
+            commands::db_get_artist_count,
+            commands::db_upsert_album,
+            commands::db_upsert_albums,
+            commands::db_get_album,
+            commands::db_search_albums,
+            commands::db_get_albums_by_artist,
+            commands::db_get_album_count,
+            commands::db_upsert_track,
+            commands::db_upsert_tracks,
+            commands::db_get_track,
+            commands::db_search_tracks,
+            commands::db_get_tracks_by_album,
+            commands::db_get_track_count,
+            commands::db_upsert_playlists,
+            commands::db_get_playlists,
+            commands::db_add_playlist_track,
+            commands::db_get_playlist_tracks,
+            // Generic HTTP proxy
+            commands::http_get_json,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

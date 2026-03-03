@@ -37,6 +37,36 @@ impl BiquadCoeffs {
         Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 }
     }
 
+    /// RBJ Cookbook low-pass filter. Q=0.707 (Butterworth) gives a clean sweep.
+    pub fn lowpass(freq: f32, q: f32, sample_rate: f32) -> Self {
+        let w0 = 2.0 * PI * freq / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: ((1.0 - cos_w0) / 2.0) / a0,
+            b1: (1.0 - cos_w0) / a0,
+            b2: ((1.0 - cos_w0) / 2.0) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+
+    /// RBJ Cookbook high-pass filter. Q=0.707 (Butterworth) gives a clean sweep.
+    pub fn highpass(freq: f32, q: f32, sample_rate: f32) -> Self {
+        let w0 = 2.0 * PI * freq / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: ((1.0 + cos_w0) / 2.0) / a0,
+            b1: (-(1.0 + cos_w0)) / a0,
+            b2: ((1.0 + cos_w0) / 2.0) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+
     /// Returns true when this is a pure pass-through — allows skipping the
     /// per-sample multiply chain for bands with 0 dB gain.
     pub fn is_identity(&self) -> bool {

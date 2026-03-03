@@ -3,47 +3,34 @@ import { createPortal } from "react-dom"
 import { Link } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import { useShallow } from "zustand/react/shallow"
-import { useConnectionStore, buildPlexImageUrl, usePlayerStore, useUIStore, useLibraryStore } from "../../stores"
-import {
-  getArtist,
-  getArtistAlbumsInSection,
-  getArtistSimilar,
-  getArtistPopularTracksInSection,
-  getArtistSonicallySimilar,
-  getRelatedHubs,
-  getArtistStations,
-  buildItemUri,
-} from "../../lib/plex"
+import { usePlayerStore, useUIStore, useLibraryStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
 import { prefetchTrackAudio } from "../../stores/playerStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
 import { useFocalPoint } from "../../lib/focalPoint"
-import type { Artist, Album, Track, Hub, Playlist } from "../../types/plex"
+import type { MusicArtist, MusicAlbum, MusicTrack, MusicHub, MusicPlaylist } from "../../types/music"
 import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
 import { UltraBlur } from "../UltraBlur"
 import { getCachedArtist, prefetchAlbum, prefetchArtist, setArtistCache } from "../../stores/metadataCache"
-import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
-import type { LastfmArtistInfo } from "../../lib/lastfm"
-import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
-import type { DeezerArtistInfo } from "../../lib/deezer"
-import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
-import type { ItunesArtistInfo } from "../../lib/itunes"
-import { buildMetaImageUrl } from "../../lib/metadataImage"
+import { useDeezerMetadataStore } from "../../backends/deezer/store"
+import { useArtistEnrichment } from "../../hooks/useMetadataEnrichment"
+import { buildImageUrl, buildExternalImageUrl } from "../../lib/imageUrl"
 import { formatMs } from "../../lib/formatters"
 import { ImageModal } from "../shared/ImageModal"
-import { useMetadataFetch } from "../../hooks/useMetadataFetch"
 import { useMetadataSourceStore } from "../../stores/metadataSourceStore"
 import { HeroRating } from "../HeroRating"
 import { StarRating } from "../shared/StarRating"
 import { useDebugStore } from "../../stores/debugStore"
 import { useDebugPanelStore } from "../../stores/debugPanelStore"
+import { useCapability } from "../../hooks/useCapability"
 
 
-function dedupe<T extends { rating_key: number }>(items: T[]): T[] {
-  const seen = new Set<number>()
+function dedupe<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>()
   return items.filter(item => {
-    if (seen.has(item.rating_key)) return false
-    seen.add(item.rating_key)
+    if (seen.has(item.id)) return false
+    seen.add(item.id)
     return true
   })
 }
@@ -67,7 +54,7 @@ function DeezerArtistAvatar({ name }: { name: string }) {
     return () => { cancelled = true }
   }, [name, getDeezerArtist])
 
-  const cachedUrl = buildMetaImageUrl(imageUrl)
+  const cachedUrl = buildExternalImageUrl(imageUrl)
   if (cachedUrl) {
     return <img src={cachedUrl} alt={name} className="h-16 w-16 rounded-full object-cover" />
   }
@@ -78,21 +65,23 @@ function DeezerArtistAvatar({ name }: { name: string }) {
   )
 }
 
-export function ArtistPage({ artistId }: { artistId: number }) {
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid })))
+export function ArtistPage({ artistId }: { artistId: string }) {
+  const provider = useProviderStore(s => s.provider)
   const { playTrack, playFromUri, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playFromUri: s.playFromUri, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
+  const hasRadio = useCapability("radio")
+  const hasSonicSimilarity = useCapability("sonicSimilarity")
 
   const cached = getCachedArtist(artistId)
-  const [artist, setArtist] = useState<Artist | null>(cached?.artist ?? null)
-  const [fullAlbums, setFullAlbums] = useState<Album[]>(cached?.albums ?? [])
-  const [singles, setSingles] = useState<Album[]>(cached?.singles ?? [])
-  const [popularTracks, setPopularTracks] = useState<Track[]>([])
-  const [similarArtists, setSimilarArtists] = useState<Artist[]>([])
-  const [sonicallySimilar, setSonicallySimilar] = useState<Artist[]>([])
-  const [relatedHubs, setRelatedHubs] = useState<Hub[]>([])
-  const [stations, setStations] = useState<Playlist[]>([])
+  const [artist, setArtist] = useState<MusicArtist | null>(cached?.artist ?? null)
+  const [fullAlbums, setFullAlbums] = useState<MusicAlbum[]>(cached?.albums ?? [])
+  const [singles, setSingles] = useState<MusicAlbum[]>(cached?.singles ?? [])
+  const [popularTracks, setPopularTracks] = useState<MusicTrack[]>([])
+  const [similarArtists, setSimilarArtists] = useState<MusicArtist[]>([])
+  const [sonicallySimilar, setSonicallySimilar] = useState<MusicArtist[]>([])
+  const [relatedHubs, setRelatedHubs] = useState<MusicHub[]>([])
+  const [stations, setStations] = useState<MusicPlaylist[]>([])
   const [isLoading, setIsLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
 
@@ -113,17 +102,8 @@ export function ArtistPage({ artistId }: { artistId: number }) {
     tagsStyle: s.tagsStyle,
   })))
 
-  // LastFM metadata
-  const getLastfmArtist = useLastfmMetadataStore(s => s.getArtist)
-  const [lastfmData, setLastfmData] = useState<LastfmArtistInfo | null>(null)
-
-  // Deezer metadata
-  const getDeezerArtist = useDeezerMetadataStore(s => s.getArtist)
-  const [deezerData, setDeezerData] = useState<DeezerArtistInfo | null>(null)
-
-  // iTunes metadata
-  const getItunesArtist = useItunesMetadataStore(s => s.getArtist)
-  const [itunesData, setItunesData] = useState<ItunesArtistInfo | null>(null)
+  // Enrichment metadata from all backends
+  const { lastfm: lastfmData, deezer: deezerData, itunes: itunesData } = useArtistEnrichment(artist?.title ?? null)
 
   useEffect(() => {
     setError(null)
@@ -158,21 +138,21 @@ export function ArtistPage({ artistId }: { artistId: number }) {
     }
 
     // Always re-fetch for freshness (silently when cache-seeded).
-    const sectionId = musicSectionId ?? 0
+    if (!provider) return
     Promise.all([
-      getArtist(artistId),
-      getArtistAlbumsInSection(sectionId, artistId).catch(() => [] as Album[]),
-      getArtistAlbumsInSection(sectionId, artistId, "EP,Single").catch(() => [] as Album[]),
-      getArtistPopularTracksInSection(sectionId, artistId, 15).catch(() => [] as Track[]),
-      getArtistSimilar(artistId).catch(() => [] as Artist[]),
-      getArtistSonicallySimilar(artistId, 20).catch(() => [] as Artist[]),
-      getRelatedHubs(artistId, 20).catch(() => [] as Hub[]),
-      getArtistStations(artistId).catch(() => [] as Playlist[]),
+      provider.getArtist(artistId),
+      provider.getArtistAlbumsInSection ? provider.getArtistAlbumsInSection(artistId) : provider.getArtistAlbums(artistId),
+      provider.getArtistAlbumsInSection ? provider.getArtistAlbumsInSection(artistId, "EP,Single") : Promise.resolve([] as MusicAlbum[]),
+      provider.getArtistPopularTracksInSection ? provider.getArtistPopularTracksInSection(artistId, 15) : provider.getArtistPopularTracks(artistId, 15),
+      provider.getArtistSimilar(artistId).catch(() => [] as MusicArtist[]),
+      provider.getArtistSonicallySimilar ? provider.getArtistSonicallySimilar(artistId, 20).catch(() => [] as MusicArtist[]) : Promise.resolve([] as MusicArtist[]),
+      provider.getRelatedHubs(artistId).catch(() => [] as MusicHub[]),
+      provider.getArtistStations ? provider.getArtistStations(artistId).catch(() => [] as MusicPlaylist[]) : Promise.resolve([] as MusicPlaylist[]),
     ])
       .then(([a, allAlbums, singleList, tracks, sim, sonic, hubs, stationList]) => {
         const dedupedSingles = dedupe(singleList)
-        const singleKeys = new Set(dedupedSingles.map(s => s.rating_key))
-        const albums = dedupe(allAlbums).filter(a => !singleKeys.has(a.rating_key))
+        const singleKeys = new Set(dedupedSingles.map(s => s.id))
+        const albums = dedupe(allAlbums).filter(a => !singleKeys.has(a.id))
         const popularTracks = dedupe(tracks)
 
         setArtist(a)
@@ -198,19 +178,12 @@ export function ArtistPage({ artistId }: { artistId: number }) {
       })
       .catch(e => setError(String(e)))
       .finally(() => setIsLoading(false))
-  }, [artistId, musicSectionId, pageRefreshKey])
-
-  // Fetch LastFM + Deezer + iTunes metadata once we know the artist name
-  useMetadataFetch([
-    { key: artist?.title, fetch: () => getLastfmArtist(artist!.title), setState: setLastfmData },
-    { key: artist?.title, fetch: () => getDeezerArtist(artist!.title), setState: setDeezerData },
-    { key: artist?.title, fetch: () => getItunesArtist(artist!.title), setState: setItunesData },
-  ], [artist?.title, getLastfmArtist, getDeezerArtist, getItunesArtist])
+  }, [artistId, pageRefreshKey])
 
   // Compute artUrl before early returns so useFocalPoint can be called unconditionally.
   // Respect source priority — iterate through priority order, pick first source with an image.
-  const plexArt   = artist?.art ? buildPlexImageUrl(baseUrl, token, artist.art) : null
-  const deezerUrl = buildMetaImageUrl(deezerData?.image_url)
+  const plexArt   = artist?.artUrl ?? null
+  const deezerUrl = deezerData?.image_url ? buildImageUrl("artist", artistId, deezerData.image_url, artist?.title) : null
   let artUrl: string | null = null
   for (const src of priority) {
     if (src === "plex"   && plexArt)   { artUrl = plexArt;   break }
@@ -219,12 +192,12 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   if (!artUrl) artUrl = plexArt ?? deezerUrl ?? null
   const heroBgPos = useFocalPoint(artUrl)
 
-  // Map from lowercase artist name → Plex ratingKey for "Fans Also Like" linking.
+  // Map from lowercase artist name → provider ID for "Fans Also Like" linking.
   // Covers both Plex-similar and sonically-similar artists that are in the library.
   const plexArtistMap = useMemo(() => {
-    const map = new Map<string, number>()
+    const map = new Map<string, string>()
     for (const a of [...similarArtists, ...sonicallySimilar]) {
-      map.set(a.title.toLowerCase(), a.rating_key)
+      map.set(a.title.toLowerCase(), a.id)
     }
     return map
   }, [similarArtists, sonicallySimilar])
@@ -238,20 +211,20 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   // Memoize album/hub filtering — depends on relatedHubs, fullAlbums, singles
   const { albumHubs, displayAlbums, displaySingles, genres } = useMemo(() => {
     const albumHubs = relatedHubs.filter(h =>
-      !SKIP_HUB_IDS.has(h.hub_identifier) &&
-      h.metadata.some(m => m.type === "album")
+      !SKIP_HUB_IDS.has(h.identifier) &&
+      h.items.some(m => m.type === "album")
     )
     const hubAlbumKeys = new Set(
-      albumHubs.flatMap(h => h.metadata.filter(m => m.type === "album").map(m => m.rating_key))
+      albumHubs.flatMap(h => h.items.filter(m => m.type === "album").map(m => m.id))
     )
-    const da = fullAlbums.filter(a => !hubAlbumKeys.has(a.rating_key))
-    const ds = singles.filter(a => !hubAlbumKeys.has(a.rating_key))
+    const da = fullAlbums.filter(a => !hubAlbumKeys.has(a.id))
+    const ds = singles.filter(a => !hubAlbumKeys.has(a.id))
 
     const g: string[] = []
     const seenGenres = new Set<string>()
     for (const album of [...fullAlbums, ...singles]) {
-      for (const gn of album.genre) {
-        if (!seenGenres.has(gn.tag)) { seenGenres.add(gn.tag); g.push(gn.tag) }
+      for (const gn of album.genres) {
+        if (!seenGenres.has(gn)) { seenGenres.add(gn); g.push(gn) }
       }
     }
     return { albumHubs, displayAlbums: da, displaySingles: ds, genres: g }
@@ -261,7 +234,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
   if (!artist) return null
 
-  const plexThumb = artist.thumb ? buildPlexImageUrl(baseUrl, token, artist.thumb) : null
+  const plexThumb = artist.thumbUrl ?? null
   let thumbUrl: string | null = null
   for (const src of priority) {
     if (src === "plex"   && plexThumb) { thumbUrl = plexThumb; break }
@@ -269,8 +242,8 @@ export function ArtistPage({ artistId }: { artistId: number }) {
   }
   if (!thumbUrl) thumbUrl = plexThumb ?? deezerUrl ?? null
 
-  const artistUri = sectionUuid
-    ? buildItemUri(sectionUuid, `/library/metadata/${artistId}`)
+  const artistUri = provider?.buildItemUri
+    ? provider.buildItemUri(`/library/metadata/${artistId}`)
     : null
 
   // Bio: pick from the highest-priority source that has text.
@@ -349,7 +322,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             </svg>
           </button>
           {/* Artist Radio */}
-          <button
+          {hasRadio && <button
             onClick={() => void playRadio(artistId, 'artist', artist.title)}
             title="Artist Radio — continuous sonically-similar music"
             className="flex h-11 w-11 items-center justify-center rounded-full bg-black/30 backdrop-blur-sm border border-white/10 text-accent hover:bg-black/45 hover:scale-105 active:scale-95 transition-all"
@@ -357,7 +330,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
               <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
             </svg>
-          </button>
+          </button>}
           {/* Three-dot menu */}
           <div className="relative">
             <button
@@ -391,8 +364,8 @@ export function ArtistPage({ artistId }: { artistId: number }) {
 
                   {/* Rating */}
                   <StarRating
-                    ratingKey={artist.rating_key}
-                    userRating={artist.user_rating ?? null}
+                    itemId={artist.id}
+                    userRating={artist.userRating ?? null}
                     enableLove={false}
                     artist={artist.title}
                     track=""
@@ -503,7 +476,7 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             )}
 
             {/* Rating */}
-            <HeroRating ratingKey={artistId} userRating={artist.user_rating} />
+            <HeroRating itemId={artistId} userRating={artist.userRating} itemType="artist" />
 
             {/* Metadata stats row */}
             {(lastfmData || deezerData) && (
@@ -562,16 +535,16 @@ export function ArtistPage({ artistId }: { artistId: number }) {
             </div>
             <div className="flex flex-col">
               {popularTracks.map((track, i) => {
-                const albumId = track.parent_key ? track.parent_key.split("/").pop() : null
-                const isActive = currentTrack?.rating_key === track.rating_key
-                const isContextTarget = isCtxTarget(track.rating_key)
+                const albumId = track.albumId
+                const isActive = currentTrack?.id === track.id
+                const isContextTarget = isCtxTarget(track.id)
                 return (
                   <div
-                    key={track.rating_key}
+                    key={track.id}
                     onClick={() => playTrack(track, popularTracks, artist.title, `/artist/${artistId}`)}
                     onMouseEnter={() => prefetchTrackAudio(track)}
                     onContextMenu={ctxMenu("track", track)}
-                    className={`group flex cursor-pointer items-center gap-3 rounded-md px-3 py-1.5 ${isActive || isContextTarget ? "bg-accent/10" : "hover:bg-accent/10"}`}
+                    className={`group flex cursor-pointer items-center gap-3 rounded-md px-3 py-1.5 ${isActive || isContextTarget ? "bg-hl-menu" : "hover:bg-hl-menu"}`}
                   >
                     {isActive ? (
                       <>
@@ -609,17 +582,17 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                               className="whitespace-nowrap text-xs text-gray-500 hover:text-white hover:underline transition-colors"
                               onClick={e => e.stopPropagation()}
                             >
-                              {track.parent_title}
+                              {track.albumName}
                             </Link>
                           </span>
                         )}
                       </div>
-                      {track.original_title && track.original_title !== artist.title && (
-                        <span className="text-xs text-gray-500">{track.original_title}</span>
+                      {track.originalTitle && track.originalTitle !== artist.title && (
+                        <span className="text-xs text-gray-500">{track.originalTitle}</span>
                       )}
                     </div>
                     <span onClick={e => e.stopPropagation()}>
-                      <HeroRating ratingKey={track.rating_key} userRating={track.user_rating} />
+                      <HeroRating itemId={track.id} userRating={track.userRating} />
                     </span>
                     <span className="w-32 flex-shrink-0 flex items-center justify-end gap-2">
                       <button
@@ -632,16 +605,16 @@ export function ArtistPage({ artistId }: { artistId: number }) {
                         </svg>
                         Queue
                       </button>
-                      <button
+                      {hasRadio && <button
                         className="hidden group-hover:flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
                         title="Track Radio"
-                        onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
+                        onClick={e => { e.stopPropagation(); void playRadio(track.id, 'track') }}
                       >
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                           <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
                         </svg>
                         Radio
-                      </button>
+                      </button>}
                       <span className="text-xs tabular-nums text-gray-400 group-hover:hidden">
                         {formatMs(track.duration)}
                       </span>
@@ -657,16 +630,16 @@ export function ArtistPage({ artistId }: { artistId: number }) {
           <ScrollRow title="Albums" restoreKey={`artist-${artistId}-albums`}>
             {displayAlbums.map(album => (
               <MediaCard
-                key={album.rating_key}
+                key={album.id}
                 title={album.title}
                 desc={String(album.year)}
-                thumb={album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null}
-                href={`/album/${album.rating_key}`}
-                prefetch={() => prefetchAlbum(album.rating_key)}
-                onPlay={() => sectionUuid && void playFromUri(
-                  buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
-                  false, album.title, `/album/${album.rating_key}`
-                )}
+                thumb={album.thumbUrl}
+                href={`/album/${album.id}`}
+                prefetch={() => prefetchAlbum(album.id)}
+                onPlay={() => {
+                  const uri = provider?.buildItemUri?.(`/library/metadata/${album.id}`)
+                  if (uri) void playFromUri(uri, false, album.title, `/album/${album.id}`)
+                }}
                 onContextMenu={ctxMenu("album", album)}
                 scrollItem
               />
@@ -678,16 +651,16 @@ export function ArtistPage({ artistId }: { artistId: number }) {
           <ScrollRow title="Singles & EPs" restoreKey={`artist-${artistId}-singles`}>
             {displaySingles.map(album => (
               <MediaCard
-                key={album.rating_key}
+                key={album.id}
                 title={album.title}
                 desc={`Single · ${album.year}`}
-                thumb={album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null}
-                href={`/album/${album.rating_key}`}
-                prefetch={() => prefetchAlbum(album.rating_key)}
-                onPlay={() => sectionUuid && void playFromUri(
-                  buildItemUri(sectionUuid, `/library/metadata/${album.rating_key}`),
-                  false, album.title, `/album/${album.rating_key}`
-                )}
+                thumb={album.thumbUrl}
+                href={`/album/${album.id}`}
+                prefetch={() => prefetchAlbum(album.id)}
+                onPlay={() => {
+                  const uri = provider?.buildItemUri?.(`/library/metadata/${album.id}`)
+                  if (uri) void playFromUri(uri, false, album.title, `/album/${album.id}`)
+                }}
                 onContextMenu={ctxMenu("album", album)}
                 scrollItem
               />
@@ -696,28 +669,26 @@ export function ArtistPage({ artistId }: { artistId: number }) {
         )}
 
         {albumHubs.map(hub => {
-          const albums = hub.metadata.filter(
-            (m): m is Album & { type: "album" } => m.type === "album"
-          )
+          const albums = hub.items.filter(m => m.type === "album")
           if (albums.length === 0) return null
           return (
             <ScrollRow
-              key={hub.hub_identifier}
+              key={hub.identifier}
               title={hub.title}
-              restoreKey={`artist-${artistId}-${hub.hub_identifier}`}
+              restoreKey={`artist-${artistId}-${hub.identifier}`}
             >
               {albums.map(a => (
                 <MediaCard
-                  key={a.rating_key}
+                  key={a.id}
                   title={a.title}
                   desc={String(a.year)}
-                  thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
-                  href={`/album/${a.rating_key}`}
-                  prefetch={() => prefetchAlbum(a.rating_key)}
-                  onPlay={() => sectionUuid && void playFromUri(
-                    buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
-                    false, a.title, `/album/${a.rating_key}`
-                  )}
+                  thumb={a.thumbUrl}
+                  href={`/album/${a.id}`}
+                  prefetch={() => prefetchAlbum(a.id)}
+                  onPlay={() => {
+                    const uri = provider?.buildItemUri?.(`/library/metadata/${a.id}`)
+                    if (uri) void playFromUri(uri, false, a.title, `/album/${a.id}`)
+                  }}
                   onContextMenu={ctxMenu("album", a)}
                   scrollItem
                 />
@@ -730,16 +701,16 @@ export function ArtistPage({ artistId }: { artistId: number }) {
           <ScrollRow title="Similar Artists" restoreKey={`artist-${artistId}-similar`}>
             {similarArtists.map(a => (
               <MediaCard
-                key={a.rating_key}
+                key={a.id}
                 title={a.title}
                 desc="Artist"
-                thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
-                href={`/artist/${a.rating_key}`}
-                prefetch={() => prefetchArtist(a.rating_key, musicSectionId ?? 0)}
-                onPlay={() => sectionUuid && void playFromUri(
-                  buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
-                  false, a.title, `/artist/${a.rating_key}`
-                )}
+                thumb={a.thumbUrl}
+                href={`/artist/${a.id}`}
+                prefetch={() => prefetchArtist(a.id)}
+                onPlay={() => {
+                  const uri = provider?.buildItemUri?.(`/library/metadata/${a.id}`)
+                  if (uri) void playFromUri(uri, false, a.title, `/artist/${a.id}`)
+                }}
                 onContextMenu={ctxMenu("artist", a)}
                 isArtist
                 scrollItem
@@ -749,22 +720,23 @@ export function ArtistPage({ artistId }: { artistId: number }) {
         )}
 
         {/* When Last.fm is top priority, hide Plex sonic similar (Last.fm similar shown below) */}
-        {priority[0] !== "lastfm" && sonicallySimilar.length > 0 && (
+        {hasSonicSimilarity && priority[0] !== "lastfm" && sonicallySimilar.length > 0 && (
           <ScrollRow title="Sonically Similar Artists" restoreKey={`artist-${artistId}-sonic`}>
             {sonicallySimilar.map(a => {
-              const matchPct = a.distance != null ? `${Math.round((1 - a.distance) * 100)}% match` : "Artist"
+              const distance = a.distance
+              const matchPct = distance != null ? `${Math.round((1 - distance) * 100)}% match` : "Artist"
               return (
                 <MediaCard
-                  key={a.rating_key}
+                  key={a.id}
                   title={a.title}
                   desc={matchPct}
-                  thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
-                  href={`/artist/${a.rating_key}`}
-                  prefetch={() => prefetchArtist(a.rating_key, musicSectionId ?? 0)}
-                  onPlay={() => sectionUuid && void playFromUri(
-                    buildItemUri(sectionUuid, `/library/metadata/${a.rating_key}`),
-                    false, a.title, `/artist/${a.rating_key}`
-                  )}
+                  thumb={a.thumbUrl}
+                  href={`/artist/${a.id}`}
+                  prefetch={() => prefetchArtist(a.id)}
+                  onPlay={() => {
+                    const uri = provider?.buildItemUri?.(`/library/metadata/${a.id}`)
+                    if (uri) void playFromUri(uri, false, a.title, `/artist/${a.id}`)
+                  }}
                   onContextMenu={ctxMenu("artist", a)}
                   isArtist
                   scrollItem

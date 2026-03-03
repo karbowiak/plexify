@@ -1,9 +1,9 @@
 import { useEffect } from "react"
 import { useLocation } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useSearchStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { useSearchStore } from "../stores"
 import { usePlayerStore } from "../stores/playerStore"
-import type { PlexMedia } from "../types/plex"
+import type { MusicItem, MusicTrack, MusicAlbum, MusicArtist } from "../types/music"
 
 interface Props {
   activeIndex: number
@@ -12,22 +12,22 @@ interface Props {
 }
 
 type DropdownItem =
-  | { kind: "artist"; item: PlexMedia & { type: "artist" }; href: string }
-  | { kind: "album"; item: PlexMedia & { type: "album" }; href: string }
-  | { kind: "track"; item: PlexMedia & { type: "track" } }
+  | { kind: "artist"; item: MusicArtist & { type: "artist" }; href: string }
+  | { kind: "album"; item: MusicAlbum & { type: "album" }; href: string }
+  | { kind: "track"; item: MusicTrack & { type: "track" } }
 
-function buildItems(results: PlexMedia[]): DropdownItem[] {
+function buildItems(results: MusicItem[]): DropdownItem[] {
   const artists: DropdownItem[] = []
   const albums: DropdownItem[] = []
   const tracks: DropdownItem[] = []
 
   for (const item of results) {
     if (item.type === "artist" && artists.length < 3) {
-      artists.push({ kind: "artist", item: item as PlexMedia & { type: "artist" }, href: `/artist/${item.rating_key}` })
+      artists.push({ kind: "artist", item: item as MusicArtist & { type: "artist" }, href: `/artist/${item.id}` })
     } else if (item.type === "album" && albums.length < 3) {
-      albums.push({ kind: "album", item: item as PlexMedia & { type: "album" }, href: `/album/${item.rating_key}` })
+      albums.push({ kind: "album", item: item as MusicAlbum & { type: "album" }, href: `/album/${item.id}` })
     } else if (item.type === "track" && tracks.length < 3) {
-      tracks.push({ kind: "track", item: item as PlexMedia & { type: "track" } })
+      tracks.push({ kind: "track", item: item as MusicTrack & { type: "track" } })
     }
   }
 
@@ -37,7 +37,6 @@ function buildItems(results: PlexMedia[]): DropdownItem[] {
 export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Props) {
   const [, navigate] = useLocation()
   const { results, query } = useSearchStore(useShallow(s => ({ results: s.results, query: s.query })))
-  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const playTrack = usePlayerStore(s => s.playTrack)
 
   const items = buildItems(results)
@@ -59,7 +58,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
     }
     const row = items[index]
     if (row.kind === "track") {
-      void playTrack(row.item as never)
+      void playTrack(row.item as MusicTrack)
       onClose()
     } else {
       navigate(row.href)
@@ -86,13 +85,11 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
       {items.map((row, idx) => {
         const isActive = idx === activeIndex
         if (row.kind === "artist") {
-          const thumb = row.item.thumb
-            ? buildPlexImageUrl(baseUrl, token, row.item.thumb)
-            : null
+          const thumb = row.item.thumbUrl
           return (
             <div
-              key={row.item.rating_key}
-              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
+              key={row.item.id}
+              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-hl-menu" : "hover:bg-hl-menu"}`}
               onMouseEnter={() => onActiveIndexChange(idx)}
               onMouseDown={e => e.preventDefault()}
               onClick={() => activateItem(idx)}
@@ -111,13 +108,11 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
         }
 
         if (row.kind === "album") {
-          const thumb = row.item.thumb
-            ? buildPlexImageUrl(baseUrl, token, row.item.thumb)
-            : null
+          const thumb = row.item.thumbUrl
           return (
             <div
-              key={row.item.rating_key}
-              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
+              key={row.item.id}
+              className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-hl-menu" : "hover:bg-hl-menu"}`}
               onMouseEnter={() => onActiveIndexChange(idx)}
               onMouseDown={e => e.preventDefault()}
               onClick={() => activateItem(idx)}
@@ -129,7 +124,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
               )}
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium text-white">{row.item.title}</div>
-                <div className="truncate text-xs text-white/50">{row.item.parent_title}</div>
+                <div className="truncate text-xs text-white/50">{row.item.artistName}</div>
               </div>
               <span className="text-xs text-white/40 flex-shrink-0">Album</span>
             </div>
@@ -137,14 +132,11 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
         }
 
         // track
-        const trackThumb = row.item.thumb || row.item.parent_thumb
-        const thumb = trackThumb
-          ? buildPlexImageUrl(baseUrl, token, trackThumb)
-          : null
+        const thumb = row.item.thumbUrl
         return (
           <div
-            key={row.item.rating_key}
-            className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-accent/10" : "hover:bg-accent/5"}`}
+            key={row.item.id}
+            className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${isActive ? "bg-hl-menu" : "hover:bg-hl-menu"}`}
             onMouseEnter={() => onActiveIndexChange(idx)}
             onMouseDown={e => e.preventDefault()}
             onClick={() => activateItem(idx)}
@@ -157,7 +149,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium text-white">{row.item.title}</div>
               <div className="truncate text-xs text-white/50">
-                {row.item.grandparent_title} · {row.item.parent_title}
+                {row.item.artistName} · {row.item.albumName}
               </div>
             </div>
             <span className="text-xs text-white/40 flex-shrink-0">Track</span>
@@ -167,7 +159,7 @@ export function SearchDropdown({ activeIndex, onActiveIndexChange, onClose }: Pr
 
       {/* See all results row */}
       <div
-        className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer border-t border-white/10 ${activeIndex === items.length ? "bg-white/10" : "hover:bg-white/5"}`}
+        className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer border-t border-white/10 ${activeIndex === items.length ? "bg-hl-menu" : "hover:bg-hl-row"}`}
         onMouseEnter={() => onActiveIndexChange(items.length)}
         onMouseDown={e => e.preventDefault()}
         onClick={() => { navigate("/search"); onClose() }}

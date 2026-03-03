@@ -9,9 +9,9 @@
  *   - albums  : `${artist.toLowerCase()}::${album.toLowerCase()}`
  */
 
-import { deezerSearchArtist, deezerSearchAlbum } from "../lib/deezer"
-import type { DeezerArtistInfo, DeezerAlbumInfo } from "../lib/deezer"
-import { createMetadataStore } from "./createMetadataStore"
+import { deezerSearchArtist, deezerSearchAlbum } from "./api"
+import type { DeezerArtistInfo, DeezerAlbumInfo } from "./api"
+import { createMetadataStore } from "../../stores/createMetadataStore"
 
 export const useDeezerMetadataStore = createMetadataStore<DeezerArtistInfo, DeezerAlbumInfo>({
   storeName: "deezer-metadata-v1",

@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { lastfmScrobble, lastfmUpdateNowPlaying } from "../lib/lastfm"
+import { fireAndForget } from "../lib/async"
 import {
   audioPlay,
   audioPause,
@@ -10,24 +10,11 @@ import {
   audioSetVolume,
   audioPreloadNext,
   audioPrefetch,
-  buildItemUri,
-  createPlayQueue,
-  createRadioQueue,
-  createSmartShuffleQueue,
-  computeSonicPath,
-  getArtistPopularTracksInSection,
-  getStreamUrl,
-  getStreamLevels,
-  getLyrics,
-  getTrack,
-  reportTimeline,
-  markPlayed,
-  updateNowPlaying,
-  setNowPlayingState,
-  getPlaylistItems,
-} from "../lib/plex"
-import type { Track, Level, LyricLine } from "../types/plex"
-import { useConnectionStore } from "./connectionStore"
+  audioAnalyzeTrack,
+} from "../lib/audio"
+import type { MusicTrack } from "../types/music"
+import type { LevelData, LyricLineData } from "../providers/types"
+import { useProviderStore } from "./providerStore"
 import { useAudioSettingsStore } from "./audioSettingsStore"
 import { useNotificationStore } from "./notificationStore"
 import { evictMap } from "./cacheUtils"
@@ -47,8 +34,8 @@ export const DJ_MODES: { key: DjMode; name: string; desc: string }[] = [
 ]
 
 interface PlayerState {
-  currentTrack: Track | null
-  queue: Track[]
+  currentTrack: MusicTrack | null
+  queue: MusicTrack[]
   queueIndex: number
   queueId: number | null
   isPlaying: boolean
@@ -59,15 +46,15 @@ interface PlayerState {
   volume: number
 
   /** Progressive playlist loading context — null when not playing from a playlist. */
-  playlistKey: number | null
+  playlistKey: string | null
   playlistTotalCount: number
   playlistLoadedCount: number
   isLoadingMoreTracks: boolean
 
   /** Radio mode: true while a radio/Guest DJ station is active. */
   isRadioMode: boolean
-  /** Rating key of the item that seeded the current radio station. */
-  radioSeedKey: number | null
+  /** ID of the item that seeded the current radio station. */
+  radioSeedKey: string | null
   /** Type of seed item used to start radio. */
   radioType: RadioType | null
   /** Artist name for the seed item (track/album radio only). Shown in the Radio panel. */
@@ -85,10 +72,10 @@ interface PlayerState {
   setRadioMinQueue: (v: number) => void
 
   /** Waveform level data fetched on track-start. Null when unavailable. Not persisted. */
-  waveformLevels: Level[] | null
+  waveformLevels: LevelData[] | null
 
   /** Lyrics lines fetched on track-start. Null when unavailable or still loading. Not persisted. */
-  lyricsLines: LyricLine[] | null
+  lyricsLines: LyricLineData[] | null
 
   /** Transient error message shown briefly in the Player UI. Null when no error. */
   playerError: string | null
@@ -98,21 +85,21 @@ interface PlayerState {
   /** Optional deep-link for the context label (e.g. "/playlist/123"). */
   contextHref: string | null
 
-  playTrack: (track: Track, context?: Track[], contextName?: string | null, contextHref?: string | null) => Promise<void>
-  /** Play a Plex URI via a server-side play queue. Handles full playlists with shuffle. */
+  playTrack: (track: MusicTrack, context?: MusicTrack[], contextName?: string | null, contextHref?: string | null) => Promise<void>
+  /** Play a URI via a server-side play queue. Handles full playlists with shuffle. */
   playFromUri: (uri: string, forceShuffle?: boolean, contextName?: string | null, contextHref?: string | null) => Promise<void>
   /** Start playing a playlist with progressive queue loading (100 tracks at a time). */
-  playPlaylist: (playlistId: number, totalCount: number, title: string, href: string) => Promise<void>
+  playPlaylist: (playlistId: string, totalCount: number, title: string, href: string) => Promise<void>
   /**
    * Start a radio station seeded from the given item.
    * Uses `createRadioQueue` normally, or `createSmartShuffleQueue` when Guest DJ is enabled.
    * Pass `seedName` to set a human-readable context label ("Ado Radio").
    */
-  playRadio: (ratingKey: number, radioType: RadioType, seedName?: string) => Promise<void>
+  playRadio: (seedId: string, radioType: RadioType, seedName?: string) => Promise<void>
   /** Insert tracks immediately after the current track (play next). */
-  addNext: (tracks: Track[]) => void
+  addNext: (tracks: MusicTrack[]) => void
   /** Append tracks to the end of the queue without touching radio/playlist state. */
-  addToQueue: (tracks: Track[]) => void
+  addToQueue: (tracks: MusicTrack[]) => void
   /** Stop radio auto-refill without clearing the existing queue. */
   stopRadio: () => void
   /** Set the active DJ personality (null = off). Re-seeds the current station immediately. */
@@ -139,10 +126,31 @@ interface PlayerState {
 }
 
 // ---------------------------------------------------------------------------
+// Provider helper
+// ---------------------------------------------------------------------------
+
+function getProvider() {
+  return useProviderStore.getState().provider
+}
+
+// ---------------------------------------------------------------------------
 // Audio prefetch — module-level dedup set
 // ---------------------------------------------------------------------------
 
 const _prefetchedPartKeys = new Set<string>()
+
+// ---------------------------------------------------------------------------
+// Track ID resolution — maps numeric rating_key → MusicTrack.id
+// ---------------------------------------------------------------------------
+
+/** Maps numeric rating_key (sent to Rust engine) → MusicTrack.id string.
+ *  Needed because demo tracks use prefixed IDs like "dz-12345" but Rust
+ *  only knows the numeric trackKey. */
+const _ratingKeyToTrackId = new Map<number, string>()
+
+function resolveTrackId(ratingKey: number): string {
+  return _ratingKeyToTrackId.get(ratingKey) ?? String(ratingKey)
+}
 
 // ---------------------------------------------------------------------------
 // Gapless/crossfade transition tracking
@@ -155,6 +163,11 @@ const _prefetchedPartKeys = new Set<string>()
  */
 let _gaplessTimeoutId: ReturnType<typeof setTimeout> | null = null
 
+// Monotonic counter for concurrent play guard — each _startPlayback call increments
+// and captures its value. After async work, if the counter changed, a newer play
+// superseded this one and the current call bails out.
+let _playGeneration = 0
+
 // ---------------------------------------------------------------------------
 // Periodic timeline reporting — throttle to every 10 seconds
 // ---------------------------------------------------------------------------
@@ -164,10 +177,14 @@ const TIMELINE_REPORT_INTERVAL_MS = 10_000
 
 // Fire-and-forget wrappers — timeline/scrobble errors (400, 404) are
 // non-fatal and must not surface as Unhandled Promise Rejections.
-const _reportTimeline = (...args: Parameters<typeof reportTimeline>) =>
-  void reportTimeline(...args).catch(() => {})
-const _markPlayed = (...args: Parameters<typeof markPlayed>) =>
-  void markPlayed(...args).catch(() => {})
+const _reportProgress = (trackId: string, state: string, positionMs: number, duration: number) => {
+  const provider = getProvider()
+  if (provider) fireAndForget(provider.reportProgress(trackId, positionMs, state, duration))
+}
+const _markPlayed = (trackId: string) => {
+  const provider = getProvider()
+  if (provider) fireAndForget(provider.markPlayed(trackId))
+}
 
 // ---------------------------------------------------------------------------
 // Last.fm integration — module-level tracking
@@ -184,25 +201,25 @@ let _trackStartedAtUnix = 0
 // Radio — module-level state
 // ---------------------------------------------------------------------------
 
-/** Tracks which rating keys were added by the Guest DJ smart-shuffle. */
-const _djGeneratedKeys = new Set<number>()
+/** Tracks whose IDs were added by the Guest DJ smart-shuffle. */
+const _djGeneratedKeys = new Set<string>()
 /** Returns true if this track was added to the queue by the Guest DJ. */
-export function isDjGenerated(ratingKey: number): boolean {
-  return _djGeneratedKeys.has(ratingKey)
+export function isDjGenerated(trackId: string): boolean {
+  return _djGeneratedKeys.has(trackId)
 }
 
-/** Tracks which rating keys were auto-appended by the radio refill. */
-const _radioGeneratedKeys = new Set<number>()
+/** Tracks whose IDs were auto-appended by the radio refill. */
+const _radioGeneratedKeys = new Set<string>()
 /** Returns true if this track was appended to the queue by radio auto-refill. */
-export function isRadioGenerated(ratingKey: number): boolean {
-  return _radioGeneratedKeys.has(ratingKey)
+export function isRadioGenerated(trackId: string): boolean {
+  return _radioGeneratedKeys.has(trackId)
 }
 
 let _radioRefillInProgress = false
 
 /** Keep only items that have actual audio (at least one media part with a key). */
-function filterPlayable(tracks: Track[]): Track[] {
-  return tracks.filter(t => t.media?.[0]?.parts?.[0]?.key)
+function filterPlayable(tracks: MusicTrack[]): MusicTrack[] {
+  return tracks.filter(t => t.mediaInfo?.hasAudioStream)
 }
 
 /** Silently append a fresh batch of radio tracks when the queue is running low. */
@@ -215,16 +232,19 @@ async function appendRadioTracks(
   // `queue.length - queueIndex - 1` = tracks strictly after current position
   if (queue.length - queueIndex - 1 >= radioMinQueue) return  // plenty of tracks ahead
 
+  const provider = getProvider()
+  if (!provider?.createRadioQueue) return
+
   _radioRefillInProgress = true
   try {
-    const pq = await createRadioQueue(radioSeedKey, radioType, radioDegreesOfSeparation)
-    const newTracks = filterPlayable(pq.items)
+    const result = await provider.createRadioQueue(radioSeedKey, radioType, radioDegreesOfSeparation)
+    const newTracks = filterPlayable(result.tracks)
 
     // Append only tracks not already in the queue to avoid duplicates
-    const existingKeys = new Set(get().queue.map(t => t.rating_key))
+    const existingKeys = new Set(get().queue.map(t => t.id))
     const candidates = newTracks.filter(t => {
-      if (existingKeys.has(t.rating_key)) return false
-      existingKeys.add(t.rating_key)  // deduplicate within batch too
+      if (existingKeys.has(t.id)) return false
+      existingKeys.add(t.id)  // deduplicate within batch too
       return true
     })
 
@@ -236,7 +256,7 @@ async function appendRadioTracks(
     const capped = candidates.slice(0, needed)
     if (capped.length === 0) return
 
-    capped.forEach(t => _radioGeneratedKeys.add(t.rating_key))
+    capped.forEach(t => _radioGeneratedKeys.add(t.id))
     set(s => ({ queue: [...s.queue, ...capped] }))
   } catch (err) {
     console.error("Radio queue refill failed:", err)
@@ -270,59 +290,65 @@ async function insertDjTracks(
   if (!djMode || !currentTrack) return
   if (_djInsertInProgress) return
 
+  const provider = getProvider()
+  if (!provider) return
+
   // Twofer & Stretch skip when the current track is DJ-generated
   // (Twofer alternates user→DJ→user→DJ; Stretch path is already laid out)
-  if ((djMode === 'twofer' || djMode === 'stretch') && _djGeneratedKeys.has(currentTrack.rating_key)) return
+  if ((djMode === 'twofer' || djMode === 'stretch') && _djGeneratedKeys.has(currentTrack.id)) return
 
   _djInsertInProgress = true
   try {
-    const existingKeys = new Set(queue.map(t => t.rating_key))
-    let picks: Track[] = []
+    const existingKeys = new Set(queue.map(t => t.id))
+    let picks: MusicTrack[] = []
 
     switch (djMode) {
       case 'freeze': {
         // Sonically similar tracks seeded from the current track
-        const pq = await createRadioQueue(currentTrack.rating_key, 'track')
-        picks = filterPlayable(pq.items)
-          .filter(t => !existingKeys.has(t.rating_key))
+        if (!provider.createRadioQueue) break
+        const result = await provider.createRadioQueue(currentTrack.id, 'track')
+        picks = filterPlayable(result.tracks)
+          .filter(t => !existingKeys.has(t.id))
           .slice(0, 1)
         break
       }
 
       case 'twin': {
         // Most sonically similar track
-        const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'twin')
-        picks = filterPlayable(pq.items)
-          .filter(t => !existingKeys.has(t.rating_key))
+        if (!provider.createSmartShuffleQueue) break
+        const result = await provider.createSmartShuffleQueue(currentTrack.id, 'track', 'twin')
+        picks = filterPlayable(result.tracks)
+          .filter(t => !existingKeys.has(t.id))
           .slice(0, 1)
         break
       }
 
       case 'stretch': {
         // Sonic adventure between current track and the next original (non-DJ) track
-        const { musicSectionId } = useConnectionStore.getState()
-        const nextOriginal = queue.slice(queueIndex + 1).find(t => !_djGeneratedKeys.has(t.rating_key))
-        if (musicSectionId && nextOriginal) {
+        const nextOriginal = queue.slice(queueIndex + 1).find(t => !_djGeneratedKeys.has(t.id))
+        if (nextOriginal && provider.computeSonicPath) {
           try {
-            const pathTracks = await computeSonicPath(musicSectionId, currentTrack.rating_key, nextOriginal.rating_key)
+            const pathTracks = await provider.computeSonicPath(currentTrack.id, nextOriginal.id)
             picks = filterPlayable(pathTracks)
               .filter(t =>
-                !existingKeys.has(t.rating_key) &&
-                t.rating_key !== currentTrack.rating_key &&
-                t.rating_key !== nextOriginal.rating_key
+                !existingKeys.has(t.id) &&
+                t.id !== currentTrack.id &&
+                t.id !== nextOriginal.id
               )
           } catch {
             // Sonic path unavailable — fall back to smart shuffle
-            const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'stretch')
-            picks = filterPlayable(pq.items)
-              .filter(t => !existingKeys.has(t.rating_key))
-              .slice(0, 2)
+            if (provider.createSmartShuffleQueue) {
+              const result = await provider.createSmartShuffleQueue(currentTrack.id, 'track', 'stretch')
+              picks = filterPlayable(result.tracks)
+                .filter(t => !existingKeys.has(t.id))
+                .slice(0, 2)
+            }
           }
-        } else if (musicSectionId) {
+        } else if (provider.createSmartShuffleQueue) {
           // No next original track — use smart shuffle for a couple of bridge tracks
-          const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'stretch')
-          picks = filterPlayable(pq.items)
-            .filter(t => !existingKeys.has(t.rating_key))
+          const result = await provider.createSmartShuffleQueue(currentTrack.id, 'track', 'stretch')
+          picks = filterPlayable(result.tracks)
+            .filter(t => !existingKeys.has(t.id))
             .slice(0, 2)
         }
         break
@@ -330,13 +356,12 @@ async function insertDjTracks(
 
       case 'twofer': {
         // Same-artist track
-        const { musicSectionId } = useConnectionStore.getState()
-        const artistId = parseInt(currentTrack.grandparent_key?.split('/').pop() ?? '0', 10)
-        if (musicSectionId && artistId > 0) {
-          const tracks = await getArtistPopularTracksInSection(musicSectionId, artistId, 10)
+        const artistId = currentTrack.artistId
+        if (artistId && provider.getArtistPopularTracksInSection) {
+          const tracks = await provider.getArtistPopularTracksInSection(artistId, 10)
           const available = tracks.filter(t =>
-            t.rating_key !== currentTrack.rating_key &&
-            !existingKeys.has(t.rating_key)
+            t.id !== currentTrack.id &&
+            !existingKeys.has(t.id)
           )
           if (available.length > 0) {
             picks = [available[Math.floor(Math.random() * available.length)]]
@@ -347,20 +372,21 @@ async function insertDjTracks(
 
       case 'anno': {
         // Same era track
-        const pq = await createSmartShuffleQueue(currentTrack.rating_key, 'track', 'anno')
-        picks = filterPlayable(pq.items)
-          .filter(t => !existingKeys.has(t.rating_key))
+        if (!provider.createSmartShuffleQueue) break
+        const result = await provider.createSmartShuffleQueue(currentTrack.id, 'track', 'anno')
+        picks = filterPlayable(result.tracks)
+          .filter(t => !existingKeys.has(t.id))
           .slice(0, 1)
         break
       }
 
       case 'groupie': {
         // Same artist via artist radio
-        const artistId = parseInt(currentTrack.grandparent_key?.split('/').pop() ?? '0', 10)
-        if (artistId > 0) {
-          const pq = await createRadioQueue(artistId, 'artist')
-          picks = filterPlayable(pq.items)
-            .filter(t => !existingKeys.has(t.rating_key))
+        const artistId = currentTrack.artistId
+        if (artistId && provider.createRadioQueue) {
+          const result = await provider.createRadioQueue(artistId, 'artist')
+          picks = filterPlayable(result.tracks)
+            .filter(t => !existingKeys.has(t.id))
             .slice(0, 1)
         }
         break
@@ -369,7 +395,7 @@ async function insertDjTracks(
 
     if (picks.length === 0) return
 
-    picks.forEach(t => _djGeneratedKeys.add(t.rating_key))
+    picks.forEach(t => _djGeneratedKeys.add(t.id))
     const { queueIndex: qi } = get()
     set(s => {
       const nq = [...s.queue]
@@ -384,114 +410,108 @@ async function insertDjTracks(
 }
 
 /** Warm the audio disk cache for a track on hover. Deduped per part key. */
-export function prefetchTrackAudio(track: Track): void {
-  const partKey = track.media[0]?.parts[0]?.key
-  if (!partKey || _prefetchedPartKeys.has(partKey)) return
-  _prefetchedPartKeys.add(partKey)
-  const { baseUrl, token } = useConnectionStore.getState()
-  const url = `${baseUrl}${partKey}?X-Plex-Token=${token}`
-  void audioPrefetch(url).catch(() => {/* non-critical */})
+export function prefetchTrackAudio(track: MusicTrack): void {
+  if (_prefetchedPartKeys.has(track.id)) return
+  _prefetchedPartKeys.add(track.id)
+  const provider = getProvider()
+  if (!provider) return
+  fireAndForget(provider.getPlaybackInfo(track)
+    .then(info => audioPrefetch(info.url)))
 }
 
 /**
- * Session-level gain cache: rating_key → { trackGain, albumGain }.
+ * Session-level gain cache: track id → { trackGain, albumGain }.
  * Both values are cached together so switching modes doesn't require a new fetch.
- * Plex list endpoints don't include Stream sub-elements, so we lazily fetch on first play.
+ * List endpoints don't include Stream sub-elements, so we lazily fetch on first play.
  */
-const _gainCache = new Map<number, { trackGain: number | null; albumGain: number | null }>()
+const _gainCache = new Map<string, { trackGain: number | null; albumGain: number | null }>()
 
 /**
- * Session-level waveform stream-ID cache: rating_key → audio stream id (null = "no audio stream").
+ * Session-level waveform stream-ID cache: track id → audio stream id (null = "no audio stream").
  * Same fallback pattern as _gainCache — list endpoints don't include Stream sub-elements.
  */
-const _waveformStreamCache = new Map<number, number | null>()
+const _waveformStreamCache = new Map<string, number | null>()
 
 /** Fetch the audio stream ID for waveform levels, falling back to a metadata call if needed. */
-async function fetchAudioStreamId(track: Track): Promise<number | null> {
-  const inline = track.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
+async function fetchAudioStreamId(track: MusicTrack): Promise<number | null> {
+  const inline = track.mediaInfo?.audioStreamId ?? null
   if (inline !== null) {
-    _waveformStreamCache.set(track.rating_key, inline)
+    _waveformStreamCache.set(track.id, inline)
     evictMap(_waveformStreamCache, 500)
     return inline
   }
-  if (_waveformStreamCache.has(track.rating_key)) {
-    return _waveformStreamCache.get(track.rating_key) ?? null
+  if (_waveformStreamCache.has(track.id)) {
+    return _waveformStreamCache.get(track.id) ?? null
   }
+  const provider = getProvider()
+  if (!provider) return null
   try {
-    const full = await getTrack(track.rating_key)
-    const id = full.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)?.id ?? null
-    _waveformStreamCache.set(track.rating_key, id)
+    const full = await provider.getTrack(track.id)
+    const id = full.mediaInfo?.audioStreamId ?? null
+    _waveformStreamCache.set(track.id, id)
     evictMap(_waveformStreamCache, 500)
     return id
   } catch {
-    _waveformStreamCache.set(track.rating_key, null)
+    _waveformStreamCache.set(track.id, null)
     evictMap(_waveformStreamCache, 500)
     return null
   }
 }
 
 /**
- * Get the gain for a track, fetching full metadata from Plex if the track object
+ * Get the gain for a track, fetching full metadata if the track object
  * has no stream data (which happens for tracks loaded via list endpoints).
  * Respects `audioSettingsStore.albumGainMode` — uses album_gain when enabled.
  */
-async function fetchGainDb(track: Track): Promise<number | null> {
+async function fetchGainDb(track: MusicTrack): Promise<number | null> {
   const { albumGainMode } = useAudioSettingsStore.getState()
 
-  // Helper to pick the right gain value from a stream entry
+  // Helper to pick the right gain value
   const pickGain = (trackGain: number | null, albumGain: number | null) =>
     albumGainMode ? (albumGain ?? trackGain) : trackGain
 
-  // Fast path: streams included inline in the track object
-  const stream = track.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
-  if (stream !== undefined) {
-    const trackGain = stream.gain ?? null
-    const albumGain = stream.album_gain ?? null
-    _gainCache.set(track.rating_key, { trackGain, albumGain })
+  // Fast path: gain already on the MusicTrack (mapped from stream data)
+  if (track.gain !== null || track.albumGain !== null) {
+    _gainCache.set(track.id, { trackGain: track.gain, albumGain: track.albumGain })
     evictMap(_gainCache, 500)
-    return pickGain(trackGain, albumGain)
+    return pickGain(track.gain, track.albumGain)
   }
 
   // Cache hit — both track and album gain already resolved
-  if (_gainCache.has(track.rating_key)) {
-    const cached = _gainCache.get(track.rating_key)!
+  if (_gainCache.has(track.id)) {
+    const cached = _gainCache.get(track.id)!
     return pickGain(cached.trackGain, cached.albumGain)
   }
 
-  // Fetch full track metadata — /library/metadata/{id} includes Stream elements
+  // Fetch full track metadata — includes Stream elements with gain data
+  const provider = getProvider()
+  if (!provider) return null
   try {
-    const full = await getTrack(track.rating_key)
-    const fullStream = full.media?.[0]?.parts?.[0]?.streams?.find(s => s.stream_type === 2)
-    const trackGain = fullStream?.gain ?? null
-    const albumGain = fullStream?.album_gain ?? null
-    _gainCache.set(track.rating_key, { trackGain, albumGain })
+    const full = await provider.getTrack(track.id)
+    _gainCache.set(track.id, { trackGain: full.gain, albumGain: full.albumGain })
     evictMap(_gainCache, 500)
-    return pickGain(trackGain, albumGain)
+    return pickGain(full.gain, full.albumGain)
   } catch {
-    _gainCache.set(track.rating_key, { trackGain: null, albumGain: null })
+    _gainCache.set(track.id, { trackGain: null, albumGain: null })
     evictMap(_gainCache, 500)
     return null
   }
 }
 
 /** Send a track to the Rust audio engine for playback. */
-async function sendToAudioEngine(track: Track): Promise<void> {
-  const partKey = track.media[0]?.parts[0]?.key
-  if (!partKey) return
-
-  // Build URL locally — avoids a Tauri IPC round-trip and PlexState lock contention
-  const { baseUrl, token } = useConnectionStore.getState()
-  const url = `${baseUrl}${partKey}?X-Plex-Token=${token}`
-  // fetchGainDb falls back to a /library/metadata/{id} call when the track object
-  // has no streams data (common for tracks loaded via playlist/album list endpoints).
+async function sendToAudioEngine(track: MusicTrack): Promise<void> {
+  const provider = getProvider()
+  if (!provider) return
+  const info = await provider.getPlaybackInfo(track)
+  _ratingKeyToTrackId.set(info.trackKey, track.id)
   const gainDb = await fetchGainDb(track)
   await audioPlay(
-    url,
-    track.rating_key,
+    info.url,
+    info.trackKey,
     track.duration,
-    track.media[0]?.parts[0]?.id ?? 0,
-    track.parent_key,
-    track.index,
+    info.partId,
+    info.parentKey,
+    track.trackNumber ?? 0,
     gainDb,
   )
 }
@@ -500,28 +520,33 @@ async function sendToAudioEngine(track: Track): Promise<void> {
  * Fetch and set lyrics for a track, guarded against stale results from a previous track.
  * Retries once after 2 s on transient error before giving up.
  */
-function fetchLyricsForTrack(ratingKey: number, get: () => PlayerState, set: any): void {
-  void getLyrics(ratingKey)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fetchLyricsForTrack(trackId: string, get: () => PlayerState, set: any): void {
+  const provider = getProvider()
+  if (!provider?.getLyrics) return
+  void provider.getLyrics(trackId)
     .then(lines => {
-      if (get().currentTrack?.rating_key === ratingKey) set({ lyricsLines: lines })
+      if (get().currentTrack?.id === trackId) set({ lyricsLines: lines })
     })
     .catch(err => {
-      console.warn(`Lyrics fetch failed for track ${ratingKey}, retrying once:`, err)
+      console.warn(`Lyrics fetch failed for track ${trackId}, retrying once:`, err)
       setTimeout(() => {
-        if (get().currentTrack?.rating_key !== ratingKey) return
-        void getLyrics(ratingKey)
+        if (get().currentTrack?.id !== trackId) return
+        const p = getProvider()
+        if (!p?.getLyrics) return
+        void p.getLyrics(trackId)
           .then(lines => {
-            if (get().currentTrack?.rating_key === ratingKey) set({ lyricsLines: lines })
+            if (get().currentTrack?.id === trackId) set({ lyricsLines: lines })
           })
           .catch(() => {
-            if (get().currentTrack?.rating_key === ratingKey) set({ lyricsLines: [] })
+            if (get().currentTrack?.id === trackId) set({ lyricsLines: [] })
           })
       }, 2000)
     })
 }
 
 /** Pre-buffer the next track in queue for gapless playback. */
-async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 1 | 2): Promise<void> {
+async function preloadNextTrack(queue: MusicTrack[], queueIndex: number, repeat: 0 | 1 | 2): Promise<void> {
   let nextIndex = queueIndex + 1
   if (nextIndex >= queue.length) {
     if (repeat === 2) nextIndex = 0
@@ -531,20 +556,20 @@ async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 
   const nextTrack = queue[nextIndex]
   if (!nextTrack) return
 
-  const partKey = nextTrack.media[0]?.parts[0]?.key
-  if (!partKey) return
+  const provider = getProvider()
+  if (!provider) return
 
   try {
-    const { baseUrl, token } = useConnectionStore.getState()
-    const url = `${baseUrl}${partKey}?X-Plex-Token=${token}`
+    const info = await provider.getPlaybackInfo(nextTrack)
+    _ratingKeyToTrackId.set(info.trackKey, nextTrack.id)
     const gainDb = await fetchGainDb(nextTrack)
     await audioPreloadNext(
-      url,
-      nextTrack.rating_key,
+      info.url,
+      info.trackKey,
       nextTrack.duration,
-      nextTrack.media[0]?.parts[0]?.id ?? 0,
-      nextTrack.parent_key,
-      nextTrack.index,
+      info.partId,
+      info.parentKey,
+      nextTrack.trackNumber ?? 0,
       gainDb,
     )
   } catch {
@@ -553,6 +578,30 @@ async function preloadNextTrack(queue: Track[], queueIndex: number, repeat: 0 | 
 }
 
 const PLAYLIST_PAGE_SIZE = 100
+
+/** Load the next page of playlist tracks into the queue in the background. */
+async function loadMorePlaylistTracks(get: () => PlayerState, set: (fn: (s: PlayerState) => Partial<PlayerState>) => void) {
+  const { playlistKey, playlistLoadedCount, playlistTotalCount, isLoadingMoreTracks } = get()
+  if (!playlistKey || playlistLoadedCount >= playlistTotalCount || isLoadingMoreTracks) return
+  const provider = getProvider()
+  if (!provider) return
+  set(() => ({ isLoadingMoreTracks: true }))
+  try {
+    const result = await provider.getPlaylistItems(playlistKey, playlistLoadedCount, PLAYLIST_PAGE_SIZE)
+    if (result.items.length > 0) {
+      set(s => ({
+        queue: [...s.queue, ...result.items],
+        playlistLoadedCount: s.playlistLoadedCount + result.items.length,
+        isLoadingMoreTracks: false,
+      }))
+    } else {
+      set(() => ({ isLoadingMoreTracks: false }))
+    }
+  } catch (err) {
+    console.error("Failed to load more playlist tracks:", err)
+    set(() => ({ isLoadingMoreTracks: false }))
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Shared playback ceremony — every track transition funnels through here
@@ -564,47 +613,67 @@ const PLAYLIST_PAGE_SIZE = 100
  * transitions (audio already playing, no engine call needed).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function _onTrackBecomesActive(track: Track, index: number, get: () => PlayerState, set: any): void {
+function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => PlayerState, set: any): void {
+  const provider = getProvider()
   set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0,
         waveformLevels: null, lyricsLines: null })
   _lastTimelineReportMs = 0
 
   if (useNotificationStore.getState().notificationsEnabled) {
-    void sendNotification({
+    sendNotification({
       title: track.title,
-      body: `${track.grandparent_title ?? "Unknown Artist"} • ${track.parent_title ?? "Unknown Album"}`,
+      body: `${track.artistName ?? "Unknown Artist"} • ${track.albumName ?? "Unknown Album"}`,
     })
   }
 
-  void fetchAudioStreamId(track).then(streamId => {
-    if (!streamId) return
-    return getStreamLevels(streamId, 128)
+  fireAndForget(fetchAudioStreamId(track).then(streamId => {
+    if (!streamId || !provider?.getStreamLevels) return
+    return provider.getStreamLevels(streamId, 128)
       .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-      .catch(() => {/* waveform unavailable */})
-  })
-  fetchLyricsForTrack(track.rating_key, get, set)
-  _reportTimeline(track.rating_key, "playing", 0, track.duration)
-  void updateNowPlaying(
-    track.title,
-    track.grandparent_title ?? "",
-    track.parent_title ?? "",
-    track.thumb || track.parent_thumb || null,
-    track.duration ?? 0,
-  )
-  void setNowPlayingState("playing", 0)
+  }))
+  fetchLyricsForTrack(track.id, get, set)
+  _reportProgress(track.id, "playing", 0, track.duration)
+  if (provider?.updateNowPlaying) {
+    fireAndForget(provider.updateNowPlaying(
+      track.title,
+      track.artistName ?? "",
+      track.albumName ?? "",
+      track.rawThumbPath ?? null,
+      track.duration ?? 0,
+    ))
+  }
+  if (provider?.setNowPlayingState) {
+    fireAndForget(provider.setNowPlayingState("playing", 0))
+  }
 
-  // Last.fm: record when this track started (for scrobble timestamp)
+  // Record when this track started (for scrobble timestamp)
   _trackStartedAtUnix = Math.floor(Date.now() / 1000)
-  // Last.fm now-playing update (fire-and-forget; no-op if disabled/not authed)
-  void lastfmUpdateNowPlaying(
-    track.grandparent_title ?? "",
-    track.title,
-    track.parent_title ?? "",
-    track.grandparent_title ?? "",
-    track.duration ?? 0,
-  ).catch(() => {})
 
-  if (get().djMode) void insertDjTracks(get, set)
+  // Notify provider of track start (scrobbling, external integrations)
+  if (provider?.onTrackStart) {
+    provider.onTrackStart(track)
+  }
+
+  if (get().djMode) fireAndForget(insertDjTracks(get, set))
+}
+
+/**
+ * Prefetch the audio cache AND trigger analysis for the next few tracks
+ * in the queue so that skip-ahead is instant and smart crossfade analysis
+ * is ready well in advance.
+ */
+function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): void {
+  const provider = getProvider()
+  if (!provider) return
+  for (let i = 1; i <= count; i++) {
+    const t = queue[fromIndex + i]
+    if (!t) continue
+    fireAndForget(provider.getPlaybackInfo(t).then(info => {
+      _ratingKeyToTrackId.set(info.trackKey, t.id)
+      fireAndForget(audioPrefetch(info.url))
+      fireAndForget(audioAnalyzeTrack(info.url, info.trackKey, t.duration))
+    }))
+  }
 }
 
 /**
@@ -613,9 +682,25 @@ function _onTrackBecomesActive(track: Track, index: number, get: () => PlayerSta
  * NOT used for gapless transitions (audio is already playing there).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function _startPlayback(track: Track, index: number, get: () => PlayerState, set: any): Promise<void> {
+async function _startPlayback(track: MusicTrack, index: number, get: () => PlayerState, set: any): Promise<void> {
+  const gen = ++_playGeneration
   _onTrackBecomesActive(track, index, get, set)
-  await sendToAudioEngine(track)
+  try {
+    await sendToAudioEngine(track)
+  } catch (err) {
+    // Only roll back state if this play attempt is still the active one
+    if (_playGeneration === gen) {
+      set({ isPlaying: false, isBuffering: false })
+    }
+    throw err
+  }
+  // A newer play superseded this one — bail out
+  if (_playGeneration !== gen) return
+  // Immediately preload the next track (triggers analysis + gapless prep)
+  // and cache-warm a few more tracks ahead for instant skipping
+  const { queue, repeat } = get()
+  fireAndForget(preloadNextTrack(queue, index, repeat))
+  prefetchAhead(queue, index, 3)
 }
 
 /**
@@ -631,28 +716,6 @@ async function playAtIndex(index: number, get: () => PlayerState, set: any): Pro
     await _startPlayback(track, index, get, set)
   } catch (err) {
     console.error("playAtIndex failed:", err)
-  }
-}
-
-/** Load the next page of playlist tracks into the queue in the background. */
-async function loadMorePlaylistTracks(get: () => PlayerState, set: (fn: (s: PlayerState) => Partial<PlayerState>) => void) {
-  const { playlistKey, playlistLoadedCount, playlistTotalCount, isLoadingMoreTracks } = get()
-  if (!playlistKey || playlistLoadedCount >= playlistTotalCount || isLoadingMoreTracks) return
-  set(() => ({ isLoadingMoreTracks: true }))
-  try {
-    const tracks = await getPlaylistItems(playlistKey, PLAYLIST_PAGE_SIZE, playlistLoadedCount)
-    if (tracks.length > 0) {
-      set(s => ({
-        queue: [...s.queue, ...tracks],
-        playlistLoadedCount: s.playlistLoadedCount + tracks.length,
-        isLoadingMoreTracks: false,
-      }))
-    } else {
-      set(() => ({ isLoadingMoreTracks: false }))
-    }
-  } catch (err) {
-    console.error("Failed to load more playlist tracks:", err)
-    set(() => ({ isLoadingMoreTracks: false }))
   }
 }
 
@@ -686,14 +749,14 @@ export const usePlayerStore = create<PlayerState>()(
   contextName: null,
   contextHref: null,
 
-  playTrack: async (track: Track, context?: Track[], contextName?: string | null, contextHref?: string | null) => {
-    const { sectionUuid } = useConnectionStore.getState()
-    const itemKey = `/library/metadata/${track.rating_key}`
-    const uri = sectionUuid ? buildItemUri(sectionUuid, itemKey) : itemKey
+  playTrack: async (track: MusicTrack, context?: MusicTrack[], contextName?: string | null, contextHref?: string | null) => {
+    const provider = getProvider()
+    const itemKey = `/library/metadata/${track.id}`
+    const uri = provider?.buildItemUri ? provider.buildItemUri(itemKey) : itemKey
     const { repeat } = get()
 
     const queue = context ?? [track]
-    const queueIndex = Math.max(0, context ? context.findIndex(t => t.rating_key === track.rating_key) : 0)
+    const queueIndex = Math.max(0, context ? context.findIndex(t => t.id === track.id) : 0)
     // Explicit track selection: clear progressive playlist and radio context, reset shuffle.
     set({ queue, shuffle: false,
       playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
@@ -703,21 +766,23 @@ export const usePlayerStore = create<PlayerState>()(
     try {
       // Start audio + register server-side queue in parallel
       const [playQueue] = await Promise.all([
-        createPlayQueue(uri, false, repeat),
+        provider?.createPlayQueue ? provider.createPlayQueue(uri, false, repeat) : Promise.resolve({ queueId: 0, tracks: [] }),
         _startPlayback(track, queueIndex, get, set),
       ])
-      set({ queueId: playQueue.id })
+      set({ queueId: playQueue.queueId })
     } catch (err) {
       console.error("playTrack failed:", err)
     }
   },
 
   playFromUri: async (uri: string, forceShuffle?: boolean, contextName?: string | null, contextHref?: string | null) => {
+    const provider = getProvider()
+    if (!provider?.createPlayQueue) return
     const { repeat } = get()
     const shouldShuffle = forceShuffle ?? false
     try {
-      const playQueue = await createPlayQueue(uri, shouldShuffle, repeat)
-      if (playQueue.items.length === 0) {
+      const result = await provider.createPlayQueue(uri, shouldShuffle, repeat)
+      if (result.tracks.length === 0) {
         set({ playerError: "Couldn't load tracks — playlist may be empty or unsupported." })
         setTimeout(() => set({ playerError: null }), 5000)
         return
@@ -727,13 +792,13 @@ export const usePlayerStore = create<PlayerState>()(
       _radioGeneratedKeys.clear()
       _radioRefillInProgress = false
       set({
-        queue: playQueue.items, queueId: playQueue.id, shuffle: shouldShuffle,
+        queue: result.tracks, queueId: result.queueId, shuffle: shouldShuffle,
         playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
         isRadioMode: false, radioSeedKey: null, radioType: null,
         contextName: contextName ?? null, contextHref: contextHref ?? null,
       })
 
-      await _startPlayback(playQueue.items[0], 0, get, set)
+      await _startPlayback(result.tracks[0], 0, get, set)
     } catch (err) {
       console.error("playFromUri failed:", err)
       const msg = err instanceof Error ? err.message : String(err)
@@ -742,22 +807,35 @@ export const usePlayerStore = create<PlayerState>()(
     }
   },
 
-  playPlaylist: async (playlistId: number, totalCount: number, title: string, href: string) => {
-    const tracks = await getPlaylistItems(playlistId, PLAYLIST_PAGE_SIZE, 0)
-    if (tracks.length === 0) return
+  playPlaylist: async (playlistId: string, totalCount: number, title: string, href: string) => {
+    const provider = getProvider()
+    if (!provider) return
+    try {
+      const result = await provider.getPlaylistItems(playlistId, 0, PLAYLIST_PAGE_SIZE)
+      const tracks = result.items
+      if (tracks.length === 0) return
 
-    set({
-      queue: tracks, queueId: null, shuffle: false,
-      playlistKey: playlistId, playlistTotalCount: totalCount,
-      playlistLoadedCount: tracks.length, isLoadingMoreTracks: false,
-      isRadioMode: false, radioSeedKey: null, radioType: null,
-      contextName: title, contextHref: href,
-    })
+      set({
+        queue: tracks, queueId: null, shuffle: false,
+        playlistKey: playlistId, playlistTotalCount: totalCount,
+        playlistLoadedCount: tracks.length, isLoadingMoreTracks: false,
+        isRadioMode: false, radioSeedKey: null, radioType: null,
+        contextName: title, contextHref: href,
+      })
 
-    await _startPlayback(tracks[0], 0, get, set)
+      await _startPlayback(tracks[0], 0, get, set)
+    } catch (err) {
+      console.error("playPlaylist failed:", err)
+      const msg = err instanceof Error ? err.message : String(err)
+      set({ playerError: `Playlist failed: ${msg}` })
+      setTimeout(() => set({ playerError: null }), 6000)
+    }
   },
 
-  playRadio: async (ratingKey: number, radioType: RadioType, seedName?: string) => {
+  playRadio: async (seedId: string, radioType: RadioType, seedName?: string) => {
+    const provider = getProvider()
+    if (!provider?.createRadioQueue) return
+
     _djGeneratedKeys.clear()
     _radioGeneratedKeys.clear()
     // Block the position-listener refill from firing during our own async init.
@@ -765,12 +843,12 @@ export const usePlayerStore = create<PlayerState>()(
 
     try {
       const { radioDegreesOfSeparation, radioMinQueue } = get()
-      const playQueue = await createRadioQueue(ratingKey, radioType, radioDegreesOfSeparation)
+      const result = await provider.createRadioQueue(seedId, radioType, radioDegreesOfSeparation)
 
-      // Filter to playable tracks then deduplicate by rating_key.
-      const seenKeys = new Set<number>()
-      let tracks = filterPlayable(playQueue.items).filter(
-        t => seenKeys.has(t.rating_key) ? false : (seenKeys.add(t.rating_key), true)
+      // Filter to playable tracks then deduplicate by id.
+      const seenKeys = new Set<string>()
+      let tracks = filterPlayable(result.tracks).filter(
+        t => seenKeys.has(t.id) ? false : (seenKeys.add(t.id), true)
       )
 
       if (tracks.length === 0) {
@@ -785,11 +863,11 @@ export const usePlayerStore = create<PlayerState>()(
       const neededAfterSeed = radioMinQueue - (tracks.length - 1)
       if (neededAfterSeed > 0) {
         try {
-          const pq2 = await createRadioQueue(ratingKey, radioType, radioDegreesOfSeparation)
+          const pq2 = await provider.createRadioQueue(seedId, radioType, radioDegreesOfSeparation)
           let added = 0
-          filterPlayable(pq2.items).forEach(t => {
-            if (added >= neededAfterSeed || seenKeys.has(t.rating_key)) return
-            seenKeys.add(t.rating_key)
+          filterPlayable(pq2.tracks).forEach(t => {
+            if (added >= neededAfterSeed || seenKeys.has(t.id)) return
+            seenKeys.add(t.id)
             tracks = [...tracks, t]
             added++
           })
@@ -797,27 +875,27 @@ export const usePlayerStore = create<PlayerState>()(
       }
 
       // Mark all tracks except the seed (index 0) as radio-generated.
-      tracks.slice(1).forEach(t => _radioGeneratedKeys.add(t.rating_key))
+      tracks.slice(1).forEach(t => _radioGeneratedKeys.add(t.id))
 
       // Derive context name from queue results when not explicitly supplied.
       const derivedSeedName = seedName
-        ?? (radioType === 'artist' ? tracks[0]?.grandparent_title
-           : radioType === 'album'  ? tracks[0]?.parent_title
+        ?? (radioType === 'artist' ? tracks[0]?.artistName
+           : radioType === 'album'  ? tracks[0]?.albumName
            : tracks[0]?.title)
         ?? null
 
-      const radioHref = radioType === 'artist' ? `/artist/${ratingKey}`
-        : radioType === 'album' ? `/album/${ratingKey}`
-        : radioType === 'playlist' ? `/playlist/${ratingKey}`
+      const radioHref = radioType === 'artist' ? `/artist/${seedId}`
+        : radioType === 'album' ? `/album/${seedId}`
+        : radioType === 'playlist' ? `/playlist/${seedId}`
         : null
 
       const seedArtist = (radioType === 'track' || radioType === 'album')
-        ? (tracks[0]?.grandparent_title ?? null)
+        ? (tracks[0]?.artistName ?? null)
         : null
 
       set({
-        queue: tracks, queueId: playQueue.id,
-        isRadioMode: true, radioSeedKey: ratingKey, radioType,
+        queue: tracks, queueId: result.queueId,
+        isRadioMode: true, radioSeedKey: seedId, radioType,
         radioSeedArtist: seedArtist,
         playlistKey: null, playlistTotalCount: 0, playlistLoadedCount: 0,
         playerError: null,
@@ -837,7 +915,7 @@ export const usePlayerStore = create<PlayerState>()(
     }
   },
 
-  addNext: (tracks: Track[]) => {
+  addNext: (tracks: MusicTrack[]) => {
     set(s => {
       const next = [...s.queue]
       next.splice(s.queueIndex + 1, 0, ...tracks)
@@ -845,7 +923,7 @@ export const usePlayerStore = create<PlayerState>()(
     })
   },
 
-  addToQueue: (tracks: Track[]) => {
+  addToQueue: (tracks: MusicTrack[]) => {
     set(s => ({ queue: [...s.queue, ...tracks] }))
   },
 
@@ -860,7 +938,7 @@ export const usePlayerStore = create<PlayerState>()(
     // Remove future DJ-generated bonus tracks from the queue
     set(s => ({
       queue: s.queue.filter((t, i) =>
-        i <= s.queueIndex || !_djGeneratedKeys.has(t.rating_key)
+        i <= s.queueIndex || !_djGeneratedKeys.has(t.id)
       ),
     }))
     _djGeneratedKeys.clear()
@@ -871,26 +949,28 @@ export const usePlayerStore = create<PlayerState>()(
     if (mode === null) return  // DJ off: cleaned up, nothing more to do
 
     // Immediately insert DJ tracks for the current track (works in any context)
-    void insertDjTracks(get, set as never)
+    fireAndForget(insertDjTracks(get, set as never))
   },
 
   pause: () => {
-    void audioPause()
+    fireAndForget(audioPause())
     set({ isPlaying: false })
     const { currentTrack, positionMs } = get()
     if (currentTrack) {
-      _reportTimeline(currentTrack.rating_key, "paused", positionMs, currentTrack.duration)
-      void setNowPlayingState("paused", positionMs)
+      _reportProgress(currentTrack.id, "paused", positionMs, currentTrack.duration)
+      const provider = getProvider()
+      if (provider?.setNowPlayingState) fireAndForget(provider.setNowPlayingState("paused", positionMs))
     }
   },
 
   resume: () => {
-    void audioResume()
+    fireAndForget(audioResume())
     set({ isPlaying: true })
     const { currentTrack, positionMs } = get()
     if (currentTrack) {
-      _reportTimeline(currentTrack.rating_key, "playing", positionMs, currentTrack.duration)
-      void setNowPlayingState("playing", positionMs)
+      _reportProgress(currentTrack.id, "playing", positionMs, currentTrack.duration)
+      const provider = getProvider()
+      if (provider?.setNowPlayingState) fireAndForget(provider.setNowPlayingState("playing", positionMs))
     }
   },
 
@@ -901,7 +981,7 @@ export const usePlayerStore = create<PlayerState>()(
 
     // Proactively load the next page when within 20 tracks of the end.
     if (playlistKey && playlistLoadedCount < playlistTotalCount && queueIndex >= queue.length - 20) {
-      void loadMorePlaylistTracks(get, set as never)
+      fireAndForget(loadMorePlaylistTracks(get, set as never))
     }
 
     let nextIndex = queueIndex + 1
@@ -910,37 +990,38 @@ export const usePlayerStore = create<PlayerState>()(
         nextIndex = 0
       } else if (isRadioMode && radioSeedKey !== null && radioType !== null) {
         // Radio mode: re-seed with a fresh station when the queue runs out
-        void get().playRadio(radioSeedKey, radioType)
+        fireAndForget(get().playRadio(radioSeedKey, radioType))
         return
       } else {
-        void setNowPlayingState("stopped")
+        const provider = getProvider()
+        if (provider?.setNowPlayingState) fireAndForget(provider.setNowPlayingState("stopped"))
         set({ isPlaying: false, currentTrack: null, positionMs: 0, waveformLevels: null, lyricsLines: null })
         return
       }
     }
     // Use playAtIndex to preserve playlist/radio context (playTrack would clear it)
-    void playAtIndex(nextIndex, get, set)
+    fireAndForget(playAtIndex(nextIndex, get, set))
     // Radio: trigger refill immediately on skip rather than waiting for the next position event
-    if (get().isRadioMode) void appendRadioTracks(get, set as never)
+    if (get().isRadioMode) fireAndForget(appendRadioTracks(get, set as never))
   },
 
   prev: () => {
     const { queue, queueIndex, positionMs } = get()
     if (positionMs > 3000) {
       // Restart current track in-place (preserve context)
-      void playAtIndex(queueIndex, get, set)
+      fireAndForget(playAtIndex(queueIndex, get, set))
       return
     }
     const prevIndex = Math.max(0, queueIndex - 1)
-    void playAtIndex(prevIndex, get, set)
+    fireAndForget(playAtIndex(prevIndex, get, set))
   },
 
   seekTo: (ms: number) => {
-    void audioSeek(ms)
+    fireAndForget(audioSeek(ms))
     set({ positionMs: ms })
     const { currentTrack } = get()
     if (currentTrack) {
-      _reportTimeline(currentTrack.rating_key, "playing", ms, currentTrack.duration)
+      _reportProgress(currentTrack.id, "playing", ms, currentTrack.duration)
     }
   },
 
@@ -948,7 +1029,7 @@ export const usePlayerStore = create<PlayerState>()(
     const clamped = Math.max(0, Math.min(100, Math.round(v)))
     // Cubic curve: maps 0-100 slider to 0.0-1.0 gain matching human loudness perception
     const gain = clamped <= 0 ? 0 : clamped >= 100 ? 1 : Math.pow(clamped / 100, 3)
-    void audioSetVolume(gain)
+    fireAndForget(audioSetVolume(gain))
     set({ volume: clamped })
   },
 
@@ -988,6 +1069,8 @@ export const usePlayerStore = create<PlayerState>()(
       newIndex = queueIndex + 1
     }
     set({ queue: next, queueIndex: newIndex })
+    // Re-preload the (potentially new) next track for analysis + gapless
+    fireAndForget(preloadNextTrack(next, newIndex, get().repeat))
   },
 
   removeFromQueue: (index: number) => {
@@ -999,25 +1082,27 @@ export const usePlayerStore = create<PlayerState>()(
     if (index < queueIndex) newIndex = queueIndex - 1
     else if (index === queueIndex) newIndex = Math.min(queueIndex, next.length - 1)
     set({ queue: next, queueIndex: Math.max(0, newIndex) })
+    // Re-preload the (potentially new) next track for analysis + gapless
+    fireAndForget(preloadNextTrack(next, Math.max(0, newIndex), get().repeat))
   },
 
   jumpToQueueItem: (index: number) => {
     const { queue } = get()
     if (index < 0 || index >= queue.length) return
-    void playAtIndex(index, get, set)
+    fireAndForget(playAtIndex(index, get, set))
     // Radio: trigger refill immediately on jump rather than waiting for the next position event
-    if (get().isRadioMode) void appendRadioTracks(get, set as never)
+    if (get().isRadioMode) fireAndForget(appendRadioTracks(get, set as never))
   },
 
   initAudioEvents: async () => {
-    const unlisteners: UnlistenFn[] = []
-
     // Sync persisted volume to the audio engine on every startup.
     get().setVolume(get().volume)
 
-    // Position updates from the Rust audio engine (~4x/sec)
-    unlisteners.push(
-      await listen<{ position_ms: number; duration_ms: number }>("audio://position", (e) => {
+    // Register ALL listeners in parallel to minimize the race window where
+    // events can fire before handlers exist (fixes intermittent first-track-not-starting).
+    const unlisteners = await Promise.all([
+      // Position updates from the Rust audio engine (~4x/sec)
+      listen<{ position_ms: number; duration_ms: number }>("audio://position", (e) => {
         const { currentTrack, queue, queueIndex, repeat, isRadioMode, isPlaying, radioMinQueue } = get()
         set({ positionMs: e.payload.position_ms })
 
@@ -1025,13 +1110,13 @@ export const usePlayerStore = create<PlayerState>()(
         if (currentTrack && e.payload.duration_ms > 0) {
           const remaining = e.payload.duration_ms - e.payload.position_ms
           if (remaining > 0 && remaining < 30000 && remaining > 29500) {
-            void preloadNextTrack(queue, queueIndex, repeat)
+            fireAndForget(preloadNextTrack(queue, queueIndex, repeat))
           }
         }
 
         // Proactively refill the queue when tracks strictly ahead fall below the configured minimum
         if (isRadioMode && queue.length - queueIndex - 1 < radioMinQueue) {
-          void appendRadioTracks(get, set as never)
+          fireAndForget(appendRadioTracks(get, set as never))
         }
 
         // Periodic timeline report every 10s so Plex shows "Now Playing" on
@@ -1040,52 +1125,45 @@ export const usePlayerStore = create<PlayerState>()(
           const now = e.payload.position_ms
           if (now - _lastTimelineReportMs >= TIMELINE_REPORT_INTERVAL_MS) {
             _lastTimelineReportMs = now
-            _reportTimeline(currentTrack.rating_key, "playing", now, currentTrack.duration)
+            _reportProgress(currentTrack.id, "playing", now, currentTrack.duration)
           }
         }
       }),
-    )
 
-    // Playback state changes
-    unlisteners.push(
-      await listen<{ type: string; state: string }>("audio://state", (e) => {
+      // Playback state changes
+      listen<{ type: string; state: string }>("audio://state", (e) => {
         const state = e.payload.state
         set({
           isPlaying: state === "playing",
           isBuffering: state === "buffering",
         })
       }),
-    )
 
-    // Track ended naturally — scrobble + handle repeat-one.
-    // For gapless/crossfade: track-started fires quickly and cancels the fallback timeout.
-    // For non-gapless (Rust stopped without a preloaded next): the 500ms timeout calls next().
-    unlisteners.push(
-      await listen<{ type: string; rating_key: number }>("audio://track-ended", (e) => {
+      // Track ended naturally — scrobble + handle repeat-one.
+      // For gapless/crossfade: track-started fires quickly and cancels the fallback timeout.
+      // For non-gapless (Rust stopped without a preloaded next): the 500ms timeout calls next().
+      listen<{ type: string; rating_key: number }>("audio://track-ended", (e) => {
         const { currentTrack, repeat, queueIndex } = get()
+        const endedId = resolveTrackId(e.payload.rating_key)
+        _ratingKeyToTrackId.delete(e.payload.rating_key)
         // Only clear waveform/lyrics if this track is still the active one.
         // If the user already switched tracks, preserve the new track's loaded state.
-        if (currentTrack?.rating_key === e.payload.rating_key) {
+        if (currentTrack?.id === endedId) {
           set({ waveformLevels: null, lyricsLines: null })
         }
-        _markPlayed(e.payload.rating_key)
+        _markPlayed(endedId)
         if (currentTrack) {
-          _reportTimeline(currentTrack.rating_key, "stopped", currentTrack.duration, currentTrack.duration)
-          // Last.fm scrobble (fire-and-forget; Rust enforces scrobble rules + enabled check)
-          void lastfmScrobble(
-            currentTrack.grandparent_title ?? "",
-            currentTrack.title,
-            currentTrack.parent_title ?? "",
-            currentTrack.grandparent_title ?? "",
-            currentTrack.duration ?? 0,
-            _trackStartedAtUnix,
-            get().positionMs,
-          ).catch(() => {})
+          _reportProgress(currentTrack.id, "stopped", currentTrack.duration, currentTrack.duration)
+          // Notify provider of track end (scrobbling, external integrations)
+          const provider = getProvider()
+          if (provider?.onTrackEnd) {
+            provider.onTrackEnd(currentTrack, _trackStartedAtUnix, get().positionMs)
+          }
         }
 
         // Repeat-one: restart the current track immediately
         if (repeat === 1) {
-          void playAtIndex(queueIndex, get, set)
+          fireAndForget(playAtIndex(queueIndex, get, set))
           return
         }
 
@@ -1096,34 +1174,39 @@ export const usePlayerStore = create<PlayerState>()(
           get().next()
         }, 500)
       }),
-    )
 
-    // Track started — fired for gapless transitions, crossfade completions, and user-initiated plays.
-    // For gapless/crossfade: advance queue state without calling audioPlay() (audio is already playing).
-    // For user-initiated plays: currentTrack already matches, so we skip.
-    unlisteners.push(
-      await listen<{ type: string; rating_key: number }>("audio://track-started", (e) => {
+      // Track started — fired for gapless transitions, crossfade completions, and user-initiated plays.
+      // For gapless/crossfade: advance queue state without calling audioPlay() (audio is already playing).
+      // For user-initiated plays: currentTrack already matches, so we skip.
+      listen<{ type: string; rating_key: number; duration_ms?: number }>("audio://track-started", (e) => {
         // Cancel the non-gapless fallback timeout — Rust handled the transition
         if (_gaplessTimeoutId !== null) {
           clearTimeout(_gaplessTimeoutId)
           _gaplessTimeoutId = null
         }
 
-        const { currentTrack, queue, queueIndex, repeat, isRadioMode, radioMinQueue, djMode,
+        const startedId = resolveTrackId(e.payload.rating_key)
+        const { currentTrack, queue, queueIndex, repeat, isRadioMode, radioMinQueue,
                 playlistKey, playlistLoadedCount, playlistTotalCount } = get()
 
         // User-initiated play: playAtIndex() already updated state — nothing to do here,
         // but still fetch waveform if it hasn't been loaded yet (playAtIndex fetches it too,
         // this handles the rare race where track-started fires before the fetch completes).
-        if (currentTrack?.rating_key === e.payload.rating_key) return
+        if (currentTrack?.id === startedId) {
+          // Apply corrected duration from Rust (e.g. Deezer preview ~30s vs API duration ~172s)
+          if (e.payload.duration_ms && e.payload.duration_ms !== currentTrack.duration) {
+            set({ currentTrack: { ...currentTrack, duration: e.payload.duration_ms } })
+          }
+          return
+        }
 
         // Gapless/crossfade transition: find the next track
         let nextIndex = queueIndex + 1
         if (nextIndex >= queue.length && repeat === 2) nextIndex = 0
 
         // Verify the next track matches — fall back to searching the queue
-        if (!queue[nextIndex] || queue[nextIndex].rating_key !== e.payload.rating_key) {
-          const found = queue.findIndex(t => t.rating_key === e.payload.rating_key)
+        if (!queue[nextIndex] || queue[nextIndex].id !== startedId) {
+          const found = queue.findIndex(t => t.id === startedId)
           if (found < 0) return
           nextIndex = found
         }
@@ -1134,68 +1217,70 @@ export const usePlayerStore = create<PlayerState>()(
         // Advance queue state — audio is already playing, do NOT call audioPlay()
         _onTrackBecomesActive(track, nextIndex, get, set)
 
+        // Apply corrected duration from Rust (e.g. Deezer preview ~30s vs API duration ~172s)
+        if (e.payload.duration_ms && e.payload.duration_ms !== track.duration) {
+          const correctedMs = e.payload.duration_ms
+          const correctedTrack = { ...track, duration: correctedMs }
+          set((s: PlayerState) => ({
+            currentTrack: correctedTrack,
+            queue: s.queue.map((t, i) => i === nextIndex ? correctedTrack : t),
+          }))
+        }
+
         // Pre-buffer the track after this one for the next gapless transition
-        void preloadNextTrack(get().queue, nextIndex, repeat)
+        fireAndForget(preloadNextTrack(get().queue, nextIndex, repeat))
+        prefetchAhead(get().queue, nextIndex, 3)
 
         // Progressive playlist loading: load more when approaching end
         if (playlistKey && playlistLoadedCount < playlistTotalCount && nextIndex >= queue.length - 20) {
-          void loadMorePlaylistTracks(get, set as never)
+          fireAndForget(loadMorePlaylistTracks(get, set as never))
         }
 
         // Radio: refill queue if running low
         if (isRadioMode && queue.length - nextIndex - 1 < radioMinQueue) {
-          void appendRadioTracks(get, set as never)
+          fireAndForget(appendRadioTracks(get, set as never))
         }
       }),
-    )
 
-    // Audio errors
-    unlisteners.push(
-      await listen<{ type: string; message: string }>("audio://error", (e) => {
+      // Audio errors — surface to UI so the user sees feedback instead of silent failure
+      listen<{ type: string; message: string }>("audio://error", (e) => {
         console.error("Audio engine error:", e.payload.message)
+        set({ playerError: e.payload.message })
+        setTimeout(() => set({ playerError: null }), 6000)
       }),
-    )
 
-    // Media key / Now Playing events forwarded from the Rust souvlaki integration
-    unlisteners.push(
-      await listen("media://play-pause", () => {
+      // Media key / Now Playing events forwarded from the Rust souvlaki integration
+      listen("media://play-pause", () => {
         const { isPlaying, currentTrack } = get()
         if (!currentTrack) return
         if (isPlaying) get().pause()
         else get().resume()
       }),
-    )
 
-    unlisteners.push(
-      await listen("media://next", () => {
+      listen("media://next", () => {
         get().next()
       }),
-    )
 
-    unlisteners.push(
-      await listen("media://previous", () => {
+      listen("media://previous", () => {
         get().prev()
       }),
-    )
 
-    // Seek position set from the OS Now Playing scrubber
-    unlisteners.push(
-      await listen<number>("media://seek", (e) => {
+      // Seek position set from the OS Now Playing scrubber
+      listen<number>("media://seek", (e) => {
         get().seekTo(e.payload)
       }),
-    )
 
-    // Stop command from the OS (e.g. closing Now Playing widget)
-    unlisteners.push(
-      await listen("media://stop", () => {
+      // Stop command from the OS (e.g. closing Now Playing widget)
+      listen("media://stop", () => {
         const { currentTrack, positionMs } = get()
         if (currentTrack) {
-          _reportTimeline(currentTrack.rating_key, "stopped", positionMs, currentTrack.duration)
+          _reportProgress(currentTrack.id, "stopped", positionMs, currentTrack.duration)
         }
-        void setNowPlayingState("stopped")
+        const provider = getProvider()
+        if (provider?.setNowPlayingState) fireAndForget(provider.setNowPlayingState("stopped"))
         set({ isPlaying: false, positionMs: 0 })
       }),
-    )
+    ])
 
     // Return cleanup function
     return () => {

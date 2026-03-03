@@ -3,54 +3,50 @@ import { createPortal } from "react-dom"
 import { Link } from "wouter"
 import { open } from "@tauri-apps/plugin-shell"
 import { useShallow } from "zustand/react/shallow"
-import { useConnectionStore, usePlayerStore, buildPlexImageUrl, useUIStore, useLibraryStore } from "../../stores"
-import { getAlbum, getAlbumTracks, getRelatedHubs } from "../../lib/plex"
+import { usePlayerStore, useUIStore, useLibraryStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
 import { formatMs, formatTotalDuration } from "../../lib/formatters"
 import { ImageModal } from "../shared/ImageModal"
 import { prefetchTrackAudio } from "../../stores/playerStore"
 import { useContextMenu } from "../../hooks/useContextMenu"
-import type { Album, Artist, Track, Hub, PlexTag } from "../../types/plex"
+import type { MusicAlbum, MusicTrack, MusicHub, MusicItem } from "../../types/music"
 import { MediaCard } from "../MediaCard"
 import { ScrollRow } from "../ScrollRow"
 import { UltraBlur } from "../UltraBlur"
 import { getCachedAlbum, prefetchAlbum, prefetchArtist, setAlbumCache } from "../../stores/metadataCache"
-import { useLastfmMetadataStore } from "../../stores/lastfmMetadataStore"
-import type { LastfmAlbumInfo } from "../../lib/lastfm"
-import { useDeezerMetadataStore } from "../../stores/deezerMetadataStore"
-import type { DeezerAlbumInfo } from "../../lib/deezer"
-import { useItunesMetadataStore } from "../../stores/itunesMetadataStore"
-import type { ItunesAlbumInfo } from "../../lib/itunes"
-import { buildMetaImageUrl } from "../../lib/metadataImage"
+import { useAlbumEnrichment } from "../../hooks/useMetadataEnrichment"
+import { buildImageUrl } from "../../lib/imageUrl"
 import { useMetadataSourceStore } from "../../stores/metadataSourceStore"
 import { HeroRating } from "../HeroRating"
-import { useMetadataFetch } from "../../hooks/useMetadataFetch"
 import { StarRating } from "../shared/StarRating"
 import { useDebugStore } from "../../stores/debugStore"
 import { useDebugPanelStore } from "../../stores/debugPanelStore"
+import { useCapability } from "../../hooks/useCapability"
 
 
-function TagChip({ tag, tagType }: { tag: PlexTag; tagType: "genre" | "mood" | "style" }) {
+function TagChip({ tag, tagType }: { tag: string; tagType: "genre" | "mood" | "style" }) {
   return (
     <Link
-      href={`/genre/${tagType}/${encodeURIComponent(tag.tag)}`}
+      href={`/genre/${tagType}/${encodeURIComponent(tag)}`}
       className="rounded-full border border-white/20 px-2.5 py-0.5 text-xs text-gray-300 hover:border-white/40 hover:text-white transition-colors"
     >
-      {tag.tag}
+      {tag}
     </Link>
   )
 }
 
-export function AlbumPage({ albumId }: { albumId: number }) {
-  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, musicSectionId: s.musicSectionId })))
+export function AlbumPage({ albumId }: { albumId: string }) {
+  const provider = useProviderStore(s => s.provider)
   const { playTrack, playRadio, addToQueue, addNext, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playRadio: s.playRadio, addToQueue: s.addToQueue, addNext: s.addNext, currentTrack: s.currentTrack })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
+  const hasRadio = useCapability("radio")
 
   // Seed from eager-load cache for an instant first render.
   const cached = getCachedAlbum(albumId)
-  const [album, setAlbum] = useState<Album | null>(cached?.album ?? null)
-  const [tracks, setTracks] = useState<Track[]>(cached?.tracks ?? [])
-  const [relatedHubs, setRelatedHubs] = useState<Hub[]>([])
+  const [album, setAlbum] = useState<MusicAlbum | null>(cached?.album ?? null)
+  const [tracks, setTracks] = useState<MusicTrack[]>(cached?.tracks ?? [])
+  const [relatedHubs, setRelatedHubs] = useState<MusicHub[]>([])
   const [isLoading, setIsLoading] = useState(!cached)
   const [error, setError] = useState<string | null>(null)
 
@@ -70,17 +66,11 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     tagsStyle: s.tagsStyle,
   })))
 
-  // LastFM metadata
-  const getLastfmAlbum = useLastfmMetadataStore(s => s.getAlbum)
-  const [lastfmData, setLastfmData] = useState<LastfmAlbumInfo | null>(null)
-
-  // Deezer metadata
-  const getDeezerAlbum = useDeezerMetadataStore(s => s.getAlbum)
-  const [deezerData, setDeezerData] = useState<DeezerAlbumInfo | null>(null)
-
-  // iTunes metadata
-  const getItunesAlbum = useItunesMetadataStore(s => s.getAlbum)
-  const [itunesData, setItunesData] = useState<ItunesAlbumInfo | null>(null)
+  // Enrichment metadata from all backends
+  const { lastfm: lastfmData, deezer: deezerData, itunes: itunesData } = useAlbumEnrichment(
+    album?.artistName ?? null,
+    album?.title ?? null,
+  )
 
   useEffect(() => {
     setError(null)
@@ -102,10 +92,11 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     }
 
     // Always re-fetch for freshness (silently when cache-seeded).
+    if (!provider) return
     Promise.all([
-      getAlbum(albumId),
-      getAlbumTracks(albumId),
-      getRelatedHubs(albumId, 20).catch(() => [] as Hub[]),
+      provider.getAlbum(albumId),
+      provider.getAlbumTracks(albumId),
+      provider.getRelatedHubs(albumId).catch(() => [] as MusicHub[]),
     ])
       .then(([al, tr, hubs]) => {
         setAlbum(al)
@@ -128,36 +119,28 @@ export function AlbumPage({ albumId }: { albumId: number }) {
 
   // Map each tag name (lowercase) to its tagType for building correct genre links.
   // Must be before early returns — hooks cannot be called conditionally.
-  const albumGenre = album?.genre ?? []
-  const albumStyle = album?.style ?? []
-  const albumMood  = album?.mood ?? []
+  const albumGenre = album?.genres ?? []
+  const albumStyle = album?.styles ?? []
+  const albumMood  = album?.moods ?? []
   const tagTypeMap = useMemo(() => {
     const m = new Map<string, "genre" | "mood" | "style">()
     for (const t of tagsGenre) m.set(t.tag.toLowerCase(), "genre")
     for (const t of tagsMood)  m.set(t.tag.toLowerCase(), "mood")
     for (const t of tagsStyle) m.set(t.tag.toLowerCase(), "style")
     // Album-specific tags override (they are authoritative)
-    for (const t of albumGenre) m.set(t.tag.toLowerCase(), "genre")
-    for (const t of albumStyle) m.set(t.tag.toLowerCase(), "style")
-    for (const t of albumMood)  m.set(t.tag.toLowerCase(), "mood")
+    for (const t of albumGenre) m.set(t.toLowerCase(), "genre")
+    for (const t of albumStyle) m.set(t.toLowerCase(), "style")
+    for (const t of albumMood)  m.set(t.toLowerCase(), "mood")
     return m
   }, [albumGenre, albumStyle, albumMood, tagsGenre, tagsMood, tagsStyle])
-
-  // Fetch LastFM + Deezer + iTunes metadata once we know the album / artist names
-  const albumKey = album?.title && album?.parent_title ? `${album.parent_title}||${album.title}` : null
-  useMetadataFetch([
-    { key: albumKey, fetch: () => getLastfmAlbum(album!.parent_title, album!.title), setState: setLastfmData },
-    { key: albumKey, fetch: () => getDeezerAlbum(album!.parent_title, album!.title), setState: setDeezerData },
-    { key: albumKey, fetch: () => getItunesAlbum(album!.parent_title, album!.title), setState: setItunesData },
-  ], [albumKey, getLastfmAlbum, getDeezerAlbum, getItunesAlbum])
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading album…</div>
   if (error) return <div className="p-8 text-sm text-red-400">{error}</div>
   if (!album) return null
 
-  const plexThumb   = album.thumb ? buildPlexImageUrl(baseUrl, token, album.thumb) : null
-  const deezerCover = buildMetaImageUrl(deezerData?.cover_url)
-  const appleCover  = buildMetaImageUrl(itunesData?.cover_url)
+  const plexThumb   = album.thumbUrl
+  const deezerCover = deezerData?.cover_url ? buildImageUrl("album", albumId, deezerData.cover_url, album.title, album.artistName) : null
+  const appleCover  = itunesData?.cover_url ? buildImageUrl("album", albumId, itunesData.cover_url, album.title, album.artistName) : null
   let thumbUrl: string | null = null
   for (const src of priority) {
     if (src === "plex"   && plexThumb)   { thumbUrl = plexThumb;   break }
@@ -165,18 +148,14 @@ export function AlbumPage({ albumId }: { albumId: number }) {
     if (src === "apple"  && appleCover)  { thumbUrl = appleCover;  break }
   }
   if (!thumbUrl) thumbUrl = plexThumb ?? deezerCover ?? appleCover ?? null
-  const parentThumbUrl = album.parent_thumb
-    ? buildPlexImageUrl(baseUrl, token, album.parent_thumb)
-    : null
+  const parentThumbUrl = album.artistThumbUrl
 
-  const formatLabel = album.subformat.length > 0
-    ? album.subformat.map(f => f.tag).join(" · ")
-    : "Album"
+  const formatLabel = album.format ?? "Album"
 
   const plexTags = [
-    ...album.genre,
-    ...album.style,
-    ...album.mood,
+    ...album.genres,
+    ...album.styles,
+    ...album.moods,
   ]
 
 
@@ -189,37 +168,30 @@ export function AlbumPage({ albumId }: { albumId: number }) {
   }
 
   // Merge tags in priority order; Plex tags always valid; external tags filtered.
-  const toPlexTag = (tag: string): PlexTag => ({ tag, id: null, filter: null })
-  const tagsBySource: Record<string, PlexTag[]> = {
+  const tagsBySource: Record<string, string[]> = {
     plex:   plexTags,
-    lastfm: (lastfmData?.tags ?? [])
-      .filter(t => plexTagSet.has(t.toLowerCase()))
-      .map(toPlexTag),
-    deezer: (deezerData?.genres ?? [])
-      .filter(g => plexTagSet.has(g.toLowerCase()))
-      .map(toPlexTag),
-    apple:  itunesData?.genre && plexTagSet.has(itunesData.genre.toLowerCase())
-      ? [toPlexTag(itunesData.genre)]
-      : [],
+    lastfm: (lastfmData?.tags ?? []).filter(t => plexTagSet.has(t.toLowerCase())),
+    deezer: (deezerData?.genres ?? []).filter(g => plexTagSet.has(g.toLowerCase())),
+    apple:  itunesData?.genre && plexTagSet.has(itunesData.genre.toLowerCase()) ? [itunesData.genre] : [],
   }
   const seenTagKeys = new Set<string>()
-  const allTags: PlexTag[] = []
+  const allTags: string[] = []
   for (const src of priority) {
-    for (const entry of (tagsBySource[src] ?? [])) {
-      const key = entry.tag.toLowerCase()
-      if (!seenTagKeys.has(key)) { seenTagKeys.add(key); allTags.push(entry) }
+    for (const tag of (tagsBySource[src] ?? [])) {
+      const key = tag.toLowerCase()
+      if (!seenTagKeys.has(key)) { seenTagKeys.add(key); allTags.push(tag) }
     }
   }
   // Use Deezer label as fallback when Plex has none.
   // Deezer returns the literal string "[no label]" for unlabelled releases — filter that out.
   const deezerLabel = deezerData?.label && deezerData.label !== "[no label]" ? deezerData.label : null
-  const displayLabel = album.label.length > 0
-    ? album.label.map(l => l.tag).join(", ")
+  const displayLabel = album.labels.length > 0
+    ? album.labels.join(", ")
     : deezerLabel
 
   // Show all non-empty hubs (sonically similar, more by artist, etc.)
-  const nonEmptyHubs = relatedHubs.filter(h => h.metadata.length > 0)
-  const review = album.reviews.length > 0 ? album.reviews[0] : null
+  const nonEmptyHubs = relatedHubs.filter(h => h.items.length > 0)
+  const review = album.reviews && album.reviews.length > 0 ? album.reviews[0] : null
 
   return (
     <div className="pb-12">
@@ -254,7 +226,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             </svg>
           </button>
           {/* Album Radio */}
-          <button
+          {hasRadio && <button
             onClick={() => void playRadio(albumId, 'album')}
             title="Album Radio — continuous sonically-similar music"
             className="flex h-11 w-11 items-center justify-center rounded-full bg-black/30 backdrop-blur-sm border border-white/10 text-accent hover:bg-black/45 hover:scale-105 active:scale-95 transition-all"
@@ -262,7 +234,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
               <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
             </svg>
-          </button>
+          </button>}
           {/* Three-dot menu */}
           <div className="relative">
             <button
@@ -303,10 +275,10 @@ export function AlbumPage({ albumId }: { albumId: number }) {
 
                   {/* Rating */}
                   <StarRating
-                    ratingKey={album.rating_key}
-                    userRating={album.user_rating ?? null}
+                    itemId={album.id}
+                    userRating={album.userRating ?? null}
                     enableLove={false}
-                    artist={album.parent_title}
+                    artist={album.artistName}
                     track={album.title}
                     size={14}
                     onRated={() => setMenuOpen(false)}
@@ -317,14 +289,14 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                   {/* Share */}
                   <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-white/30">Share</div>
                   <button
-                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.parent_title)}`); setMenuOpen(false) }}
+                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.artistName)}`); setMenuOpen(false) }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
                   >
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
                     Last.fm artist
                   </button>
                   <button
-                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.parent_title)}/${encodeURIComponent(album.title)}`); setMenuOpen(false) }}
+                    onClick={() => { void open(`https://www.last.fm/music/${encodeURIComponent(album.artistName)}/${encodeURIComponent(album.title)}`); setMenuOpen(false) }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
                   >
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" /></svg>
@@ -344,7 +316,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
 
                   {/* Navigation */}
                   <Link
-                    href={`/artist/${album.parent_key.split("/").pop()}`}
+                    href={`/artist/${album.artistId}`}
                     onClick={() => setMenuOpen(false)}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[color:var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
                   >
@@ -395,10 +367,10 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                 <img src={parentThumbUrl} alt="" className="h-6 w-6 rounded-full object-cover flex-shrink-0" />
               )}
               <Link
-                href={`/artist/${album.parent_key.split("/").pop()}`}
+                href={`/artist/${album.artistId}`}
                 className="font-semibold hover:underline"
               >
-                {album.parent_title}
+                {album.artistName}
               </Link>
               <span className="text-gray-500">·</span>
               <span className="text-gray-400">{album.year}</span>
@@ -427,11 +399,11 @@ export function AlbumPage({ albumId }: { albumId: number }) {
             </div>
 
             {/* Rating */}
-            <HeroRating ratingKey={albumId} userRating={album.user_rating} />
+            <HeroRating itemId={albumId} userRating={album.userRating} itemType="album" />
 
             {allTags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {allTags.map(t => <TagChip key={t.tag} tag={t} tagType={tagTypeMap.get(t.tag.toLowerCase()) ?? "genre"} />)}
+                {allTags.map(t => <TagChip key={t} tag={t} tagType={tagTypeMap.get(t.toLowerCase()) ?? "genre"} />)}
               </div>
             )}
 
@@ -478,12 +450,12 @@ export function AlbumPage({ albumId }: { albumId: number }) {
           </thead>
           <tbody>
             {tracks.map((track, idx) => {
-              const isActive = currentTrack?.rating_key === track.rating_key
-              const isContextTarget = isCtxTarget(track.rating_key)
+              const isActive = currentTrack?.id === track.id
+              const isContextTarget = isCtxTarget(track.id)
               return (
               <tr
-                key={track.rating_key}
-                className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
+                key={track.id}
+                className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-hl-row" : "hover:bg-hl-row"}`}
                 onClick={() => void playTrack(track, tracks, album.title, `/album/${albumId}`)}
                 onMouseEnter={() => prefetchTrackAudio(track)}
                 onContextMenu={ctxMenu("track", track)}
@@ -502,7 +474,7 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                     </>
                   ) : (
                     <>
-                      <span className="group-hover:hidden">{track.index || idx + 1}</span>
+                      <span className="group-hover:hidden">{track.trackNumber || idx + 1}</span>
                       <span className="hidden group-hover:flex items-center justify-center">
                         <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                           <polygon points="3,2 13,8 3,14" />
@@ -513,12 +485,12 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                 </td>
                 <td className="p-2">
                   <div className={isActive ? "text-accent" : "text-white"}>{track.title}</div>
-                  {track.original_title && track.original_title !== album.parent_title && (
-                    <div className="text-xs text-gray-500">{track.original_title}</div>
+                  {track.originalTitle && track.originalTitle !== album.artistName && (
+                    <div className="text-xs text-gray-500">{track.originalTitle}</div>
                   )}
                 </td>
                 <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
-                  <HeroRating ratingKey={track.rating_key} userRating={track.user_rating} />
+                  <HeroRating itemId={track.id} userRating={track.userRating} />
                 </td>
                 <td className="p-2 text-right w-36 tabular-nums">
                   <span className="group-hover:hidden">{formatMs(track.duration)}</span>
@@ -533,16 +505,16 @@ export function AlbumPage({ albumId }: { albumId: number }) {
                       </svg>
                       Queue
                     </button>
-                    <button
+                    {hasRadio && <button
                       className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors px-1"
                       title="Track Radio"
-                      onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
+                      onClick={e => { e.stopPropagation(); void playRadio(track.id, 'track') }}
                     >
                       <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                         <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
                       </svg>
                       Radio
-                    </button>
+                    </button>}
                   </div>
                 </td>
               </tr>
@@ -573,24 +545,24 @@ export function AlbumPage({ albumId }: { albumId: number }) {
       {nonEmptyHubs.length > 0 && (
         <div className="flex flex-col gap-8 px-8 pt-10">
           {nonEmptyHubs.map(hub => {
-            const albumItems = hub.metadata.filter(
-              (m): m is Album & { type: "album" } => m.type === "album"
+            const albumItems = hub.items.filter(
+              m => m.type === "album"
             )
-            const artistItems = hub.metadata.filter(
-              (m): m is Artist & { type: "artist" } => m.type === "artist"
+            const artistItems = hub.items.filter(
+              m => m.type === "artist"
             )
 
             if (albumItems.length > 0) {
               return (
-                <ScrollRow key={hub.hub_identifier} title={hub.title} restoreKey={`album-${albumId}-${hub.hub_identifier}`}>
+                <ScrollRow key={hub.identifier} title={hub.title} restoreKey={`album-${albumId}-${hub.identifier}`}>
                   {albumItems.map(a => (
                     <MediaCard
-                      key={a.rating_key}
+                      key={a.id}
                       title={a.title}
-                      desc={`${a.parent_title} · ${a.year}`}
-                      thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
-                      href={`/album/${a.rating_key}`}
-                      prefetch={() => prefetchAlbum(a.rating_key)}
+                      desc={`${(a as any).artistName ?? ""} · ${(a as any).year ?? ""}`}
+                      thumb={(a as any).thumbUrl ?? null}
+                      href={`/album/${a.id}`}
+                      prefetch={() => prefetchAlbum(a.id)}
                       scrollItem
                     />
                   ))}
@@ -600,15 +572,15 @@ export function AlbumPage({ albumId }: { albumId: number }) {
 
             if (artistItems.length > 0) {
               return (
-                <ScrollRow key={hub.hub_identifier} title={hub.title} restoreKey={`album-${albumId}-${hub.hub_identifier}`}>
+                <ScrollRow key={hub.identifier} title={hub.title} restoreKey={`album-${albumId}-${hub.identifier}`}>
                   {artistItems.map(a => (
                     <MediaCard
-                      key={a.rating_key}
+                      key={a.id}
                       title={a.title}
                       desc="Artist"
-                      thumb={a.thumb ? buildPlexImageUrl(baseUrl, token, a.thumb) : null}
-                      href={`/artist/${a.rating_key}`}
-                      prefetch={() => prefetchArtist(a.rating_key, musicSectionId ?? 0)}
+                      thumb={(a as any).thumbUrl ?? null}
+                      href={`/artist/${a.id}`}
+                      prefetch={() => prefetchArtist(a.id)}
                       isArtist
                       scrollItem
                     />

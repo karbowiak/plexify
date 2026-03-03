@@ -1,91 +1,19 @@
 #![allow(dead_code)]
 
-use std::fs::File;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 use ringbuf::HeapProd;
-use symphonia::core::audio::SampleBuffer;
 use symphonia::core::formats::{SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
 use tracing::{debug, error, info, warn};
 
-use super::bpm;
-use super::cache::{audio_cache_key, open_for_decode, prefetch_url_bg, probe_audio};
+use super::analyzer;
+use super::cache::{corrected_duration, open_for_decode, prefetch_url_bg, probe_audio};
 use super::eq::compute_eq_coeffs;
 use super::normalization::{fade_in_sample_count, resolve_normalization_gain};
 use super::state::{DecoderShared, DecoderState};
 use super::types::{AudioCommand, AudioEvent, PlaybackState};
-
-/// Background BPM detection: decode the first 30 s of the cached audio file
-/// and store the result in `shared.next_bpm` (BPM * 100 fixed-point).
-fn detect_bpm_bg(url: &str, shared: &Arc<DecoderShared>) {
-    let Some(ref cache_dir) = shared.cache_dir else { return };
-    let cache_path = cache_dir.join(audio_cache_key(url));
-
-    // Wait up to 10 s for the prefetch to write the cache file
-    let mut waited_ms = 0u64;
-    while !cache_path.exists() && waited_ms < 10_000 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        waited_ms += 500;
-    }
-    if !cache_path.exists() {
-        return;
-    }
-
-    let file = match File::open(&cache_path) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let Ok((mut fmt, mut dec, tid, sr, _ch, _codec)) = probe_audio(mss, url) else { return };
-
-    // Decode first 30 s of mono samples for BPM analysis
-    let max_frames = sr as usize * 30;
-    let mut mono_samples: Vec<f32> = Vec::with_capacity(max_frames);
-    let mut sb: Option<SampleBuffer<f32>> = None;
-
-    'outer: loop {
-        let packet = match fmt.next_packet() {
-            Ok(p) if p.track_id() == tid => p,
-            Ok(_) => continue,
-            Err(_) => break,
-        };
-        match dec.decode(&packet) {
-            Ok(audio_buf) => {
-                let spec = *audio_buf.spec();
-                let frames = audio_buf.frames();
-                let num_samples = frames * spec.channels.count();
-                if sb.as_ref().map_or(true, |s| s.capacity() < num_samples) {
-                    sb = Some(SampleBuffer::new(frames as u64, spec));
-                }
-                let s = sb.as_mut().unwrap();
-                s.copy_interleaved_ref(audio_buf);
-                let ch = spec.channels.count().max(1);
-                for frame_samples in s.samples().chunks(ch) {
-                    let mono = frame_samples.iter().sum::<f32>() / ch as f32;
-                    mono_samples.push(mono);
-                    if mono_samples.len() >= max_frames {
-                        break 'outer;
-                    }
-                }
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        }
-    }
-
-    if mono_samples.is_empty() {
-        return;
-    }
-
-    let detected = bpm::detect(&mono_samples, sr);
-    let bpm_fixed = (detected * 100.0) as u64;
-    shared.next_bpm.store(bpm_fixed, Ordering::Relaxed);
-    info!(bpm = detected, "BPM detected for next track");
-}
 
 /// Handle a single command. Returns true if the thread should shut down.
 pub(super) fn handle_command(
@@ -113,7 +41,9 @@ pub(super) fn handle_command(
 
             match open_for_decode(&meta.url, shared) {
                 Ok((mss, url)) => match probe_audio(mss, &url) {
-                    Ok((mut fmt, dec, tid, sr, ch, codec)) => {
+                    Ok((mut fmt, dec, tid, sr, ch, codec, probed_dur)) => {
+                        let mut meta = meta;
+                        meta.duration_ms = corrected_duration(meta.duration_ms, probed_dur);
                         let norm_gain = resolve_normalization_gain(&meta, &mut fmt, shared, codec);
                         state.format_reader = Some(fmt);
                         state.decoder = Some(dec);
@@ -144,6 +74,14 @@ pub(super) fn handle_command(
                         let _ = event_tx.send(AudioEvent::State {
                             state: PlaybackState::Playing,
                         });
+
+                        // Analyze current track in background (for smart crossfade)
+                        analyzer::analyze_current_bg(
+                            meta.url.clone(),
+                            meta.rating_key,
+                            meta.duration_ms,
+                            Arc::clone(shared),
+                        );
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to probe audio");
@@ -244,19 +182,23 @@ pub(super) fn handle_command(
             prefetch_url_bg(meta.url.clone(), Arc::clone(shared));
             state.next_meta = Some(meta.clone());
 
-            let shared_bpm = Arc::clone(shared);
-            let url_bpm = meta.url.clone();
-            std::thread::Builder::new()
-                .name("bpm-detect".into())
-                .spawn(move || {
-                    detect_bpm_bg(&url_bpm, &shared_bpm);
-                })
-                .ok();
+            // Full track analysis (silence, energy, outro/intro, BPM) replaces detect_bpm_bg
+            analyzer::analyze_bg(
+                meta.url.clone(),
+                meta.rating_key,
+                meta.duration_ms,
+                Arc::clone(shared),
+            );
         }
 
         AudioCommand::SetCrossfadeWindow(ms) => {
             shared.crossfade_window_ms.store(ms, Ordering::Relaxed);
             info!(ms = ms, "Crossfade window updated");
+        }
+
+        AudioCommand::SetCrossfadeStyle(style) => {
+            shared.crossfade_style.store(style, Ordering::Relaxed);
+            info!(style = style, "Crossfade style updated");
         }
 
         AudioCommand::SetNormalizationEnabled(enabled) => {
@@ -309,6 +251,11 @@ pub(super) fn handle_command(
         AudioCommand::SetSameAlbumCrossfade(enabled) => {
             shared.same_album_crossfade.store(enabled, Ordering::Relaxed);
             info!(enabled = enabled, "Same-album crossfade toggled");
+        }
+
+        AudioCommand::SetSmartCrossfade(enabled) => {
+            shared.smart_crossfade_enabled.store(enabled, Ordering::Relaxed);
+            info!(enabled = enabled, "Smart crossfade toggled");
         }
 
         AudioCommand::SetVisualizerEnabled(enabled) => {

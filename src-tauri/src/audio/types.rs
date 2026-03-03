@@ -26,11 +26,13 @@ pub enum AudioCommand {
     SetVolume(f32),       // 0.0 - 1.0
     PreloadNext(TrackMeta),
     SetCrossfadeWindow(u64), // milliseconds; 0 = disabled
+    SetCrossfadeStyle(u64),  // 0=Smooth, 1=DjFilter, 2=EchoOut, 3=HardCut
     SetNormalizationEnabled(bool), // enable/disable ReplayGain normalization
     SetEq { gains_db: [f32; 10] }, // recompute all 10 biquad coefficients
     SetEqEnabled(bool),            // enable/disable EQ bypass
     SetPreampGain(f32),            // pre-amp in dB (−12..+3); applied before EQ
     SetSameAlbumCrossfade(bool),   // when false (default), suppress crossfade for same-album tracks
+    SetSmartCrossfade(bool),       // when true (default), use track analysis for adaptive crossfade
     SetVisualizerEnabled(bool),    // gate PCM IPC bridge for visualizer
     SetPreferredDevice(Option<String>), // preferred CPAL output device name (applied on next Play)
     SetEqPostgain(f32),                 // post-EQ makeup gain in dB (0..+18)
@@ -50,11 +52,13 @@ impl std::fmt::Debug for AudioCommand {
             Self::SetVolume(v) => write!(f, "SetVolume({v})"),
             Self::PreloadNext(m) => write!(f, "PreloadNext({})", m.rating_key),
             Self::SetCrossfadeWindow(ms) => write!(f, "SetCrossfadeWindow({ms})"),
+            Self::SetCrossfadeStyle(s) => write!(f, "SetCrossfadeStyle({s})"),
             Self::SetNormalizationEnabled(e) => write!(f, "SetNormalizationEnabled({e})"),
             Self::SetEq { .. } => write!(f, "SetEq"),
             Self::SetEqEnabled(e) => write!(f, "SetEqEnabled({e})"),
             Self::SetPreampGain(g) => write!(f, "SetPreampGain({g})"),
             Self::SetSameAlbumCrossfade(e) => write!(f, "SetSameAlbumCrossfade({e})"),
+            Self::SetSmartCrossfade(e) => write!(f, "SetSmartCrossfade({e})"),
             Self::SetVisualizerEnabled(e) => write!(f, "SetVisualizerEnabled({e})"),
             Self::SetPreferredDevice(n) => write!(f, "SetPreferredDevice({n:?})"),
             Self::SetEqPostgain(g) => write!(f, "SetEqPostgain({g})"),
@@ -95,6 +99,30 @@ pub enum PlaybackState {
     Paused,
     Buffering,
     Stopped,
+}
+
+/// Crossfade mixing style — determines how two tracks are blended during a transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossfadeStyle {
+    /// Equal-power cos/sin curves — clean, safe default.
+    Smooth = 0,
+    /// LP sweep out + HP sweep in + S-curve volume — classic club DJ blend.
+    DjFilter = 1,
+    /// Beat-synced delay with decaying feedback on the outgoing track.
+    EchoOut = 2,
+    /// Beat-aligned ~50ms micro-crossfade — instant switch like a live DJ drop.
+    HardCut = 3,
+}
+
+impl CrossfadeStyle {
+    pub fn from_u64(v: u64) -> Self {
+        match v {
+            1 => Self::DjFilter,
+            2 => Self::EchoOut,
+            3 => Self::HardCut,
+            _ => Self::Smooth,
+        }
+    }
 }
 
 /// Audio format info extracted from symphonia after probing

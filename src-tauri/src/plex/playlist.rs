@@ -286,34 +286,19 @@ impl PlexClient {
     /// * `summary` - New playlist summary (optional)
     ///
     /// # Returns
-    /// * `Result<Playlist>` - The updated playlist
+    /// * `Result<()>` - Success or error
     #[instrument(skip(self))]
     pub async fn edit_playlist(
         &self,
         playlist_id: i64,
         title: Option<&str>,
         summary: Option<&str>,
-    ) -> Result<Playlist> {
+    ) -> Result<()> {
         let path = format!("/playlists/{}", playlist_id);
-
-        let mut body = serde_json::json!({});
-        if let Some(title) = title {
-            body["title"] = serde_json::json!(title);
-        }
-        if let Some(summary) = summary {
-            body["summary"] = serde_json::json!(summary);
-        }
-
-        let container: MediaContainer<Playlist> = self
-            .put(&path, body)
-            .await
-            .context("Failed to edit playlist")?;
-
-        container
-            .metadata
-            .into_iter()
-            .next()
-            .context("Playlist edit returned no data")
+        let mut params: Vec<(&str, &str)> = Vec::new();
+        if let Some(t) = title { params.push(("title", t)); }
+        if let Some(s) = summary { params.push(("summary", s)); }
+        self.put_params_ok(&path, &params).await.context("Failed to edit playlist")
     }
 
     /// Add items to a playlist

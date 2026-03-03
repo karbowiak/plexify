@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
-import { useShallow } from "zustand/shallow"
-import { useConnectionStore, buildPlexImageUrl } from "../../stores"
-import { getSectionStations, buildRadioPlayQueueUri } from "../../lib/plex"
+import { useLocation } from "wouter"
 import { usePlayerStore } from "../../stores/playerStore"
-import type { KnownPlexMedia } from "../../types/plex"
+import { useProviderStore } from "../../stores/providerStore"
+import { useCapability } from "../../hooks/useCapability"
+import type { MusicItem } from "../../types/music"
 
 interface Props {
   stationType: string
@@ -13,21 +13,17 @@ interface Props {
 const PLACEHOLDER_TYPES = new Set(["artist-mix", "album-mix"])
 
 export function RadioPage({ stationType }: Props) {
-  const { musicSectionId, sectionUuid, baseUrl, token } = useConnectionStore(
-    useShallow(s => ({
-      musicSectionId: s.musicSectionId,
-      sectionUuid: s.sectionUuid,
-      baseUrl: s.baseUrl,
-      token: s.token,
-    }))
-  )
+  const [, navigate] = useLocation()
+  const hasRadio = useCapability("radio")
   const playFromUri = usePlayerStore(s => s.playFromUri)
   const currentTrack = usePlayerStore(s => s.currentTrack)
   const isPlaying = usePlayerStore(s => s.isPlaying)
 
-  const [stationItem, setStationItem] = useState<KnownPlexMedia | null>(null)
+  const [stationItem, setStationItem] = useState<MusicItem | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+
+  if (!hasRadio) { navigate("/"); return null }
 
   const decoded = decodeURIComponent(stationType)
   const isPlaceholder = PLACEHOLDER_TYPES.has(decoded)
@@ -37,33 +33,34 @@ export function RadioPage({ stationType }: Props) {
       setLoading(false)
       return
     }
-    if (!musicSectionId) {
+    const provider = useProviderStore.getState().provider
+    if (!provider?.getSectionStations) {
       setLoading(false)
       return
     }
-    getSectionStations(musicSectionId)
+    provider.getSectionStations()
       .then(hubs => {
-        const items = hubs
-          .flatMap(h => h.metadata)
-          .filter((item): item is KnownPlexMedia => item.type !== "unknown")
-        const match = items.find(item =>
-          item.guid === `tv.plex://station/${decoded}` ||
-          (item.key && item.key.includes(decoded))
-        )
-        if (match && sectionUuid) {
+        const items = hubs.flatMap(h => h.items)
+        const match = items.find(item => {
+          return (item.guid === `tv.plex://station/${decoded}` ||
+            (item.providerKey && item.providerKey.includes(decoded)))
+        })
+        if (match && provider.buildRadioUri && match.providerKey) {
           setStationItem(match)
-          void playFromUri(buildRadioPlayQueueUri(sectionUuid, match.key))
+          void playFromUri(provider.buildRadioUri(match.providerKey))
         } else {
           setNotFound(true)
         }
       })
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false))
-  }, [musicSectionId, decoded])
+  }, [decoded])
 
   const handlePlay = () => {
-    if (!stationItem || !sectionUuid) return
-    void playFromUri(buildRadioPlayQueueUri(sectionUuid, stationItem.key))
+    if (!stationItem?.providerKey) return
+    const provider = useProviderStore.getState().provider
+    if (!provider?.buildRadioUri) return
+    void playFromUri(provider.buildRadioUri(stationItem.providerKey))
   }
 
   // Placeholder state
@@ -114,17 +111,9 @@ export function RadioPage({ stationType }: Props) {
     )
   }
 
-  const thumb = stationItem.type === "playlist" && stationItem.composite
-    ? buildPlexImageUrl(baseUrl, token, stationItem.composite)
-    : stationItem.thumb
-      ? buildPlexImageUrl(baseUrl, token, stationItem.thumb)
-      : null
+  const thumb = stationItem.thumbUrl ?? null
 
-  const nowPlayingThumb = currentTrack
-    ? (currentTrack.thumb || currentTrack.parent_thumb)
-      ? buildPlexImageUrl(baseUrl, token, (currentTrack.thumb || currentTrack.parent_thumb)!)
-      : null
-    : null
+  const nowPlayingThumb = currentTrack?.thumbUrl ?? null
 
   return (
     <div className="flex flex-col items-center py-16 text-center">
@@ -179,7 +168,7 @@ export function RadioPage({ stationType }: Props) {
             <div className="min-w-0">
               <div className="truncate font-semibold text-white">{currentTrack.title}</div>
               <div className="truncate text-sm text-white/50">
-                {currentTrack.grandparent_title} · {currentTrack.parent_title}
+                {currentTrack.artistName} · {currentTrack.albumName}
               </div>
             </div>
           </div>

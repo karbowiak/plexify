@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, usePlayerStore, useConnectionStore, buildPlexImageUrl, useUIStore } from "../../stores"
-import { formatMs, formatTotalMs, formatDate, keyToId } from "../../lib/formatters"
+import { useLibraryStore, usePlayerStore, useUIStore } from "../../stores"
+import { formatMs, formatTotalMs, formatDate } from "../../lib/formatters"
 import { SortTh } from "../shared/SortTh"
 import { StarRating } from "../shared/StarRating"
 import { prefetchTrackAudio } from "../../stores/playerStore"
@@ -23,21 +23,16 @@ export function Liked() {
     currentTrack: s.currentTrack,
   })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
-  const { baseUrl, token, musicSectionId } = useConnectionStore(useShallow(s => ({
-    baseUrl: s.baseUrl,
-    token: s.token,
-    musicSectionId: s.musicSectionId,
-  })))
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
 
   useEffect(() => {
-    if (musicSectionId !== null) void fetchLikedTracks(musicSectionId)
-  }, [musicSectionId, pageRefreshKey])
+    void fetchLikedTracks()
+  }, [pageRefreshKey])
 
   // Deduplicate by GUID (smart playlists can return the same track twice)
   const seen = new Set<string>()
   const dedupedTracks = likedTracks.filter(t => {
-    const key = t.guid ?? `${t.grandparent_key}||${t.title}`
+    const key = t.guid ?? `${t.artistId}||${t.title}`
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -53,10 +48,13 @@ export function Liked() {
       let cmp = 0
       switch (sortCol) {
         case "title":    cmp = a.title.localeCompare(b.title); break
-        case "artist":   cmp = a.grandparent_title.localeCompare(b.grandparent_title); break
-        case "album":    cmp = a.parent_title.localeCompare(b.parent_title); break
-        case "rating":   cmp = (a.user_rating ?? 0) - (b.user_rating ?? 0); break
-        case "rated_at": cmp = (a.last_rated_at ? +new Date(a.last_rated_at) : 0) - (b.last_rated_at ? +new Date(b.last_rated_at) : 0); break
+        case "artist":   cmp = a.artistName.localeCompare(b.artistName); break
+        case "album":    cmp = a.albumName.localeCompare(b.albumName); break
+        case "rating":   cmp = (a.userRating ?? 0) - (b.userRating ?? 0); break
+        case "rated_at": {
+          cmp = (a.lastRatedAt ? +new Date(a.lastRatedAt) : 0) - (b.lastRatedAt ? +new Date(b.lastRatedAt) : 0)
+          break
+        }
         case "duration": cmp = a.duration - b.duration; break
       }
       return sortDir === "asc" ? cmp : -cmp
@@ -145,16 +143,12 @@ export function Liked() {
           </thead>
           <tbody>
             {tracks.map((track, idx) => {
-              const rawThumb = track.thumb || track.parent_thumb || null
-              const trackThumb = rawThumb ? buildPlexImageUrl(baseUrl, token, rawThumb) : null
-              const albumId = keyToId(track.parent_key)
-              const artistId = keyToId(track.grandparent_key)
-              const isActive = currentTrack?.rating_key === track.rating_key
-              const isContextTarget = isCtxTarget(track.rating_key)
+              const isActive = currentTrack?.id === track.id
+              const isContextTarget = isCtxTarget(track.id)
               return (
                 <tr
-                  key={track.rating_key}
-                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-accent/5" : "hover:bg-accent/5"}`}
+                  key={track.id}
+                  className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-hl-row" : "hover:bg-hl-row"}`}
                   onClick={() => void playTrack(track, tracks, "Liked Songs", "/collection/tracks")}
                   onMouseEnter={() => prefetchTrackAudio(track)}
                   onContextMenu={ctxMenu("track", track)}
@@ -187,8 +181,8 @@ export function Liked() {
                   {/* Title cell: thumbnail + title + subtitle row */}
                   <td className="p-2">
                     <div className="flex items-center gap-3">
-                      {trackThumb ? (
-                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={trackThumb} alt="" />
+                      {track.thumbUrl ? (
+                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={track.thumbUrl} alt="" />
                       ) : (
                         <div className="h-10 w-10 rounded-sm flex-shrink-0 bg-app-surface" />
                       )}
@@ -197,21 +191,21 @@ export function Liked() {
                         {/* Subtitle: artist + fade-in actions */}
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="truncate shrink min-w-0">
-                            {artistId ? (
+                            {track.artistId ? (
                               <Link
-                                href={`/artist/${artistId}`}
+                                href={`/artist/${track.artistId}`}
                                 className="text-gray-500 hover:text-white hover:underline transition-colors"
                                 onClick={e => e.stopPropagation()}
                               >
-                                {track.grandparent_title}
+                                {track.artistName}
                               </Link>
                             ) : (
-                              <span className="text-gray-500">{track.grandparent_title}</span>
+                              <span className="text-gray-500">{track.artistName}</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >
@@ -221,9 +215,9 @@ export function Liked() {
                               Queue
                             </button>
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
                               title="Track Radio"
-                              onClick={e => { e.stopPropagation(); void playRadio(track.rating_key, 'track') }}
+                              onClick={e => { e.stopPropagation(); void playRadio(track.id, 'track') }}
                             >
                               <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
                                 <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1.5a5.5 5.5 0 1 1 0 11 5.5 5.5 0 0 1 0-11zM8 5a3 3 0 1 0 0 6A3 3 0 0 0 8 5zm0 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />
@@ -238,26 +232,26 @@ export function Liked() {
 
                   {/* Album */}
                   <td className="p-2 truncate max-w-[200px]">
-                    {albumId ? (
+                    {track.albumId ? (
                       <Link
-                        href={`/album/${albumId}`}
+                        href={`/album/${track.albumId}`}
                         className="hover:text-white hover:underline transition-colors"
                         onClick={e => e.stopPropagation()}
                       >
-                        {track.parent_title}
+                        {track.albumName}
                       </Link>
                     ) : (
-                      track.parent_title
+                      track.albumName
                     )}
                   </td>
 
                   {/* Rating — always visible, interactive */}
                   <td className="p-2">
-                    <StarRating ratingKey={track.rating_key} userRating={track.user_rating} artist={track.grandparent_title ?? ""} track={track.title} />
+                    <StarRating itemId={track.id} userRating={track.userRating} artist={track.artistName ?? ""} track={track.title} />
                   </td>
 
                   {/* Date Rated */}
-                  <td className="p-2 whitespace-nowrap">{formatDate(track.last_rated_at ?? null)}</td>
+                  <td className="p-2 whitespace-nowrap">{formatDate(track.lastRatedAt ?? null)}</td>
 
                   {/* Duration */}
                   <td className="p-2 text-right tabular-nums">{formatMs(track.duration)}</td>

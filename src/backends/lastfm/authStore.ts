@@ -1,22 +1,22 @@
 /**
  * Last.fm auth + settings state.
  *
- * Mirrors the LastFM-related fields from PlexSettings (which lives on disk).
- * No Zustand persist needed — state is seeded from `loadSettings()` on init
+ * Mirrors the LastFM-related fields from app settings (which live on disk).
+ * No Zustand persist needed — state is seeded from `loadAppSettings()` on init
  * and written back to disk via Tauri commands on every change.
  *
  * Important: the API secret is NEVER stored here — it lives only in Rust.
  */
 
 import { create } from "zustand"
-import { loadSettings } from "../lib/plex"
+import { loadAppSettings } from "../../lib/settings"
 import {
   lastfmCompleteAuth,
   lastfmDisconnect as lastfmDisconnectApi,
   lastfmSetEnabled as lastfmSetEnabledApi,
   lastfmSetLoveThreshold as lastfmSetLoveThresholdApi,
   lastfmSetReplaceMetadata as lastfmSetReplaceMetadataApi,
-} from "../lib/lastfm"
+} from "./api"
 
 interface LastfmState {
   /** Whether the user has a valid session key on disk. */
@@ -61,7 +61,7 @@ export const useLastfmStore = create<LastfmState>((set) => ({
 
   initialize: async () => {
     try {
-      const settings = await loadSettings()
+      const settings = await loadAppSettings()
       set({
         isAuthenticated: !!settings.lastfm_session_key,
         isEnabled: settings.lastfm_enabled,

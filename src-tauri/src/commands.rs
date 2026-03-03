@@ -482,6 +482,32 @@ pub async fn add_items_to_playlist(
         .map_err(|e| format!("{:#}", e))
 }
 
+/// Delete a playlist.
+#[tauri::command]
+pub async fn delete_playlist(
+    playlist_id: i64,
+    state: State<'_, PlexState>,
+) -> Result<(), String> {
+    let c = client!(state);
+    c.delete_playlist(playlist_id)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Edit playlist metadata (title, summary).
+#[tauri::command]
+pub async fn edit_playlist(
+    playlist_id: i64,
+    title: Option<String>,
+    summary: Option<String>,
+    state: State<'_, PlexState>,
+) -> Result<(), String> {
+    let c = client!(state);
+    c.edit_playlist(playlist_id, title.as_deref(), summary.as_deref())
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
 // ---------------------------------------------------------------------------
 // Play queue
 // ---------------------------------------------------------------------------
@@ -1126,6 +1152,20 @@ pub fn audio_set_crossfade_window(
     }
 }
 
+/// Set the crossfade mixing style.
+/// 0 = Smooth, 1 = DJ Filter, 2 = Echo Out, 3 = Hard Cut.
+#[tauri::command]
+pub fn audio_set_crossfade_style(
+    style: u64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_crossfade_style(style); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
 /// Enable or disable ReplayGain audio normalization.
 /// When enabled (default), tracks are volume-levelled using embedded REPLAYGAIN_TRACK_GAIN tags.
 #[tauri::command]
@@ -1236,6 +1276,47 @@ pub fn audio_set_same_album_crossfade(
     }
 }
 
+/// Get the track analysis for a given rating key. Returns null if not yet analysed.
+#[tauri::command]
+pub fn audio_get_track_analysis(
+    rating_key: i64,
+) -> Option<crate::audio::analyzer::TrackAnalysis> {
+    crate::audio::analyzer::get_analysis(rating_key)
+}
+
+/// Trigger background analysis for a lookahead track (cache warm + analyze).
+/// Fire-and-forget — doesn't affect the current/next track BPM state.
+#[tauri::command]
+pub fn audio_analyze_track(
+    url: String,
+    rating_key: i64,
+    duration_ms: i64,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => {
+            engine.analyze_track(url, rating_key, duration_ms);
+            Ok(())
+        }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
+/// Enable or disable smart crossfade (adaptive timing based on track analysis).
+/// When enabled (default), crossfade skips trailing silence and adapts duration.
+#[tauri::command]
+pub fn audio_set_smart_crossfade(
+    enabled: bool,
+    state: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => { engine.set_smart_crossfade(enabled); Ok(()) }
+        None => Err("Audio engine not initialized.".to_string()),
+    }
+}
+
 /// Fetch parsed lyrics for a track. Returns an empty list if the track has no lyrics.
 /// Prefers TTML over LRC; falls back to plain text.
 #[tauri::command]
@@ -1342,39 +1423,33 @@ pub fn set_now_playing_state(
 // Image cache management
 // ---------------------------------------------------------------------------
 
-/// Delete all cached Plex artwork from disk.
-///
-/// Called by the frontend Refresh button before re-fetching library data.
+/// Delete all cached images from disk (unified imgcache/ dir).
+/// Also clears old pleximg/ + metaimg/ dirs for migration.
 #[tauri::command]
 pub async fn clear_image_cache(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
-    let cache_dir = app
+    let cache_root = app
         .path()
         .app_cache_dir()
-        .map_err(|e| format!("{:#}", e))?
-        .join("pleximg");
-    if cache_dir.exists() {
-        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{:#}", e))?;
+    // New unified cache dir
+    let imgcache = cache_root.join("imgcache");
+    if imgcache.exists() {
+        std::fs::remove_dir_all(&imgcache).map_err(|e| e.to_string())?;
+    }
+    // Clean up old dirs from migration
+    let pleximg = cache_root.join("pleximg");
+    if pleximg.exists() {
+        let _ = std::fs::remove_dir_all(&pleximg);
+    }
+    let metaimg = cache_root.join("metaimg");
+    if metaimg.exists() {
+        let _ = std::fs::remove_dir_all(&metaimg);
     }
     Ok(())
 }
 
-/// Delete all cached external metadata artwork from disk (Deezer, Apple Music, etc.).
-#[tauri::command]
-pub async fn clear_meta_image_cache(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| format!("{:#}", e))?
-        .join("metaimg");
-    if cache_dir.exists() {
-        std::fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// Returns file count and total byte size for both image caches (Plex + external metadata).
+/// Returns file count and total byte size for the unified image cache.
 #[tauri::command]
 pub async fn get_image_cache_info(
     app: tauri::AppHandle,
@@ -1404,14 +1479,11 @@ pub async fn get_image_cache_info(
         }
     }
 
-    let (plex_files, plex_bytes) = dir_stats(&cache_root.join("pleximg"));
-    let (meta_files, meta_bytes) = dir_stats(&cache_root.join("metaimg"));
+    let (files, bytes) = dir_stats(&cache_root.join("imgcache"));
 
     Ok(serde_json::json!({
-        "plex_files": plex_files,
-        "plex_bytes": plex_bytes,
-        "meta_files": meta_files,
-        "meta_bytes": meta_bytes,
+        "files": files,
+        "bytes": bytes,
     }))
 }
 
@@ -1743,4 +1815,244 @@ pub async fn itunes_search_album(
     crate::itunes::search_album(&artist, &album)
         .await
         .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Local SQLite database
+// ---------------------------------------------------------------------------
+
+use crate::db::{self, DbState, DbInfo};
+
+/// Convenience macro: lock the DbState mutex (sync — not async).
+macro_rules! db_conn {
+    ($state:expr) => {{
+        $state.0.lock().map_err(|e| format!("db lock error: {e}"))?
+    }};
+}
+
+// ---- KV ----
+
+#[tauri::command]
+pub fn db_kv_get(db: State<'_, DbState>, key: String) -> Result<Option<String>, String> {
+    let conn = db_conn!(db);
+    db::kv::get(&conn, &key)
+}
+
+#[tauri::command]
+pub fn db_kv_set(db: State<'_, DbState>, key: String, value: String) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::kv::set(&conn, &key, &value)
+}
+
+// ---- Info ----
+
+#[tauri::command]
+pub fn db_get_info(db: State<'_, DbState>) -> Result<DbInfo, String> {
+    let conn = db_conn!(db);
+    Ok(DbInfo {
+        artist_count: db::artists::count(&conn)?,
+        album_count: db::albums::count(&conn)?,
+        track_count: db::tracks::count(&conn)?,
+        playlist_count: db::playlists::count(&conn)?,
+        tag_count: conn
+            .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
+            .map_err(|e| format!("count error: {e}"))?,
+        play_history_count: conn
+            .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))
+            .map_err(|e| format!("count error: {e}"))?,
+    })
+}
+
+// ---- Artists ----
+
+#[tauri::command]
+pub fn db_upsert_artist(db: State<'_, DbState>, artist: Artist) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::artists::upsert(&conn, &artist)
+}
+
+#[tauri::command]
+pub fn db_upsert_artists(db: State<'_, DbState>, artists: Vec<Artist>) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::artists::upsert_bulk(&conn, &artists)
+}
+
+#[tauri::command]
+pub fn db_get_artist(
+    db: State<'_, DbState>,
+    id: i64,
+) -> Result<Option<db::artists::ArtistRow>, String> {
+    let conn = db_conn!(db);
+    db::artists::get(&conn, id)
+}
+
+#[tauri::command]
+pub fn db_search_artists(
+    db: State<'_, DbState>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<db::artists::ArtistRow>, String> {
+    let conn = db_conn!(db);
+    db::artists::search(&conn, &query, limit)
+}
+
+#[tauri::command]
+pub fn db_get_artist_count(db: State<'_, DbState>) -> Result<i64, String> {
+    let conn = db_conn!(db);
+    db::artists::count(&conn)
+}
+
+// ---- Albums ----
+
+#[tauri::command]
+pub fn db_upsert_album(db: State<'_, DbState>, album: Album) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::albums::upsert(&conn, &album)
+}
+
+#[tauri::command]
+pub fn db_upsert_albums(db: State<'_, DbState>, albums: Vec<Album>) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::albums::upsert_bulk(&conn, &albums)
+}
+
+#[tauri::command]
+pub fn db_get_album(
+    db: State<'_, DbState>,
+    id: i64,
+) -> Result<Option<db::albums::AlbumRow>, String> {
+    let conn = db_conn!(db);
+    db::albums::get(&conn, id)
+}
+
+#[tauri::command]
+pub fn db_search_albums(
+    db: State<'_, DbState>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<db::albums::AlbumRow>, String> {
+    let conn = db_conn!(db);
+    db::albums::search(&conn, &query, limit)
+}
+
+#[tauri::command]
+pub fn db_get_albums_by_artist(
+    db: State<'_, DbState>,
+    artist_id: i64,
+) -> Result<Vec<db::albums::AlbumRow>, String> {
+    let conn = db_conn!(db);
+    db::albums::get_by_artist(&conn, artist_id)
+}
+
+#[tauri::command]
+pub fn db_get_album_count(db: State<'_, DbState>) -> Result<i64, String> {
+    let conn = db_conn!(db);
+    db::albums::count(&conn)
+}
+
+// ---- Tracks ----
+
+#[tauri::command]
+pub fn db_upsert_track(db: State<'_, DbState>, track: Track) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::tracks::upsert(&conn, &track)
+}
+
+#[tauri::command]
+pub fn db_upsert_tracks(db: State<'_, DbState>, tracks: Vec<Track>) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::tracks::upsert_bulk(&conn, &tracks)
+}
+
+#[tauri::command]
+pub fn db_get_track(
+    db: State<'_, DbState>,
+    id: i64,
+) -> Result<Option<db::tracks::TrackRow>, String> {
+    let conn = db_conn!(db);
+    db::tracks::get(&conn, id)
+}
+
+#[tauri::command]
+pub fn db_search_tracks(
+    db: State<'_, DbState>,
+    query: String,
+    limit: i64,
+) -> Result<Vec<db::tracks::TrackRow>, String> {
+    let conn = db_conn!(db);
+    db::tracks::search(&conn, &query, limit)
+}
+
+#[tauri::command]
+pub fn db_get_tracks_by_album(
+    db: State<'_, DbState>,
+    album_id: i64,
+) -> Result<Vec<db::tracks::TrackRow>, String> {
+    let conn = db_conn!(db);
+    db::tracks::get_by_album(&conn, album_id)
+}
+
+#[tauri::command]
+pub fn db_get_track_count(db: State<'_, DbState>) -> Result<i64, String> {
+    let conn = db_conn!(db);
+    db::tracks::count(&conn)
+}
+
+// ---- Playlists ----
+
+#[tauri::command]
+pub fn db_upsert_playlists(
+    db: State<'_, DbState>,
+    playlists: Vec<Playlist>,
+) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::playlists::upsert_bulk(&conn, &playlists)
+}
+
+#[tauri::command]
+pub fn db_get_playlists(
+    db: State<'_, DbState>,
+) -> Result<Vec<db::playlists::PlaylistRow>, String> {
+    let conn = db_conn!(db);
+    db::playlists::get_all(&conn)
+}
+
+#[tauri::command]
+pub fn db_add_playlist_track(
+    db: State<'_, DbState>,
+    playlist_id: i64,
+    track_id: i64,
+    position: i64,
+    added_by: String,
+) -> Result<(), String> {
+    let conn = db_conn!(db);
+    db::playlists::add_track(&conn, playlist_id, track_id, position, None, &added_by)
+}
+
+#[tauri::command]
+pub fn db_get_playlist_tracks(
+    db: State<'_, DbState>,
+    playlist_id: i64,
+) -> Result<Vec<db::playlists::PlaylistTrackRow>, String> {
+    let conn = db_conn!(db);
+    db::playlists::get_tracks(&conn, playlist_id)
+}
+
+// ---------------------------------------------------------------------------
+// Generic HTTP proxy
+// ---------------------------------------------------------------------------
+
+/// Generic HTTP GET that returns JSON. Used by frontend-only backends (e.g. Demo/Deezer)
+/// to bypass CORS without needing per-endpoint Rust commands.
+#[tauri::command]
+pub async fn http_get_json(url: String) -> Result<serde_json::Value, String> {
+    static CLIENT: once_cell::sync::Lazy<reqwest::Client> = once_cell::sync::Lazy::new(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("http client")
+    });
+    let resp = CLIENT.get(&url).send().await.map_err(|e| e.to_string())?;
+    let json = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
+    Ok(json)
 }

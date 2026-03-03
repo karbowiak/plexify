@@ -1,23 +1,13 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import {
-  createPlaylist as createPlaylistApi,
-  getHubs,
-  getLikedTracks,
-  getLikedArtists,
-  getLikedAlbums,
-  getMixTracks,
-  getPlaylistItems,
-  getPlaylists,
-  getRecentlyAdded,
-  getSectionTags,
-} from "../lib/plex"
-import type { Album, Artist, Hub, LibraryTag, Playlist, PlexMedia, Track } from "../types/plex"
+import type { MusicPlaylist, MusicTrack, MusicAlbum, MusicArtist, MusicItem, MusicHub } from "../types/music"
+import { useProviderStore } from "./providerStore"
+import { idbJSONStorage } from "./idbStorage"
 
 export interface SeedItem {
-  rating_key: number
+  id: string
   title: string
-  thumb: string | null  // already-resolved pleximg:// URL
+  thumb: string | null  // already-resolved image:// URL
   subtitle: string
 }
 
@@ -27,7 +17,6 @@ export interface RecentMix {
   tabType: "artist" | "album" | "track"
   seeds: SeedItem[]
 }
-import { idbJSONStorage } from "./idbStorage"
 
 const TTL_MS = {
   playlists: 5 * 60_000,           //  5 minutes
@@ -72,45 +61,47 @@ interface FetchOpts {
  * If the user clicks a playlist while a prefetch for it is in-flight, both get
  * the same Promise — no duplicate network request.
  */
-const inflight = new Map<number, Promise<Track[]>>()
+const inflight = new Map<string, Promise<MusicTrack[]>>()
 
-function fetchInitial(playlistId: number, limit: number): Promise<Track[]> {
+function fetchInitial(playlistId: string, limit: number): Promise<MusicTrack[]> {
   const existing = inflight.get(playlistId)
   if (existing) return existing
-  const p = getPlaylistItems(playlistId, limit, 0).finally(() => {
-    inflight.delete(playlistId)
-  })
+  const provider = useProviderStore.getState().provider
+  if (!provider) return Promise.resolve([])
+  const p = provider.getPlaylistItems(playlistId, 0, limit)
+    .then(r => r.items)
+    .finally(() => { inflight.delete(playlistId) })
   inflight.set(playlistId, p)
   return p
 }
 
 interface LibraryState {
-  playlists: Playlist[]
-  recentlyAdded: PlexMedia[]
-  hubs: Hub[]
-  likedTracks: Track[]
-  likedArtists: Artist[]
-  likedAlbums: Album[]
-  currentPlaylist: Playlist | null
-  currentPlaylistItems: Track[]
-  currentPlaylistId: number | null
+  playlists: MusicPlaylist[]
+  recentlyAdded: MusicItem[]
+  hubs: MusicHub[]
+  likedTracks: MusicTrack[]
+  likedArtists: MusicArtist[]
+  likedAlbums: MusicAlbum[]
+  currentPlaylist: MusicPlaylist | null
+  currentPlaylistItems: MusicTrack[]
+  currentPlaylistId: string | null
   isLoading: boolean
   isFetchingMore: boolean
   error: string | null
 
-  /** Per-playlist track cache. Key = playlist rating_key. */
-  playlistItemsCache: Record<number, Track[]>
+  /** Per-playlist track cache. Key = playlist id. */
+  playlistItemsCache: Record<string, MusicTrack[]>
   /** True once all pages for a playlist have been fetched. */
-  playlistIsFullyLoaded: Record<number, boolean>
-  /** Per-mix track cache. Key = mix item.key (the API path). */
-  mixTracksCache: Record<string, Track[]>
+  playlistIsFullyLoaded: Record<string, boolean>
+  /** Per-mix track cache. Key = mix item key (the API path). */
+  mixTracksCache: Record<string, MusicTrack[]>
   /** Shown in TopBar during startup pre-fetch. Null when idle. */
   prefetchStatus: { done: number; total: number } | null
 
   // Tag data (genre/mood/style) — pre-loaded with 24h TTL
-  tagsGenre: LibraryTag[]
-  tagsMood: LibraryTag[]
-  tagsStyle: LibraryTag[]
+  tagsGenre: { tag: string; count: number | null }[]
+  tagsMood: { tag: string; count: number | null }[]
+  tagsStyle: { tag: string; count: number | null }[]
 
   /** Last 5 custom mixes built by the user in the Mix Builder. Persisted. */
   recentMixes: RecentMix[]
@@ -124,24 +115,37 @@ interface LibraryState {
   _likedAlbumsFetchedAt: number | null
   _tagsFetchedAt: number | null
 
-  fetchPlaylists: (sectionId: number, opts?: FetchOpts) => Promise<void>
-  fetchRecentlyAdded: (sectionId: number, limit?: number, opts?: FetchOpts) => Promise<void>
-  fetchHubs: (sectionId: number, opts?: FetchOpts) => Promise<void>
-  fetchLikedTracks: (sectionId: number, limit?: number, opts?: FetchOpts) => Promise<void>
-  fetchLikedArtists: (sectionId: number, opts?: FetchOpts) => Promise<void>
-  fetchLikedAlbums: (sectionId: number, opts?: FetchOpts) => Promise<void>
-  fetchTags: (sectionId: number, opts?: FetchOpts) => Promise<void>
+  fetchPlaylists: (opts?: FetchOpts) => Promise<void>
+  fetchRecentlyAdded: (limit?: number, opts?: FetchOpts) => Promise<void>
+  fetchHubs: (opts?: FetchOpts) => Promise<void>
+  fetchLikedTracks: (limit?: number, opts?: FetchOpts) => Promise<void>
+  fetchLikedArtists: (opts?: FetchOpts) => Promise<void>
+  fetchLikedAlbums: (opts?: FetchOpts) => Promise<void>
+  fetchTags: (opts?: FetchOpts) => Promise<void>
   addRecentMix: (seeds: SeedItem[], tabType: "artist" | "album" | "track") => void
-  fetchPlaylistItems: (playlistId: number) => Promise<void>
-  fetchMorePlaylistItems: (playlistId: number) => Promise<void>
+  fetchPlaylistItems: (playlistId: string) => Promise<void>
+  fetchMorePlaylistItems: (playlistId: string) => Promise<void>
   prefetchAllPlaylists: () => Promise<void>
   prefetchMixTracks: () => Promise<void>
-  createPlaylist: (title: string, sectionId: number) => Promise<Playlist>
-  refreshAll: (sectionId: number) => Promise<void>
+  createPlaylist: (title: string) => Promise<MusicPlaylist>
+  refreshAll: () => Promise<void>
   /** Evict a single playlist's item cache and refetch if it's currently viewed. */
-  invalidatePlaylistItems: (playlistId: number) => void
+  invalidatePlaylistItems: (playlistId: string) => void
+  /** Remove a playlist from the sidebar list and clean its item cache. */
+  removePlaylist: (id: string) => void
+  /** Rename a playlist in the sidebar list. */
+  renamePlaylist: (id: string, newTitle: string) => void
+  /** Called after any rating change to update cached data. */
+  onItemRated: (id: string, itemType: "track" | "album" | "artist", newRating: number | null) => void
   /** Null out all TTL timestamps and playlist caches so the next fetch hits the network. */
   invalidateCache: () => void
+  /** Wipe all library data and caches. Call on disconnect / backend switch. */
+  clearAll: () => void
+}
+
+/** Helper: get the active provider or return null. */
+function getProvider() {
+  return useProviderStore.getState().provider
 }
 
 export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
@@ -173,81 +177,95 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   _likedAlbumsFetchedAt: null,
   _tagsFetchedAt: null,
 
-  fetchPlaylists: async (sectionId: number, opts: FetchOpts = {}) => {
+  fetchPlaylists: async (opts: FetchOpts = {}) => {
     const { _playlistsFetchedAt } = get()
     if (!opts.force && _playlistsFetchedAt !== null && Date.now() - _playlistsFetchedAt < TTL_MS.playlists) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const playlists = await getPlaylists(sectionId)
+      const playlists = await provider.getPlaylists()
       set({ playlists, _playlistsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchRecentlyAdded: async (sectionId: number, limit = 50, opts: FetchOpts = {}) => {
+  fetchRecentlyAdded: async (limit = 50, opts: FetchOpts = {}) => {
     const { _recentlyAddedFetchedAt } = get()
     if (!opts.force && _recentlyAddedFetchedAt !== null && Date.now() - _recentlyAddedFetchedAt < TTL_MS.recentlyAdded) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const recentlyAdded = await getRecentlyAdded(sectionId, undefined, limit)
+      const recentlyAdded = await provider.getRecentlyAdded(undefined, limit)
       set({ recentlyAdded, _recentlyAddedFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchHubs: async (sectionId: number, opts: FetchOpts = {}) => {
+  fetchHubs: async (opts: FetchOpts = {}) => {
     const { _hubsFetchedAt } = get()
     if (!opts.force && _hubsFetchedAt !== null && Date.now() - _hubsFetchedAt < TTL_MS.hubs) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const hubs = await getHubs(sectionId)
+      const hubs = await provider.getHubs()
       set({ hubs, _hubsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchLikedTracks: async (sectionId: number, limit = 500, opts: FetchOpts = {}) => {
+  fetchLikedTracks: async (limit = 500, opts: FetchOpts = {}) => {
     const { _likedTracksFetchedAt } = get()
     if (!opts.force && _likedTracksFetchedAt !== null && Date.now() - _likedTracksFetchedAt < TTL_MS.likedTracks) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const likedTracks = await getLikedTracks(sectionId, limit)
+      const likedTracks = await provider.getLikedTracks(limit)
       set({ likedTracks, _likedTracksFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchLikedArtists: async (sectionId: number, opts: FetchOpts = {}) => {
+  fetchLikedArtists: async (opts: FetchOpts = {}) => {
     const { _likedArtistsFetchedAt } = get()
     if (!opts.force && _likedArtistsFetchedAt !== null && Date.now() - _likedArtistsFetchedAt < TTL_MS.likedArtists) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const likedArtists = await getLikedArtists(sectionId)
+      const likedArtists = await provider.getLikedArtists()
       set({ likedArtists, _likedArtistsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchLikedAlbums: async (sectionId: number, opts: FetchOpts = {}) => {
+  fetchLikedAlbums: async (opts: FetchOpts = {}) => {
     const { _likedAlbumsFetchedAt } = get()
     if (!opts.force && _likedAlbumsFetchedAt !== null && Date.now() - _likedAlbumsFetchedAt < TTL_MS.likedAlbums) return
+    const provider = getProvider()
+    if (!provider) return
     try {
-      const likedAlbums = await getLikedAlbums(sectionId)
+      const likedAlbums = await provider.getLikedAlbums()
       set({ likedAlbums, _likedAlbumsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
     }
   },
 
-  fetchTags: async (sectionId: number, opts: FetchOpts = {}) => {
+  fetchTags: async (opts: FetchOpts = {}) => {
     const { _tagsFetchedAt, tagsGenre, tagsMood, tagsStyle } = get()
     const isEmpty = tagsGenre.length === 0 && tagsMood.length === 0 && tagsStyle.length === 0
     if (!opts.force && !isEmpty && _tagsFetchedAt !== null && Date.now() - _tagsFetchedAt < TTL_MS.tags) return
+    const provider = getProvider()
+    if (!provider || !provider.getTags) return
     try {
       const [g, m, s] = await Promise.allSettled([
-        getSectionTags(sectionId, "genre"),
-        getSectionTags(sectionId, "mood"),
-        getSectionTags(sectionId, "style"),
+        provider.getTags("genre"),
+        provider.getTags("mood"),
+        provider.getTags("style"),
       ])
       set({
         tagsGenre: g.status === "fulfilled" ? g.value.sort((a, b) => a.tag.localeCompare(b.tag)) : get().tagsGenre,
@@ -261,19 +279,19 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   },
 
   addRecentMix: (seeds, tabType) => {
-    const seedSig = seeds.map(s => s.rating_key).sort().join(",")
+    const seedSig = seeds.map(s => s.id).sort().join(",")
     const entry: RecentMix = { id: String(Date.now()), createdAt: Date.now(), tabType, seeds }
     set(state => {
       const filtered = state.recentMixes.filter(
-        m => m.seeds.map(s => s.rating_key).sort().join(",") !== seedSig
+        m => m.seeds.map(s => s.id).sort().join(",") !== seedSig
       )
       return { recentMixes: [entry, ...filtered].slice(0, 5) }
     })
   },
 
-  fetchPlaylistItems: async (playlistId: number) => {
+  fetchPlaylistItems: async (playlistId: string) => {
     const { playlistItemsCache } = get()
-    const playlist = get().playlists.find(p => p.rating_key === playlistId) ?? null
+    const playlist = get().playlists.find(p => p.id === playlistId) ?? null
 
     // Always set the current playlist metadata immediately so the header renders.
     set({ currentPlaylist: playlist, currentPlaylistId: playlistId, error: null })
@@ -285,7 +303,7 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     }
 
     // Decide fetch strategy: load everything at once for small playlists.
-    const totalCount = playlist?.leaf_count ?? 0
+    const totalCount = playlist?.trackCount ?? 0
     const isSmall = totalCount > 0 && totalCount <= SMALL_PLAYLIST_THRESHOLD
     const limit = isSmall ? totalCount : INITIAL_PAGE_SIZE
 
@@ -304,15 +322,19 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     }
   },
 
-  fetchMorePlaylistItems: async (playlistId: number) => {
+  fetchMorePlaylistItems: async (playlistId: string) => {
     const { playlistItemsCache, playlistIsFullyLoaded, isFetchingMore, isLoading } = get()
     if (isFetchingMore || isLoading) return  // don't overlap with initial page load
     if (playlistIsFullyLoaded[playlistId]) return
 
     const existing = playlistItemsCache[playlistId] ?? []
+    const provider = getProvider()
+    if (!provider) return
+
     set({ isFetchingMore: true })
     try {
-      const items = await getPlaylistItems(playlistId, PAGE_SIZE, existing.length)
+      const result = await provider.getPlaylistItems(playlistId, existing.length, PAGE_SIZE)
+      const items = result.items
       const newAll = [...existing, ...items]
       const isFullyLoaded = items.length < PAGE_SIZE
       set(state => ({
@@ -328,15 +350,15 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
   },
 
   /**
-   * Background-prefetch all small playlists (leaf_count ≤ PREFETCH_THRESHOLD).
+   * Background-prefetch all small playlists (trackCount ≤ PREFETCH_THRESHOLD).
    * Runs sequentially with a short delay between requests so it doesn't saturate
    * the server. Already-cached playlists are skipped.
    */
   prefetchAllPlaylists: async () => {
     const playlists = get().playlists
     const toFetch = playlists
-      .filter(p => p.leaf_count <= PREFETCH_THRESHOLD && !get().playlistItemsCache[p.rating_key])
-      .sort((a, b) => a.leaf_count - b.leaf_count)
+      .filter(p => p.trackCount <= PREFETCH_THRESHOLD && !get().playlistItemsCache[p.id])
+      .sort((a, b) => a.trackCount - b.trackCount)
 
     if (toFetch.length === 0) return
 
@@ -346,18 +368,18 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
       const playlist = toFetch[i]
 
       // Skip if the user already navigated to it and it's now cached.
-      if (get().playlistItemsCache[playlist.rating_key]) {
+      if (get().playlistItemsCache[playlist.id]) {
         set({ prefetchStatus: { done: i + 1, total: toFetch.length } })
         continue
       }
 
       try {
-        const limit = playlist.leaf_count > 0 ? playlist.leaf_count : INITIAL_PAGE_SIZE
-        const items = await fetchInitial(playlist.rating_key, limit)
+        const limit = playlist.trackCount > 0 ? playlist.trackCount : INITIAL_PAGE_SIZE
+        const items = await fetchInitial(playlist.id, limit)
         const isFullyLoaded = true  // prefetch only runs for playlists ≤ PREFETCH_THRESHOLD
         set(state => ({
-          playlistItemsCache: { ...state.playlistItemsCache, [playlist.rating_key]: items },
-          playlistIsFullyLoaded: { ...state.playlistIsFullyLoaded, [playlist.rating_key]: isFullyLoaded },
+          playlistItemsCache: { ...state.playlistItemsCache, [playlist.id]: items },
+          playlistIsFullyLoaded: { ...state.playlistIsFullyLoaded, [playlist.id]: isFullyLoaded },
           prefetchStatus: { done: i + 1, total: toFetch.length },
         }))
       } catch {
@@ -379,20 +401,28 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
    */
   prefetchMixTracks: async () => {
     const { hubs, mixTracksCache } = get()
+    const provider = getProvider()
+    if (!provider || !provider.getMixTracks) return
+
     const mixItems = hubs
-      .filter(h => h.hub_identifier.startsWith("music.mixes"))
-      .flatMap(h => h.metadata)
-      .filter(item => item.type === "playlist" && item.key && !mixTracksCache[item.key])
+      .filter(h => h.identifier.startsWith("music.mixes"))
+      .flatMap(h => h.items)
+      .filter(item => {
+        if (item.type !== "playlist") return false
+        return item.providerKey && !mixTracksCache[item.providerKey]
+      })
 
     for (let i = 0; i < mixItems.length; i++) {
       const item = mixItems[i]
-      if (item.type !== "playlist" || !item.key) continue
-      if (get().mixTracksCache[item.key]) continue  // already fetched by concurrent path
+      if (item.type !== "playlist") continue
+      const key = item.providerKey
+      if (!key) continue
+      if (get().mixTracksCache[key]) continue  // already fetched by concurrent path
 
       try {
-        const tracks = await getMixTracks(item.key)
+        const tracks = await provider.getMixTracks(key)
         set(state => ({
-          mixTracksCache: { ...state.mixTracksCache, [item.key]: tracks },
+          mixTracksCache: { ...state.mixTracksCache, [key]: tracks },
         }))
       } catch {
         // Don't abort remaining mixes on failure
@@ -404,22 +434,24 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     }
   },
 
-  createPlaylist: async (title: string, sectionId: number) => {
-    const playlist = await createPlaylistApi(title, sectionId, [])
+  createPlaylist: async (title: string) => {
+    const provider = getProvider()
+    if (!provider) throw new Error("No provider")
+    const playlist = await provider.createPlaylist(title, [])
     set(state => ({ playlists: [...state.playlists, playlist] }))
     return playlist
   },
 
   /** Force-refresh all home-page data (used by the Refresh button). */
-  refreshAll: async (sectionId: number) => {
+  refreshAll: async () => {
     await Promise.all([
-      get().fetchPlaylists(sectionId, { force: true }),
-      get().fetchRecentlyAdded(sectionId, 50, { force: true }),
-      get().fetchHubs(sectionId, { force: true }),
+      get().fetchPlaylists({ force: true }),
+      get().fetchRecentlyAdded(50, { force: true }),
+      get().fetchHubs({ force: true }),
     ])
   },
 
-  invalidatePlaylistItems: (playlistId: number) => {
+  invalidatePlaylistItems: (playlistId: string) => {
     const { playlistItemsCache, playlistIsFullyLoaded, currentPlaylistId } = get()
     const { [playlistId]: _items, ...restCache } = playlistItemsCache
     const { [playlistId]: _loaded, ...restLoaded } = playlistIsFullyLoaded
@@ -427,6 +459,81 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     // Refetch if the user is currently viewing this playlist
     if (currentPlaylistId === playlistId) {
       void get().fetchPlaylistItems(playlistId)
+    }
+  },
+
+  removePlaylist: (id: string) => {
+    const { playlistItemsCache, playlistIsFullyLoaded, currentPlaylistId } = get()
+    const { [id]: _items, ...restCache } = playlistItemsCache
+    const { [id]: _loaded, ...restLoaded } = playlistIsFullyLoaded
+    set({
+      playlists: get().playlists.filter(p => p.id !== id),
+      playlistItemsCache: restCache,
+      playlistIsFullyLoaded: restLoaded,
+      ...(currentPlaylistId === id ? { currentPlaylist: null, currentPlaylistItems: [], currentPlaylistId: null } : {}),
+    })
+  },
+
+  renamePlaylist: (id: string, newTitle: string) => {
+    set({
+      playlists: get().playlists.map(p =>
+        p.id === id ? { ...p, title: newTitle } : p
+      ),
+      currentPlaylist: get().currentPlaylist?.id === id
+        ? { ...get().currentPlaylist!, title: newTitle }
+        : get().currentPlaylist,
+    })
+  },
+
+  onItemRated: (id: string, itemType: "track" | "album" | "artist", newRating: number | null) => {
+    if (itemType === "track") {
+      // Invalidate liked tracks TTL so next visit re-fetches
+      set({ _likedTracksFetchedAt: null })
+      // Update rating in likedTracks list
+      set({
+        likedTracks: get().likedTracks.map(t =>
+          t.id === id ? { ...t, userRating: newRating } : t
+        ),
+      })
+      // Update rating in playlist item caches
+      const cache = get().playlistItemsCache
+      const updated: Record<string, MusicTrack[]> = {}
+      for (const [pid, tracks] of Object.entries(cache)) {
+        const changed = tracks.some(t => t.id === id)
+        if (changed) {
+          updated[pid] = tracks.map(t =>
+            t.id === id ? { ...t, userRating: newRating } : t
+          )
+        }
+      }
+      if (Object.keys(updated).length > 0) {
+        set({ playlistItemsCache: { ...cache, ...updated } })
+        // Also update current playlist items if affected
+        const { currentPlaylistId, currentPlaylistItems } = get()
+        if (currentPlaylistId && updated[currentPlaylistId]) {
+          set({ currentPlaylistItems: updated[currentPlaylistId] })
+        } else if (currentPlaylistItems.some(t => t.id === id)) {
+          set({
+            currentPlaylistItems: currentPlaylistItems.map(t =>
+              t.id === id ? { ...t, userRating: newRating } : t
+            ),
+          })
+        }
+      }
+    } else if (itemType === "album") {
+      set({ _likedAlbumsFetchedAt: null })
+      set({
+        likedAlbums: get().likedAlbums.map(a =>
+          a.id === id ? { ...a, userRating: newRating } : a
+        ),
+      })
+    } else if (itemType === "artist") {
+      set({ _likedArtistsFetchedAt: null })
+      set({
+        likedArtists: get().likedArtists.map(a =>
+          a.id === id ? { ...a, userRating: newRating } : a
+        ),
+      })
     }
   },
 
@@ -441,6 +548,34 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     playlistItemsCache: {},
     playlistIsFullyLoaded: {},
     mixTracksCache: {},
+  }),
+
+  /** Wipe all library data and caches. Call on disconnect / backend switch. */
+  clearAll: () => set({
+    playlists: [],
+    recentlyAdded: [],
+    hubs: [],
+    likedTracks: [],
+    likedArtists: [],
+    likedAlbums: [],
+    currentPlaylist: null,
+    currentPlaylistItems: [],
+    currentPlaylistId: null,
+    tagsGenre: [],
+    tagsMood: [],
+    tagsStyle: [],
+    playlistItemsCache: {},
+    playlistIsFullyLoaded: {},
+    mixTracksCache: {},
+    prefetchStatus: null,
+    error: null,
+    _playlistsFetchedAt: null,
+    _recentlyAddedFetchedAt: null,
+    _hubsFetchedAt: null,
+    _likedTracksFetchedAt: null,
+    _likedArtistsFetchedAt: null,
+    _likedAlbumsFetchedAt: null,
+    _tagsFetchedAt: null,
   }),
 }), {
   name: "plex-library-v1",

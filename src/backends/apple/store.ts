@@ -9,9 +9,9 @@
  *   - albums  : `${artist.toLowerCase()}::${album.toLowerCase()}`
  */
 
-import { itunesSearchArtist, itunesSearchAlbum } from "../lib/itunes"
-import type { ItunesArtistInfo, ItunesAlbumInfo } from "../lib/itunes"
-import { createMetadataStore } from "./createMetadataStore"
+import { itunesSearchArtist, itunesSearchAlbum } from "./api"
+import type { ItunesArtistInfo, ItunesAlbumInfo } from "./api"
+import { createMetadataStore } from "../../stores/createMetadataStore"
 
 export const useItunesMetadataStore = createMetadataStore<ItunesArtistInfo, ItunesAlbumInfo>({
   storeName: "itunes-metadata-v1",

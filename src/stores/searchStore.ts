@@ -1,16 +1,16 @@
 import { create } from "zustand"
-import { searchLibrary } from "../lib/plex"
 import { recordRecentSearch } from "../lib/recentSearches"
-import type { PlexMedia } from "../types/plex"
+import type { MusicItem } from "../types/music"
+import { useProviderStore } from "./providerStore"
 
 interface SearchState {
   query: string
-  results: PlexMedia[]
+  results: MusicItem[]
   isSearching: boolean
   error: string | null
 
   setQuery: (q: string) => void
-  search: (sectionId: number, q: string) => Promise<void>
+  search: (q: string) => Promise<void>
   clear: () => void
 }
 
@@ -22,14 +22,16 @@ export const useSearchStore = create<SearchState>((set) => ({
 
   setQuery: (q: string) => set({ query: q }),
 
-  search: async (sectionId: number, q: string) => {
+  search: async (q: string) => {
     if (!q.trim()) {
       set({ results: [], isSearching: false })
       return
     }
+    const provider = useProviderStore.getState().provider
+    if (!provider) return
     set({ isSearching: true, error: null, query: q })
     try {
-      const results = await searchLibrary(sectionId, q)
+      const results = await provider.search(q)
       set({ results, isSearching: false })
       recordRecentSearch(q)
     } catch (err) {

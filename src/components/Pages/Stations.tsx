@@ -2,23 +2,18 @@ import { useEffect, useMemo, useState } from "react"
 import { useLocation } from "wouter"
 import { useShallow } from "zustand/react/shallow"
 import clsx from "clsx"
-import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../../stores"
+import { useLibraryStore, useConnectionStore } from "../../stores"
 import { usePlayerStore } from "../../stores/playerStore"
+import { useProviderStore } from "../../stores/providerStore"
+import { useCapability } from "../../hooks/useCapability"
 import type { RecentMix, SeedItem } from "../../stores/libraryStore"
 import { selectMix } from "./Mix"
 import { mixThumbCache, mixTitleToArtistName } from "./Home"
-import {
-  getSectionStations,
-  buildRadioPlayQueueUri,
-  buildTagFilterUri,
-  searchLibrary,
-  getMixTracks,
-} from "../../lib/plex"
 import { ScrollRow } from "../ScrollRow"
 import { formatTimeAgo } from "../../lib/formatters"
 import { MediaCard } from "../MediaCard"
 import { MediaGrid } from "../shared/MediaGrid"
-import type { KnownPlexMedia, LibraryTag, PlexMedia, Playlist } from "../../types/plex"
+import type { MusicItem, MusicPlaylist } from "../../types/music"
 
 // ---------------------------------------------------------------------------
 // Color palettes
@@ -80,7 +75,7 @@ function RecentMixCard({ mix, sectionUuid, sectionId, playFromUri }: {
 }) {
   const filterKey = mix.tabType === "artist" ? "artist.id" :
                     mix.tabType === "album"  ? "album.id" : "ratingKey"
-  const params = mix.seeds.map(s => `${filterKey}=${s.rating_key}`).join("&")
+  const params = mix.seeds.map(s => `${filterKey}=${s.id}`).join("&")
   const uri = `library://${sectionUuid}/directory//library/sections/${sectionId}/all?type=10&${params}`
 
   const label = mix.seeds.length <= 2
@@ -93,7 +88,7 @@ function RecentMixCard({ mix, sectionUuid, sectionId, playFromUri }: {
   return (
     <div
       onClick={() => void playFromUri(uri, true)}
-      className="cursor-pointer rounded-xl bg-white/5 p-3 hover:bg-accent/10 transition-colors active:scale-[0.97]"
+      className="cursor-pointer rounded-xl bg-white/5 p-3 hover:bg-hl-menu transition-colors active:scale-[0.97]"
     >
       <div className="mb-3 aspect-square overflow-hidden rounded-lg grid grid-cols-2 gap-px bg-black/20">
         {thumbs.map((t, i) => t ? (
@@ -138,81 +133,67 @@ const MAX_SEEDS = 50
 
 interface SearchBasedMixBuilderProps {
   tabType: "artist" | "album" | "track"
-  musicSectionId: number
-  baseUrl: string
-  token: string
   sectionUuid: string
   sectionId: number
   playFromUri: (uri: string, forceShuffle?: boolean) => Promise<void>
   onMixStarted?: (seeds: SeedItem[], tabType: "artist" | "album" | "track") => void
 }
 
-function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectionUuid, sectionId, playFromUri, onMixStarted }: SearchBasedMixBuilderProps) {
+function SearchBasedMixBuilder({ tabType, sectionUuid, sectionId, playFromUri, onMixStarted }: SearchBasedMixBuilderProps) {
+  const provider = useProviderStore(s => s.provider)
   const [query, setQuery] = useState("")
-  const [results, setResults] = useState<PlexMedia[]>([])
-  const [seeds, setSeeds] = useState<PlexMedia[]>([])
+  const [results, setResults] = useState<MusicItem[]>([])
+  const [seeds, setSeeds] = useState<MusicItem[]>([])
   const [isSearching, setIsSearching] = useState(false)
 
   useEffect(() => {
-    if (!musicSectionId || !query.trim()) {
+    if (!provider || !query.trim()) {
       setResults([])
       setIsSearching(false)
       return
     }
     setIsSearching(true)
     const timer = setTimeout(() => {
-      searchLibrary(musicSectionId, query, tabType)
+      provider.search(query, tabType)
         .then(res => setResults(res.filter(r => r.type === tabType)))
         .catch(() => setResults([]))
         .finally(() => setIsSearching(false))
     }, 350)
     return () => clearTimeout(timer)
-  }, [query, musicSectionId, tabType])
+  }, [query, provider, tabType])
 
-  const getRatingKey = (item: PlexMedia): number =>
-    (item as { rating_key: number }).rating_key
+  const seedKeys = new Set(seeds.map(s => s.id))
 
-  const getTitle = (item: PlexMedia): string =>
-    (item as { title: string }).title ?? ""
-
-  const seedKeys = new Set(seeds.map(getRatingKey))
-
-  const toggleSeed = (item: PlexMedia) => {
-    if (item.type === "unknown") return
-    const key = getRatingKey(item)
+  const toggleSeed = (item: MusicItem) => {
+    const key = item.id
     if (seedKeys.has(key)) {
-      setSeeds(prev => prev.filter(s => getRatingKey(s) !== key))
+      setSeeds(prev => prev.filter(s => s.id !== key))
     } else if (seeds.length < MAX_SEEDS) {
       setSeeds(prev => [...prev, item])
     }
   }
 
-  const getSubtitle = (item: PlexMedia): string => {
+  const getSubtitle = (item: MusicItem): string => {
     if (item.type === "artist") return "Artist"
-    if (item.type === "album") return item.parent_title
-    if (item.type === "track") return `${item.grandparent_title} · ${item.parent_title}`
+    if (item.type === "album") return item.artistName
+    if (item.type === "track") return `${item.artistName} · ${item.albumName}`
     return ""
   }
 
-  const getThumb = (item: PlexMedia): string | null => {
-    if (item.type === "track") {
-      const src = item.thumb || item.parent_thumb
-      return src ? buildPlexImageUrl(baseUrl, token, src) : null
-    }
-    const src = (item as { thumb?: string | null }).thumb
-    return src ? buildPlexImageUrl(baseUrl, token, src) : null
+  const getThumb = (item: MusicItem): string | null => {
+    return (item as any).thumbUrl ?? null
   }
 
   const handleStartMix = () => {
     if (!seeds.length || !sectionUuid || !sectionId) return
     const filterKey = tabType === "artist" ? "artist.id" :
                       tabType === "album"  ? "album.id" : "ratingKey"
-    const params = seeds.map(s => `${filterKey}=${getRatingKey(s)}`).join("&")
+    const params = seeds.map(s => `${filterKey}=${s.id}`).join("&")
     const uri = `library://${sectionUuid}/directory//library/sections/${sectionId}/all?type=10&${params}`
     void playFromUri(uri, true)
     onMixStarted?.(seeds.map(s => ({
-      rating_key: getRatingKey(s),
-      title: getTitle(s),
+      id: s.id,
+      title: s.title,
       thumb: getThumb(s),
       subtitle: getSubtitle(s),
     })), tabType)
@@ -237,10 +218,9 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
       {!isSearching && results.length > 0 && (
         <div className="max-h-64 overflow-y-auto rounded-lg bg-white/5 divide-y divide-white/5">
           {results.slice(0, 20).map((item, idx) => {
-            if (item.type === "unknown") return null
-            const itemKey = getRatingKey(item) ?? idx
-            const title = getTitle(item)
-            const isSeeded = seedKeys.has(itemKey)
+            const itemKey = item.id ?? idx
+            const title = item.title
+            const isSeeded = seedKeys.has(item.id)
             const atLimit = seeds.length >= MAX_SEEDS
             const thumb = getThumb(item)
             return (
@@ -250,7 +230,7 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
                 className={clsx(
                   "flex items-center gap-3 px-3 py-2.5 transition-colors",
                   isSeeded ? "cursor-pointer bg-accent/20" :
-                  atLimit   ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-accent/5"
+                  atLimit   ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-hl-row"
                 )}
               >
                 {thumb ? (
@@ -290,7 +270,7 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
           </div>
           <div className="flex flex-wrap gap-2">
             {seeds.map(item => {
-              const key = getRatingKey(item)
+              const key = item.id
               const thumb = getThumb(item)
               return (
                 <div
@@ -302,9 +282,9 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
                   ) : (
                     <div className={clsx("h-5 w-5 flex-shrink-0 bg-white/20", tabType === "artist" ? "rounded-full" : "rounded-sm")} />
                   )}
-                  <span className="max-w-[120px] truncate">{getTitle(item)}</span>
+                  <span className="max-w-[120px] truncate">{item.title}</span>
                   <button
-                    onClick={() => setSeeds(prev => prev.filter(s => getRatingKey(s) !== key))}
+                    onClick={() => setSeeds(prev => prev.filter(s => s.id !== key))}
                     className="ml-0.5 text-white/40 hover:text-white transition-colors"
                   >
                     <svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor">
@@ -335,7 +315,7 @@ function SearchBasedMixBuilder({ tabType, musicSectionId, baseUrl, token, sectio
 // ---------------------------------------------------------------------------
 
 interface TagGridMixBuilderProps {
-  tags: LibraryTag[]
+  tags: { tag: string; count: number | null }[]
   tabType: "genre" | "mood" | "style"
   sectionUuid: string
   sectionId: number
@@ -344,6 +324,7 @@ interface TagGridMixBuilderProps {
 }
 
 function TagGridMixBuilder({ tags, tabType, sectionUuid, sectionId, colorPalette, playFromUri }: TagGridMixBuilderProps) {
+  const provider = useProviderStore(s => s.provider)
   const [lastPlayed, setLastPlayed] = useState<string | null>(null)
   const [filterQuery, setFilterQuery] = useState("")
 
@@ -351,9 +332,10 @@ function TagGridMixBuilder({ tags, tabType, sectionUuid, sectionId, colorPalette
     ? tags.filter(t => t.tag.toLowerCase().includes(filterQuery.toLowerCase()))
     : tags
 
-  const handleTagClick = (tag: LibraryTag) => {
+  const handleTagClick = (tag: { tag: string; count: number | null }) => {
     if (!sectionUuid || !sectionId) return
-    const uri = buildTagFilterUri(sectionUuid, sectionId, tabType, tag.tag)
+    const uri = provider?.buildTagFilterUri?.(tabType, tag.tag)
+    if (!uri) return
     void playFromUri(uri, true)
     setLastPlayed(tag.tag)
   }
@@ -412,6 +394,8 @@ function TagGridMixBuilder({ tags, tabType, sectionUuid, sectionId, colorPalette
 
 export function StationsPage() {
   const [, navigate] = useLocation()
+  const hasStations = useCapability("stations")
+  const provider = useProviderStore(s => s.provider)
 
   const { hubs, tagsGenre, tagsMood, tagsStyle, recentMixes, addRecentMix } = useLibraryStore(
     useShallow(s => ({
@@ -424,10 +408,8 @@ export function StationsPage() {
     }))
   )
 
-  const { baseUrl, token, musicSectionId, sectionUuid } = useConnectionStore(
+  const { musicSectionId, sectionUuid } = useConnectionStore(
     useShallow(s => ({
-      baseUrl: s.baseUrl,
-      token: s.token,
       musicSectionId: s.musicSectionId,
       sectionUuid: s.sectionUuid,
     }))
@@ -438,22 +420,24 @@ export function StationsPage() {
     playTrack:   s.playTrack,
   })))
 
-  const [stations, setStations] = useState<KnownPlexMedia[]>([])
+  const [stations, setStations] = useState<MusicItem[]>([])
   const [stationsLoaded, setStationsLoaded] = useState(false)
   const [activeTab, setActiveTab] = useState<BuilderTab>("artist")
   const [mixThumbs, setMixThumbs] = useState<Record<string, string>>(() =>
     Object.fromEntries(mixThumbCache.entries())
   )
 
+  if (!hasStations) { navigate("/"); return null }
+
   // Mixes for You from hubs store
   const { mixesHubs, mixesItems, mixesTitle } = useMemo(() => {
-    const mh = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
-    return { mixesHubs: mh, mixesItems: mh.flatMap(h => h.metadata), mixesTitle: mh[0]?.title ?? "Mixes for You" }
+    const mh = hubs.filter(h => h.identifier.startsWith("music.mixes"))
+    return { mixesHubs: mh, mixesItems: mh.flatMap(h => h.items), mixesTitle: mh[0]?.title ?? "Mixes for You" }
   }, [hubs])
 
   // Resolve artist thumbnails for each mix (same logic as Home.tsx)
   useEffect(() => {
-    if (!musicSectionId || mixesItems.length === 0) return
+    if (!provider || mixesItems.length === 0) return
     const controller = new AbortController()
     const run = async () => {
       const updates: Record<string, string> = {}
@@ -464,14 +448,13 @@ export function StationsPage() {
         const artistName = mixTitleToArtistName(item.title)
         if (!artistName) continue
         try {
-          const results = await searchLibrary(musicSectionId, artistName, "artist")
+          const results = await provider.search(artistName, "artist")
           const artist = results.find(
             r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()
           ) ?? results.find(r => r.type === "artist")
-          if (artist && artist.type === "artist" && artist.thumb) {
-            const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
-            mixThumbCache.set(item.title, url)
-            updates[item.title] = url
+          if (artist && artist.type === "artist" && artist.thumbUrl) {
+            mixThumbCache.set(item.title, artist.thumbUrl)
+            updates[item.title] = artist.thumbUrl
           }
         } catch { }
       }
@@ -481,34 +464,38 @@ export function StationsPage() {
     }
     void run()
     return () => controller.abort()
-  }, [musicSectionId, mixesItems.length])
+  }, [provider, mixesItems.length])
 
   // Fetch section stations on mount
   useEffect(() => {
-    if (!musicSectionId) return
+    if (!provider) return
     setStationsLoaded(false)
-    getSectionStations(musicSectionId)
+    provider.getSectionStations?.()
       .then(stationHubs => {
+        if (!stationHubs) { setStationsLoaded(true); return }
         const items = stationHubs
-          .filter(h => h.hub_identifier.includes("station"))
-          .flatMap(h => h.metadata)
-          .filter((item): item is KnownPlexMedia => item.type !== "unknown" && Boolean(item.title))
+          .filter(h => h.identifier.includes("station"))
+          .flatMap(h => h.items)
+          .filter((item): item is MusicItem => Boolean(item.title))
         setStations(items)
       })
       .catch(() => {})
       .finally(() => setStationsLoaded(true))
-  }, [musicSectionId])
+  }, [provider])
 
-  const handleStationClick = (item: KnownPlexMedia) => {
+  const handleStationClick = (item: MusicItem) => {
     if (!sectionUuid) return
-    const uri = buildRadioPlayQueueUri(sectionUuid, item.key)
+    const stationKey = item.providerKey ?? item.id
+    const uri = provider?.buildRadioUri?.(stationKey)
+    if (!uri) return
     void playFromUri(uri)
-    const typeSlug = item.guid?.replace("tv.plex://station/", "") ?? encodeURIComponent(item.key)
+    const guid = item.guid
+    const typeSlug = guid?.replace("tv.plex://station/", "") ?? encodeURIComponent(stationKey)
     navigate(`/radio/${typeSlug}`)
   }
 
   // Tag sets and palettes for each tab
-  const activeTags: LibraryTag[] =
+  const activeTags: { tag: string; count: number | null }[] =
     activeTab === "genre" ? tagsGenre :
     activeTab === "mood"  ? tagsMood  :
     activeTab === "style" ? tagsStyle :
@@ -528,24 +515,24 @@ export function StationsPage() {
           {mixesItems.map((item, idx) => {
             if (item.type !== "playlist") return null
             const thumb =
-              mixThumbs[item.title] ??
-              (item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null) ??
-              (item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null)
+              mixThumbs[item.title] ?? item.thumbUrl ?? null
             return (
               <MediaCard
-                key={item.rating_key || `mix-${idx}`}
+                key={`${item.id}-${idx}`}
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
                 isArtist={false}
                 onClick={() => {
-                  selectMix(item as Playlist & { type: "playlist" })
+                  selectMix(item as MusicPlaylist)
                   navigate("/mix")
                 }}
                 onPlay={() => {
-                  getMixTracks(item.key)
+                  const mixKey = item.providerKey
+                  if (!mixKey) return
+                  provider?.getMixTracks?.(mixKey)
                     .then(tracks => {
-                      if (tracks.length === 0) return
+                      if (!tracks || tracks.length === 0) return
                       const shuffled = [...tracks].sort(() => Math.random() - 0.5)
                       void playTrack(shuffled[0], shuffled, item.title, "/mix")
                     })
@@ -572,7 +559,7 @@ export function StationsPage() {
           <MediaGrid gap={3}>
             {stations.map((item, idx) => (
               <div
-                key={item.key}
+                key={item.providerKey ?? item.id}
                 onClick={() => handleStationClick(item)}
                 className="relative aspect-square cursor-pointer overflow-hidden rounded-lg select-none hover:brightness-110 transition-[filter]"
                 style={{ background: STATION_BG_COLORS[idx % STATION_BG_COLORS.length] }}
@@ -631,9 +618,6 @@ export function StationsPage() {
           <SearchBasedMixBuilder
             key={activeTab}
             tabType={activeTab}
-            musicSectionId={musicSectionId ?? 0}
-            baseUrl={baseUrl}
-            token={token}
             sectionUuid={sectionUuid ?? ""}
             sectionId={musicSectionId ?? 0}
             playFromUri={playFromUri}

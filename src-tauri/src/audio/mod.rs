@@ -1,3 +1,4 @@
+pub mod analyzer;
 pub mod bpm;
 pub mod cache;
 pub mod commands;

@@ -11,6 +11,11 @@ export default {
         "app-card":         "var(--bg-elevated)",
         "app-surface":      "var(--bg-surface)",
         "app-surface-hover":"var(--bg-surface-hover)",
+        // Configurable highlight colours — driven by highlightStore.ts
+        "hl-card":  "var(--hl-card)",
+        "hl-row":   "var(--hl-row)",
+        "hl-menu":  "var(--hl-menu)",
+        "hl-queue": "var(--hl-queue)",
       },
     },
   },

@@ -1,15 +1,117 @@
 import { Link, useLocation } from "wouter"
+import { useMemo, useRef, useState } from "react"
 import clsx from "clsx"
 import { useShallow } from "zustand/react/shallow"
-import { useLibraryStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
+import { useLibraryStore } from "../stores"
 import { usePlayerStore } from "../stores/playerStore"
 import { useResizable } from "../hooks/useResizable"
+import { useContextMenu } from "../hooks/useContextMenu"
+import { useCapability } from "../hooks/useCapability"
+import type { MusicPlaylist } from "../types/music"
+
+// ---------------------------------------------------------------------------
+// Custom order persistence (localStorage)
+// ---------------------------------------------------------------------------
+
+const ORDER_KEY = "plex-sidebar-playlist-order"
+
+function getCustomOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(ORDER_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+function setCustomOrder(ids: string[]) {
+  localStorage.setItem(ORDER_KEY, JSON.stringify(ids))
+}
+
+// ---------------------------------------------------------------------------
+// Sortable playlist item
+// ---------------------------------------------------------------------------
+
+interface SortablePlaylistItemProps {
+  playlist: MusicPlaylist
+  location: string
+  playPlaylist: (playlistId: string, count: number, title: string, href: string) => void
+  ctxMenu: (type: "playlist", data: MusicPlaylist) => (e: React.MouseEvent) => void
+  justDragged: React.RefObject<boolean>
+}
+
+function SortablePlaylistItem({ playlist, location, playPlaylist, ctxMenu, justDragged }: SortablePlaylistItemProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: playlist.id,
+  })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    // Prevent the browser from sending click events to the <Link> while dragging
+    pointerEvents: isDragging ? "none" : undefined,
+  }
+
+  const href = `/playlist/${playlist.id}`
+  const artUrl = playlist.thumbUrl
+
+  return (
+    <li ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <Link
+        href={href}
+        onClick={e => { if (justDragged.current) { e.preventDefault(); e.stopPropagation() } }}
+        onContextMenu={ctxMenu("playlist", playlist)}
+        className={clsx(
+          "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-app-surface hover:no-underline",
+          location !== href ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-primary)]"
+        )}
+      >
+        <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-app-surface">
+          {artUrl && (
+            <img src={artUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+          )}
+          <button
+            onClick={e => {
+              e.preventDefault()
+              e.stopPropagation()
+              void playPlaylist(playlist.id, playlist.trackCount, playlist.title, href)
+            }}
+            title={`Play ${playlist.title}`}
+            className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="white">
+              <polygon points="3,2 13,8 3,14" />
+            </svg>
+          </button>
+        </div>
+        <span className="truncate text-sm font-normal">{playlist.title}</span>
+      </Link>
+    </li>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SideBar
+// ---------------------------------------------------------------------------
 
 export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) {
   const [location] = useLocation()
+  const hasStations = useCapability("stations")
   const playlists = useLibraryStore(s => s.playlists)
-  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const playPlaylist = usePlayerStore(useShallow(s => s.playPlaylist))
+  const { handler: ctxMenu } = useContextMenu()
   const { width, onMouseDown } = useResizable({
     key: "plex-sidebar-width",
     defaultWidth: 240,
@@ -17,6 +119,49 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
     maxWidth: 480,
     direction: "right",
   })
+
+  // DnD sensors — require 5px movement to start drag (prevents accidental drags on clicks)
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const [orderVersion, setOrderVersion] = useState(0)
+  const justDragged = useRef(false)
+
+  // Sort playlists by custom order; new playlists go to bottom
+  const sortedPlaylists = useMemo(() => {
+    const order = getCustomOrder()
+    if (order.length === 0) return playlists
+
+    const orderMap = new Map(order.map((id, idx) => [id, idx]))
+    const inOrder = playlists
+      .filter(p => orderMap.has(p.id))
+      .sort((a, b) => orderMap.get(a.id)! - orderMap.get(b.id)!)
+    const notInOrder = playlists.filter(p => !orderMap.has(p.id))
+    return [...inOrder, ...notInOrder]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlists, orderVersion])
+
+  function handleDragStart() {
+    justDragged.current = true
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    // Keep justDragged true long enough to swallow the click that fires after pointer-up.
+    // rAF is unreliable — the click can land 1-2 frames later depending on the browser.
+    setTimeout(() => { justDragged.current = false }, 300)
+
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const ids = sortedPlaylists.map(p => p.id)
+    const oldIdx = ids.indexOf(String(active.id))
+    const newIdx = ids.indexOf(String(over.id))
+    if (oldIdx === -1 || newIdx === -1) return
+
+    const reordered = [...ids]
+    const [moved] = reordered.splice(oldIdx, 1)
+    reordered.splice(newIdx, 0, moved)
+    setCustomOrder(reordered)
+    setOrderVersion(v => v + 1)
+  }
 
   return (
     <div className="relative flex h-full flex-shrink-0 flex-col bg-app-bg p-6" style={{ width }}>
@@ -26,7 +171,7 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
         onMouseDown={onMouseDown}
       />
       <ul className="flex-shrink-0 pt-1 text-sm font-semibold">
-        {routes1.map((i, index) => (
+        {routes1.filter(i => i.href !== "/stations" || hasStations).map((i, index) => (
           <li key={`${i.href}-${index}`}>
             <Link
               href={i.href}
@@ -76,44 +221,22 @@ export function SideBar({ onCreatePlaylist }: { onCreatePlaylist: () => void }) 
       </ul>
 
       <div className="mt-2 min-h-0 flex-1 overflow-y-scroll scrollbar scrollbar-w-1 scrollbar-track-[var(--bg-base)] scrollbar-thumb-[var(--bg-surface)] hover:scrollbar-thumb-[var(--bg-surface-hover)]">
-        <ul className="pt-1">
-          {playlists.map((playlist) => {
-            const href = `/playlist/${playlist.rating_key}`
-            const artPath = playlist.thumb ?? playlist.composite
-            const artUrl = artPath ? buildPlexImageUrl(baseUrl, token, artPath) : null
-            return (
-              <li key={playlist.rating_key}>
-                <Link
-                  href={href}
-                  className={clsx(
-                    "group flex cursor-default items-center gap-3 rounded-md px-1 py-[5px] no-underline hover:bg-app-surface hover:no-underline",
-                    location !== href ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-primary)]"
-                  )}
-                >
-                  <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-app-surface">
-                    {artUrl && (
-                      <img src={artUrl} alt="" className="h-full w-full object-cover" />
-                    )}
-                    <button
-                      onClick={e => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        void playPlaylist(playlist.rating_key, playlist.leaf_count, playlist.title, href)
-                      }}
-                      title={`Play ${playlist.title}`}
-                      className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <svg viewBox="0 0 16 16" width="16" height="16" fill="white">
-                        <polygon points="3,2 13,8 3,14" />
-                      </svg>
-                    </button>
-                  </div>
-                  <span className="truncate text-sm font-normal">{playlist.title}</span>
-                </Link>
-              </li>
-            )
-          })}
-        </ul>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setTimeout(() => { justDragged.current = false }, 300)}>
+          <SortableContext items={sortedPlaylists.map(p => p.id)} strategy={verticalListSortingStrategy}>
+            <ul className="pt-1">
+              {sortedPlaylists.map((playlist) => (
+                <SortablePlaylistItem
+                  key={playlist.id}
+                  playlist={playlist}
+                  location={location}
+                  playPlaylist={playPlaylist}
+                  ctxMenu={ctxMenu}
+                  justDragged={justDragged}
+                />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       </div>
     </div>
   )

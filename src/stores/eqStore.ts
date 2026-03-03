@@ -7,7 +7,8 @@ import {
   audioSetEqPostgain,
   audioSetEqPostgainAuto,
   audioGetCurrentDevice,
-} from "../lib/plex"
+} from "../lib/audio"
+import { fireAndForget } from "../lib/async"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,8 +53,8 @@ function computeAutoPostgainDb(gains: EqGains): number {
 
 /** Send postgain state to the audio engine. */
 function sendPostgain(db: number, auto: boolean) {
-  void audioSetEqPostgainAuto(auto)
-  void audioSetEqPostgain(db)
+  fireAndForget(audioSetEqPostgainAuto(auto))
+  fireAndForget(audioSetEqPostgain(db))
 }
 
 // ---------------------------------------------------------------------------
@@ -107,17 +108,17 @@ export const useEqStore = create<EqState>()(
         }
         set(updates)
         if (get().enabled) {
-          void audioSetEq(next)
+          fireAndForget(audioSetEq(next))
           // Engine auto-computes postgain in SetEq handler when auto mode is on
         }
       },
 
       setEnabled: (enabled) => {
         set({ enabled })
-        void audioSetEqEnabled(enabled)
+        fireAndForget(audioSetEqEnabled(enabled))
         if (enabled) {
           const { gains, postgainDb, autoPostgain } = get()
-          void audioSetEq(gains)
+          fireAndForget(audioSetEq(gains))
           sendPostgain(postgainDb, autoPostgain)
         }
       },
@@ -129,27 +130,27 @@ export const useEqStore = create<EqState>()(
         }
         set(updates)
         if (get().enabled) {
-          void audioSetEq(preset)
+          fireAndForget(audioSetEq(preset))
         }
       },
 
       syncToEngine: () => {
         const { gains, enabled, postgainDb, autoPostgain } = get()
-        void audioSetEqEnabled(enabled)
+        fireAndForget(audioSetEqEnabled(enabled))
         if (enabled) {
-          void audioSetEq(gains)
+          fireAndForget(audioSetEq(gains))
           sendPostgain(postgainDb, autoPostgain)
         }
         // Query actual device and set it
-        audioGetCurrentDevice().then((name) => {
+        fireAndForget(audioGetCurrentDevice().then((name) => {
           if (name) set({ currentDevice: name })
-        }).catch(() => {})
+        }))
       },
 
       setPostgainDb: (db) => {
         set({ postgainDb: db, autoPostgain: false })
-        void audioSetEqPostgainAuto(false)
-        void audioSetEqPostgain(db)
+        fireAndForget(audioSetEqPostgainAuto(false))
+        fireAndForget(audioSetEqPostgain(db))
       },
 
       setAutoPostgain: (auto) => {
@@ -198,9 +199,9 @@ export const useEqStore = create<EqState>()(
           autoPostgain: profile.autoPostgain,
         })
         // Sync to engine
-        void audioSetEqEnabled(profile.enabled)
+        fireAndForget(audioSetEqEnabled(profile.enabled))
         if (profile.enabled) {
-          void audioSetEq(profile.gains)
+          fireAndForget(audioSetEq(profile.gains))
           sendPostgain(profile.postgainDb, profile.autoPostgain)
         }
       },
@@ -222,9 +223,9 @@ export const useEqStore = create<EqState>()(
 // Device change listener — set up once on import
 // ---------------------------------------------------------------------------
 
-listen<{ name: string }>("audio-device-changed", (event) => {
+fireAndForget(listen<{ name: string }>("audio-device-changed", (event) => {
   const name = event.payload?.name
   if (name) {
     useEqStore.getState().setCurrentDevice(name)
   }
-}).catch(() => {})
+}))

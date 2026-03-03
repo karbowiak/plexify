@@ -1,5 +1,3 @@
-import type { Track } from "../types/plex"
-
 export function formatMs(ms: number): string {
   if (!ms || isNaN(ms)) return "0:00"
   const s = Math.floor(ms / 1000)
@@ -53,11 +51,11 @@ export function starsFromRating(rating: number | null): number {
   return Math.round(rating / 2)
 }
 
-export function keyToId(key: string): number {
-  return parseInt(key.split("/").pop() ?? "0", 10)
+export function keyToId(key: string): string {
+  return key.split("/").pop() ?? "0"
 }
 
-export function formatTotalDuration(tracks: Track[]): string {
+export function formatTotalDuration(tracks: { duration: number }[]): string {
   const totalMs = tracks.reduce((sum, t) => sum + t.duration, 0)
   const totalSec = Math.floor(totalMs / 1000)
   const h = Math.floor(totalSec / 3600)

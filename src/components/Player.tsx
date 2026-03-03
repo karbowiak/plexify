@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react"
 import { Link } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { usePlayerStore, useConnectionStore, buildPlexImageUrl } from "../stores"
+import { usePlayerStore } from "../stores"
 import { DJ_MODES } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useEqStore } from "../stores/eqStore"
 import { useAudioSettingsStore } from "../stores/audioSettingsStore"
 import { useVisualizerStore } from "../stores/visualizerStore"
-import { reportTimeline, audioSetCacheMaxBytes, audioSetVisualizerEnabled } from "../lib/plex"
+import { audioSetCacheMaxBytes, audioSetVisualizerEnabled } from "../lib/audio"
 import { formatMs } from "../lib/formatters"
+import { useCapability } from "../hooks/useCapability"
 import EqPanel from "./EqPanel"
 import SleepTimerPanel from "./SleepTimerPanel"
 import TrackInfoPanel from "./TrackInfoPanel"
@@ -22,7 +23,6 @@ import { useSleepTimerStore } from "../stores/sleepTimerStore"
 const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
 
 export function Player() {
-  const positionRef = useRef(0)
   const volumeSliderRef = useRef<HTMLDivElement>(null)
   const volumeTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekHoverPct, setSeekHoverPct] = useState<number | null>(null)
@@ -92,7 +92,6 @@ export function Player() {
   const [sleepRemaining, setSleepRemaining] = useState<string | null>(null)
   const { endsAt: sleepEndsAt, hydrate: hydrateSleepTimer } = useSleepTimerStore(useShallow(s => ({ endsAt: s.endsAt, hydrate: s.hydrate })))
 
-  const { baseUrl, token } = useConnectionStore(useShallow(s => ({ baseUrl: s.baseUrl, token: s.token })))
   const {
     isQueueOpen, setQueueOpen,
     isQueuePinned, queueActiveTab, setQueueActiveTab,
@@ -107,10 +106,13 @@ export function Player() {
     setLyricsOpen: s.setLyricsOpen,
   })))
   const { enabled: eqEnabled, syncToEngine } = useEqStore(useShallow(s => ({ enabled: s.enabled, syncToEngine: s.syncToEngine })))
+  const { crossfadeStyle, crossfadeWindowMs: cfWindowMs, setCrossfadeStyle } = useAudioSettingsStore(
+    useShallow(s => ({ crossfadeStyle: s.crossfadeStyle, crossfadeWindowMs: s.crossfadeWindowMs, setCrossfadeStyle: s.setCrossfadeStyle }))
+  )
   const syncAudioSettings = useAudioSettingsStore(s => s.syncToEngine)
-
-  // Keep positionRef in sync for the timeline reporting interval
-  positionRef.current = positionMs
+  const hasRadio = useCapability("radio")
+  const hasDjModes = useCapability("djModes")
+  const hasLyrics = useCapability("lyrics")
 
   // Initialize Rust audio engine event listeners on mount.
   // Also apply any persisted cache size limit before playback starts.
@@ -151,15 +153,6 @@ export function Player() {
     void audioSetVisualizerEnabled(needsPcm).catch(() => {})
   }, [compactMode, fullscreenOpen])
 
-  // Report timeline to Plex every 10 seconds during playback
-  useEffect(() => {
-    if (!currentTrack || !isPlaying) return
-    const id = setInterval(() => {
-      void reportTimeline(currentTrack.rating_key, "playing", positionRef.current, currentTrack.duration)
-    }, 10000)
-    return () => clearInterval(id)
-  }, [currentTrack?.rating_key, isPlaying])
-
   // Media session action handlers — wire OS media keys / headphone controls / Control Center
   useEffect(() => {
     if (!navigator.mediaSession) return
@@ -181,12 +174,12 @@ export function Player() {
     if (currentTrack) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.title,
-        artist: currentTrack.grandparent_title,
-        album: currentTrack.parent_title,
+        artist: currentTrack.artistName,
+        album: currentTrack.albumName,
       })
     }
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused"
-  }, [currentTrack?.rating_key, isPlaying])
+  }, [currentTrack?.id, isPlaying])
 
   // Global space bar → play/pause (ignored when focus is in a text field)
   useEffect(() => {
@@ -240,12 +233,10 @@ export function Player() {
     return () => el.removeEventListener("wheel", onWheel)
   }, [])
 
-  // Prefer track thumb; fall back to album thumb (smart playlists return parent_thumb)
-  const thumbPath = currentTrack?.thumb ?? currentTrack?.parent_thumb
-  const thumbUrl = thumbPath ? buildPlexImageUrl(baseUrl, token, thumbPath) : null
+  const thumbUrl = currentTrack?.thumbUrl ?? null
 
-  const artistId = currentTrack?.grandparent_key?.split("/").pop()
-  const albumId = currentTrack?.parent_key?.split("/").pop()
+  const artistId = currentTrack?.artistId
+  const albumId = currentTrack?.albumId
 
   const progressPct = currentTrack?.duration
     ? (positionMs / currentTrack.duration) * 100
@@ -256,22 +247,29 @@ export function Player() {
 
   // Only show album in the subtitle row when contextName isn't already showing the same album
   const showAlbumInSubtitle = !!(
-    currentTrack?.parent_title && albumId &&
-    (!contextName || contextName !== currentTrack.parent_title)
+    currentTrack?.albumName && albumId &&
+    (!contextName || contextName !== currentTrack.albumName)
   )
 
   // Media info chip: codec + bitrate shown next to the repeat button.
-  // Plex often omits audioCodec/audioBitrate at the top-level Track for queue items,
-  // so fall back to the first Media entry (same as TrackInfoPanel does).
-  const firstMedia = currentTrack?.media?.[0]
-  const chipCodec = (firstMedia?.audio_codec ?? currentTrack?.audio_codec)?.toUpperCase()
-  const chipBitrate = firstMedia?.bitrate ?? currentTrack?.audio_bitrate
+  const chipCodec = currentTrack?.codec?.toUpperCase() ?? null
+  const chipBitrate = currentTrack?.bitrate
   const mediaLabel = chipCodec
     ? chipBitrate ? `${chipCodec} ${chipBitrate}k` : chipCodec
     : null
 
   // Short DJ name (strip "DJ " prefix) for inline display
   const djShortName = djMode ? DJ_MODES.find(d => d.key === djMode)?.name.replace("DJ ", "") ?? djMode : null
+
+  // Crossfade style labels & cycling
+  const CROSSFADE_STYLES = [
+    { value: 0, short: "Smooth", label: "Smooth crossfade" },
+    { value: 1, short: "Filter", label: "DJ Filter crossfade" },
+    { value: 2, short: "Echo", label: "Echo Out crossfade" },
+    { value: 3, short: "Cut", label: "Hard Cut crossfade" },
+  ] as const
+  const cfStyleInfo = CROSSFADE_STYLES.find(s => s.value === crossfadeStyle) ?? CROSSFADE_STYLES[0]
+  const cfActive = crossfadeStyle !== 0 && cfWindowMs > 0
 
   return (
     <div className="relative border-t border-[var(--border)] bg-app-card">
@@ -308,14 +306,14 @@ export function Player() {
                     <p className="truncate text-[0.688rem] text-white/60 mt-0.5">
                       {artistId ? (
                         <Link href={`/artist/${artistId}`} className="hover:text-white hover:underline transition-colors">
-                          {currentTrack?.grandparent_title ?? ""}
+                          {currentTrack?.artistName ?? ""}
                         </Link>
-                      ) : (currentTrack?.grandparent_title ?? "")}
+                      ) : (currentTrack?.artistName ?? "")}
                       {showAlbumInSubtitle && (
                         <>
                           <span className="mx-1 text-white/30">·</span>
                           <Link href={`/album/${albumId}`} className="hover:text-white hover:underline transition-colors">
-                            {currentTrack!.parent_title}
+                            {currentTrack!.albumName}
                           </Link>
                         </>
                       )}
@@ -341,7 +339,7 @@ export function Player() {
               <div className="flex items-center gap-x-1.5">
 
                 {/* Radio mode indicator — left of DJ, opens settings panel */}
-                {isRadioMode && (
+                {hasRadio && isRadioMode && (
                   <PlayerPopover
                     icon={
                       <span className="text-[0.625rem] font-bold uppercase tracking-wider">RADIO</span>
@@ -357,7 +355,7 @@ export function Player() {
                 )}
 
                 {/* Guest DJ — icon only when inactive, icon+name pill when active */}
-                <PlayerPopover
+                {hasDjModes && <PlayerPopover
                   icon={
                     djMode ? (
                       <>
@@ -378,7 +376,28 @@ export function Player() {
                   width={288}
                 >
                   {(close) => <DjPanel onClose={close} />}
-                </PlayerPopover>
+                </PlayerPopover>}
+
+                {/* Crossfade style — cycle through Smooth/Filter/Echo/Cut */}
+                {cfWindowMs > 0 && (
+                  <button
+                    onClick={() => setCrossfadeStyle((crossfadeStyle + 1) % 4)}
+                    title={cfStyleInfo.label}
+                    className={`flex items-center gap-1 rounded-full transition-colors ${
+                      cfActive
+                        ? "bg-accent/15 px-2.5 h-7 text-accent"
+                        : "h-8 w-8 justify-center text-white/40 hover:text-white/70"
+                    }`}
+                  >
+                    {/* Crossfade icon — two overlapping curves */}
+                    <svg viewBox="0 0 16 16" width={cfActive ? 12 : 16} height={cfActive ? 12 : 16} fill="currentColor">
+                      <path d="M1 3.5a.5.5 0 0 1 .5-.5h3a4.5 4.5 0 0 1 3.27 1.4L9.9 6.85a3.5 3.5 0 0 0 2.55 1.1h2.05a.5.5 0 0 1 0 1H12.44a4.5 4.5 0 0 1-3.27-1.4L7.04 5.1A3.5 3.5 0 0 0 4.5 4H1.5a.5.5 0 0 1-.5-.5zm0 9a.5.5 0 0 0 .5.5h3a4.5 4.5 0 0 0 3.27-1.4l2.13-2.45a3.5 3.5 0 0 1 2.55-1.1h2.05a.5.5 0 0 0 0-1H12.44a4.5 4.5 0 0 0-3.27 1.4L7.04 10.9A3.5 3.5 0 0 1 4.5 12H1.5a.5.5 0 0 0-.5.5z"/>
+                    </svg>
+                    {cfActive && (
+                      <span className="text-[0.6875rem] font-semibold">{cfStyleInfo.short}</span>
+                    )}
+                  </button>
+                )}
 
                 {/* Shuffle */}
                 <button
@@ -454,7 +473,8 @@ export function Player() {
                     }
                     wide
                     label="Track info"
-                    width={320}
+                    align="center"
+                    width="auto"
                   >
                     {(close) => <TrackInfoPanel onClose={close} />}
                   </PlayerPopover>
@@ -522,7 +542,7 @@ export function Player() {
               </PlayerPopover>
 
               {/* Lyrics toggle */}
-              <button
+              {hasLyrics && <button
                 onClick={() => {
                   if (isQueuePinned) {
                     // When queue is pinned, lyrics live in the queue panel as a tab
@@ -549,7 +569,7 @@ export function Player() {
                   <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5a2.5 2.5 0 0 0 5 0v-5A2.5 2.5 0 0 0 8 1z"/>
                   <path d="M3.5 8.5a.5.5 0 0 1 .5.5A4 4 0 0 0 12 9a.5.5 0 0 1 1 0 5 5 0 0 1-4.5 4.975V15.5a.5.5 0 0 1-1 0v-1.525A5 5 0 0 1 3 9a.5.5 0 0 1 .5-.5z"/>
                 </svg>
-              </button>
+              </button>}
 
               {/* Visualizer mode cycle */}
               <button

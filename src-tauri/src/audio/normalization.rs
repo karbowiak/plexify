@@ -1,16 +1,14 @@
 #![allow(dead_code)]
 
-use std::fs::File;
 use std::sync::Arc;
 
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CodecType, CODEC_TYPE_OPUS};
 use symphonia::core::formats::FormatReader;
-use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{StandardTagKey, Value};
 use tracing::warn;
 
-use super::cache::{audio_cache_key, probe_audio};
+use super::cache::{audio_cache_key, open_audio_file, probe_audio};
 use super::state::DecoderShared;
 use super::types::TrackMeta;
 
@@ -70,16 +68,15 @@ pub fn compute_fallback_loudness(url: &str, shared: &Arc<DecoderShared>) -> f32 
         return 1.0;
     }
 
-    let file = match File::open(&cache_path) {
-        Ok(f) => f,
+    let (mss, _url) = match open_audio_file(&cache_path, url) {
+        Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Fallback loudness: failed to open cache file");
             return 1.0;
         }
     };
 
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let (mut fmt, mut dec, tid, sr, _ch, _codec) = match probe_audio(mss, url) {
+    let (mut fmt, mut dec, tid, sr, _ch, _codec, _) = match probe_audio(mss, url) {
         Ok(t) => t,
         Err(e) => {
             warn!(error = %e, "Fallback loudness: failed to probe audio");

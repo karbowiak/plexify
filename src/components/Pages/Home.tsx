@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { useLocation } from "wouter"
-import { useLibraryStore, useConnectionStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
+import { useLibraryStore, useConnectionStore, usePlayerStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
 import { prefetchArtist, prefetchAlbum } from "../../stores/metadataCache"
-import type { PlexMedia, Playlist } from "../../types/plex"
+import type { MusicItem, MusicPlaylist } from "../../types/music"
 import { useContextMenu } from "../../hooks/useContextMenu"
-import { searchLibrary, getMixTracks } from "../../lib/plex"
 import { makeOnPlay } from "../../lib/mediaPlay"
 import { ScrollRow } from "../ScrollRow"
 import { MediaCard } from "../MediaCard"
@@ -21,40 +21,40 @@ export function mixTitleToArtistName(title: string): string {
  * Module-level cache of mix title → artist thumb URL.
  * Survives component unmount/remount so images don't flash grey on navigation.
  * Shared with StationsPage so the two pages don't duplicate searches.
- * The actual image bytes are cached separately by the pleximg:// Tauri handler.
+ * The actual image bytes are cached separately by the image:// Tauri handler.
  */
 export const mixThumbCache = new Map<string, string>()
 
-function getItemYear(item: PlexMedia): number {
+function getItemYear(item: MusicItem): number {
   if (item.type === "album") return item.year
   if (item.type === "track") return item.year
   return 0
 }
 
-export function getMediaInfo(item: PlexMedia, baseUrl: string, token: string, opts?: { showYear?: boolean }) {
+export function getMediaInfo(item: MusicItem, opts?: { showYear?: boolean }) {
   switch (item.type) {
     case "album":
       return {
         title: item.title,
         desc: opts?.showYear && item.year > 0
-          ? `${item.parent_title} · ${item.year}`
-          : item.parent_title,
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+          ? `${item.artistName} · ${item.year}`
+          : item.artistName,
+        thumb: item.thumbUrl,
         isArtist: false,
-        href: `/album/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/album/${item.id}`,
+        id: item.id,
         itemType: "album" as const,
-        artistName: item.parent_title,
+        artistName: item.artistName,
         albumName: item.title,
       }
     case "artist":
       return {
         title: item.title,
         desc: "Artist",
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+        thumb: item.thumbUrl,
         isArtist: true,
-        href: `/artist/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/artist/${item.id}`,
+        id: item.id,
         itemType: "artist" as const,
         artistName: item.title,
         albumName: null,
@@ -63,27 +63,24 @@ export function getMediaInfo(item: PlexMedia, baseUrl: string, token: string, op
       return {
         title: item.title,
         desc: opts?.showYear && item.year > 0
-          ? `${item.grandparent_title} · ${item.year}`
-          : item.grandparent_title,
-        thumb: item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null,
+          ? `${item.artistName} · ${item.year}`
+          : item.artistName,
+        thumb: item.thumbUrl,
         isArtist: false,
-        href: null,
-        ratingKey: item.rating_key,
+        href: item.albumId ? `/album/${item.albumId}` : null,
+        id: item.id,
         itemType: "track" as const,
+        artistName: item.artistName,
+        albumName: item.albumName,
       }
     case "playlist":
       return {
         title: item.title,
         desc: "Playlist",
-        // Prefer thumb (artist image on mixes) over composite (collage)
-        thumb: item.thumb
-          ? buildPlexImageUrl(baseUrl, token, item.thumb)
-          : item.composite
-            ? buildPlexImageUrl(baseUrl, token, item.composite)
-            : null,
+        thumb: item.thumbUrl,
         isArtist: false,
-        href: `/playlist/${item.rating_key}`,
-        ratingKey: item.rating_key,
+        href: `/playlist/${item.id}`,
+        id: item.id,
         itemType: "playlist" as const,
       }
     default:
@@ -98,9 +95,10 @@ export function Home() {
     recentlyAdded: s.recentlyAdded,
     hubs: s.hubs,
   })))
-  const { baseUrl, token, isConnected, isLoading: isConnecting, musicSectionId, sectionUuid } = useConnectionStore(
-    useShallow(s => ({ baseUrl: s.baseUrl, token: s.token, isConnected: s.isConnected, isLoading: s.isLoading, musicSectionId: s.musicSectionId, sectionUuid: s.sectionUuid }))
+  const { isConnected, isLoading: isConnecting } = useConnectionStore(
+    useShallow(s => ({ isConnected: s.isConnected, isLoading: s.isLoading }))
   )
+  const provider = useProviderStore(s => s.provider)
   const { playFromUri, playTrack, playPlaylist } = usePlayerStore(useShallow(s => ({
     playFromUri: s.playFromUri,
     playTrack:   s.playTrack,
@@ -109,7 +107,7 @@ export function Home() {
   const [, navigate] = useLocation()
   const { handler: ctxMenu } = useContextMenu()
 
-  function makeOnContextMenu(item: PlexMedia) {
+  function makeOnContextMenu(item: MusicItem) {
     if (item.type === "album" || item.type === "artist" || item.type === "track") return ctxMenu(item.type, item)
     return undefined
   }
@@ -121,17 +119,15 @@ export function Home() {
 
   const hasRealData = recentlyAdded.length > 0 || hubs.length > 0
 
-  const sectionId = musicSectionId ?? 0
-
-  const { mixesHubs, mixesItems, mixesTitle } = useMemo(() => {
-    const mh = hubs.filter(h => h.hub_identifier.startsWith("music.mixes"))
-    return { mixesHubs: mh, mixesItems: mh.flatMap(h => h.metadata), mixesTitle: mh[0]?.title ?? "Mixes for You" }
+  const { mixesItems, mixesTitle } = useMemo(() => {
+    const mh = hubs.filter(h => h.identifier.startsWith("music.mixes"))
+    return { mixesItems: mh.flatMap(h => h.items), mixesTitle: mh[0]?.title ?? "Mixes for You" }
   }, [hubs])
 
   // For each mix, search the library for the artist named in the title and
   // cache their thumbnail. Already-cached titles are skipped.
   useEffect(() => {
-    if (!isConnected || mixesItems.length === 0 || sectionId === 0) return
+    if (!isConnected || !provider || mixesItems.length === 0) return
     const controller = new AbortController()
 
     const run = async () => {
@@ -152,14 +148,13 @@ export function Home() {
             const artistName = mixTitleToArtistName(item.title)
             if (!artistName) return
             try {
-              const results = await searchLibrary(sectionId, artistName, "artist")
+              const results = await provider.search(artistName, "artist")
               const artist = results.find(
                 r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()
               ) ?? results.find(r => r.type === "artist")
-              if (artist && artist.type === "artist" && artist.thumb) {
-                const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
-                mixThumbCache.set(item.title, url)
-                updates[item.title] = url
+              if (artist && artist.type === "artist" && artist.thumbUrl) {
+                mixThumbCache.set(item.title, artist.thumbUrl)
+                updates[item.title] = artist.thumbUrl
               }
             } catch {
               // search failure for one mix shouldn't abort the rest
@@ -174,14 +169,14 @@ export function Home() {
 
     void run()
     return () => controller.abort()
-  }, [isConnected, sectionId, mixesItems.length])
+  }, [isConnected, provider, mixesItems.length])
 
   if (!hasRealData) {
     const message = isConnecting
-      ? "Connecting to your Plex library…"
+      ? "Connecting…"
       : isConnected
         ? "Loading your library…"
-        : "Not connected to Plex."
+        : "Not connected. Go to Settings to connect."
     return (
       <div className="space-y-8">
         <div className="text-gray-400 text-sm">{message}</div>
@@ -191,8 +186,8 @@ export function Home() {
 
   function makePrefetch(info: ReturnType<typeof getMediaInfo>) {
     if (!info) return undefined
-    if (info.itemType === "artist") return () => prefetchArtist(info.ratingKey, sectionId)
-    if (info.itemType === "album") return () => prefetchAlbum(info.ratingKey)
+    if (info.itemType === "artist") return () => prefetchArtist(info.id)
+    if (info.itemType === "album") return () => prefetchAlbum(info.id)
     return undefined
   }
 
@@ -202,22 +197,22 @@ export function Home() {
         <ScrollRow title={mixesTitle} titleHref="/stations" restoreKey="home-mixes">
           {mixesItems.map((item, idx) => {
             if (item.type !== "playlist") return null
-            const thumb = mixThumbs[item.title]
-              ?? (item.thumb ? buildPlexImageUrl(baseUrl, token, item.thumb) : null)
-              ?? (item.composite ? buildPlexImageUrl(baseUrl, token, item.composite) : null)
+            const thumb = mixThumbs[item.title] ?? item.thumbUrl
             return (
               <MediaCard
-                key={item.rating_key || `mix-${idx}`}
+                key={`${item.id}-${idx}`}
                 title={item.title}
                 desc="Mix for You"
                 thumb={thumb}
                 isArtist={false}
                 onClick={() => {
-                  selectMix(item as Playlist & { type: "playlist" })
+                  selectMix(item as MusicPlaylist)
                   navigate("/mix")
                 }}
                 onPlay={() => {
-                  getMixTracks(item.key)
+                  const mixKey = item.providerKey as string | undefined
+                  if (!mixKey || !provider?.getMixTracks) return
+                  provider.getMixTracks(mixKey)
                     .then(tracks => {
                       if (tracks.length === 0) return
                       const shuffled = [...tracks].sort(() => Math.random() - 0.5)
@@ -236,20 +231,20 @@ export function Home() {
       {recentlyAdded.length > 0 && (
         <ScrollRow title="Recently Added" titleHref="/recently-added" restoreKey="home-recently-added">
           {recentlyAdded.slice(0, 30).map((item, idx) => {
-            const info = getMediaInfo(item, baseUrl, token)
+            const info = getMediaInfo(item)
             if (!info) return null
             const usePriority = info.itemType === "artist" || info.itemType === "album"
             const Card = usePriority ? PriorityMediaCard : MediaCard
             return (
               <Card
-                key={"rating_key" in item ? (item.rating_key || `ra-${idx}`) : idx}
+                key={`${item.id}-${idx}`}
                 title={info.title}
                 desc={info.desc}
                 thumb={info.thumb}
                 isArtist={info.isArtist}
                 href={info.href ?? undefined}
                 prefetch={makePrefetch(info)}
-                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
+                onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
                 onContextMenu={makeOnContextMenu(item)}
                 artistName={"artistName" in info ? info.artistName : undefined}
                 albumName={"albumName" in info ? info.albumName : undefined}
@@ -261,42 +256,42 @@ export function Home() {
       )}
 
       {hubs.map(hub => {
-        if (hub.metadata.length === 0) return null
+        if (hub.items.length === 0) return null
         // Skip mixes hubs — already rendered as the pinned top section
-        if (hub.hub_identifier.startsWith("music.mixes")) return null
+        if (hub.identifier.startsWith("music.mixes")) return null
         // Skip recently-added hubs — identifier-based + title fallback for server-variant identifiers
-        if (hub.hub_identifier.toLowerCase().includes("recently.added") ||
-            hub.hub_identifier.toLowerCase().includes("recentlyadded") ||
+        if (hub.identifier.toLowerCase().includes("recently.added") ||
+            hub.identifier.toLowerCase().includes("recentlyadded") ||
             hub.title.toLowerCase().startsWith("recently added")) return null
         // Skip station hubs — already shown on the /stations page
-        if (hub.hub_identifier.toLowerCase().includes("station")) return null
-        const isAnniversary = hub.hub_identifier.includes("anniversary")
+        if (hub.identifier.toLowerCase().includes("station")) return null
+        const isAnniversary = hub.identifier.includes("anniversary")
         // "On This Day" — sort oldest → newest and show the release year.
         const items = isAnniversary
-          ? [...hub.metadata].sort((a, b) => getItemYear(a) - getItemYear(b))
-          : hub.metadata
+          ? [...hub.items].sort((a, b) => getItemYear(a) - getItemYear(b))
+          : hub.items
         return (
           <ScrollRow
-            key={hub.hub_identifier}
+            key={hub.identifier}
             title={hub.title}
-            titleHref={"/hub/" + encodeURIComponent(hub.hub_identifier)}
-            restoreKey={`home-hub-${hub.hub_identifier}`}
+            titleHref={"/hub/" + encodeURIComponent(hub.identifier)}
+            restoreKey={`home-hub-${hub.identifier}`}
           >
             {items.slice(0, 30).map((item, idx) => {
-              const info = getMediaInfo(item, baseUrl, token, { showYear: isAnniversary })
+              const info = getMediaInfo(item, { showYear: isAnniversary })
               if (!info) return null
               const usePriority = info.itemType === "artist" || info.itemType === "album"
               const Card = usePriority ? PriorityMediaCard : MediaCard
               return (
                 <Card
-                  key={"rating_key" in item ? (item.rating_key || `hub-${idx}`) : idx}
+                  key={`${item.id}-${idx}`}
                   title={info.title}
                   desc={info.desc}
                   thumb={info.thumb}
                   isArtist={info.isArtist}
                   href={info.href ?? undefined}
                   prefetch={makePrefetch(info)}
-                  onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, sectionUuid })}
+                  onPlay={makeOnPlay(item, { playTrack, playFromUri, playPlaylist, provider })}
                   onContextMenu={makeOnContextMenu(item)}
                   artistName={"artistName" in info ? info.artistName : undefined}
                   albumName={"albumName" in info ? info.albumName : undefined}

@@ -6,7 +6,7 @@ interface Props {
   active?: boolean
   subtitle?: string | null
   width?: number | string
-  align?: "left" | "right"
+  align?: "left" | "right" | "center"
   disabled?: boolean
   /** Pill-shaped button (auto-width) instead of the default square icon button */
   wide?: boolean
@@ -25,7 +25,7 @@ export default function PlayerPopover({
   children,
 }: Props) {
   const [isOpen, setIsOpen] = useState(false)
-  const [pos, setPos] = useState<{ bottom: number; left?: number; right?: number } | null>(null)
+  const [pos, setPos] = useState<{ bottom: number; left?: number; right?: number; centerX?: number } | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -40,11 +40,14 @@ export default function PlayerPopover({
     }
     const rect = buttonRef.current?.getBoundingClientRect()
     if (!rect) return
-    setPos(
-      align === "right"
-        ? { bottom: window.innerHeight - rect.top + 8, right: window.innerWidth - rect.right }
-        : { bottom: window.innerHeight - rect.top + 8, left: rect.left },
-    )
+    const bottom = window.innerHeight - rect.top + 8
+    if (align === "center") {
+      setPos({ bottom, centerX: rect.left + rect.width / 2 })
+    } else if (align === "right") {
+      setPos({ bottom, right: window.innerWidth - rect.right })
+    } else {
+      setPos({ bottom, left: rect.left })
+    }
     setIsOpen(true)
   }
 
@@ -80,7 +83,9 @@ export default function PlayerPopover({
           className="fixed z-[300] rounded-xl bg-app-card border border-[var(--border)] shadow-2xl select-none"
           style={{
             bottom: pos.bottom,
-            ...(pos.left !== undefined ? { left: pos.left } : { right: pos.right }),
+            ...(pos.centerX !== undefined
+              ? { left: pos.centerX, transform: "translateX(-50%)" }
+              : pos.left !== undefined ? { left: pos.left } : { right: pos.right }),
             width,
           }}
         >

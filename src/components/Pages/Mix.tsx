@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
-import { Link } from "wouter"
+import { Link, useLocation } from "wouter"
 import { useShallow } from "zustand/react/shallow"
-import { useConnectionStore, useLibraryStore, usePlayerStore, buildPlexImageUrl } from "../../stores"
-import { getMixTracks, searchLibrary, buildItemUri } from "../../lib/plex"
-import { formatMs, formatTotalMs, keyToId } from "../../lib/formatters"
+import { useLibraryStore, usePlayerStore } from "../../stores"
+import { useProviderStore } from "../../stores/providerStore"
+import { useCapability } from "../../hooks/useCapability"
+import { formatMs, formatTotalMs } from "../../lib/formatters"
 import { UltraBlur } from "../UltraBlur"
-import type { Track, Playlist } from "../../types/plex"
+import type { MusicTrack, MusicPlaylist } from "../../types/music"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,7 +17,7 @@ function mixTitleToArtistName(title: string): string {
   return title.replace(/\s+(Mix|Radio|Station|Mix Radio)$/i, "").trim()
 }
 
-function shuffleTracks(arr: Track[]): Track[] {
+function shuffleTracks(arr: MusicTrack[]): MusicTrack[] {
   return [...arr].sort(() => Math.random() - 0.5)
 }
 
@@ -28,9 +29,9 @@ const mixThumbCache = new Map<string, string>()
 // calls selectMix() before navigating to /mix.
 // ---------------------------------------------------------------------------
 
-let _selectedMix: (Playlist & { type: "playlist" }) | null = null
+let _selectedMix: MusicPlaylist | null = null
 
-export function selectMix(item: Playlist & { type: "playlist" }) {
+export function selectMix(item: MusicPlaylist) {
   _selectedMix = item
 }
 
@@ -39,16 +40,10 @@ export function selectMix(item: Playlist & { type: "playlist" }) {
 // ---------------------------------------------------------------------------
 
 export function MixPage() {
-  const [mixItem] = useState<(Playlist & { type: "playlist" }) | null>(() => _selectedMix)
-
-  const { musicSectionId, sectionUuid, baseUrl, token } = useConnectionStore(
-    useShallow(s => ({
-      musicSectionId: s.musicSectionId,
-      sectionUuid: s.sectionUuid,
-      baseUrl: s.baseUrl,
-      token: s.token,
-    }))
-  )
+  const [, navigate] = useLocation()
+  const hasMixTracks = useCapability("mixTracks")
+  const [mixItem] = useState<MusicPlaylist | null>(() => _selectedMix)
+  const provider = useProviderStore(s => s.provider)
 
   const { playTrack, playFromUri, addToQueue, currentTrack } = usePlayerStore(
     useShallow(s => ({
@@ -59,14 +54,18 @@ export function MixPage() {
     }))
   )
 
-  const [tracks, setTracks] = useState<Track[]>(() => {
-    if (!mixItem?.key) return []
+  if (!hasMixTracks) { navigate("/"); return null }
+
+  const mixKey = mixItem?.providerKey as string | undefined
+
+  const [tracks, setTracks] = useState<MusicTrack[]>(() => {
+    if (!mixKey) return []
     // Shuffle on mount so the displayed list is randomised immediately.
-    return shuffleTracks(useLibraryStore.getState().mixTracksCache[mixItem.key] ?? [])
+    return shuffleTracks(useLibraryStore.getState().mixTracksCache[mixKey] ?? [])
   })
   const [isLoading, setIsLoading] = useState(() => {
-    if (!mixItem?.key) return false
-    const cached = useLibraryStore.getState().mixTracksCache[mixItem.key]
+    if (!mixKey) return false
+    const cached = useLibraryStore.getState().mixTracksCache[mixKey]
     return !cached || cached.length === 0
   })
   const [artistThumb, setArtistThumb] = useState<string | null>(
@@ -76,11 +75,11 @@ export function MixPage() {
   // Unique artists derived from the loaded track list, preserving first-seen order.
   const artists = useMemo(() => {
     const seen = new Set<string>()
-    const result: { title: string; id: number }[] = []
+    const result: { title: string; id: string | null }[] = []
     for (const t of tracks) {
-      if (t.grandparent_title && !seen.has(t.grandparent_title)) {
-        seen.add(t.grandparent_title)
-        result.push({ title: t.grandparent_title, id: keyToId(t.grandparent_key) })
+      if (t.artistName && !seen.has(t.artistName)) {
+        seen.add(t.artistName)
+        result.push({ title: t.artistName, id: t.artistId })
       }
     }
     return result
@@ -89,39 +88,40 @@ export function MixPage() {
   // Fetch the track list for this mix (skipped if already pre-cached).
   // Cache hits are already shuffled and set via the useState initializer above.
   useEffect(() => {
-    if (!mixItem?.key) return
-    const cached = useLibraryStore.getState().mixTracksCache[mixItem.key]
+    if (!mixKey || !provider) return
+    const cached = useLibraryStore.getState().mixTracksCache[mixKey]
     if (cached && cached.length > 0) {
       setIsLoading(false)
       return
     }
     setIsLoading(true)
-    getMixTracks(mixItem.key)
+    const fetch = provider.getMixTracks?.(mixKey)
+    if (!fetch) { setIsLoading(false); return }
+    fetch
       .then(t => setTracks(shuffleTracks(t)))
       .catch(() => setTracks([]))
       .finally(() => setIsLoading(false))
-  }, [mixItem?.key])
+  }, [mixKey, provider])
 
   // Look up the artist thumbnail (e.g. "Ado Mix" → search for "Ado").
   useEffect(() => {
-    if (!mixItem || !musicSectionId) return
+    if (!mixItem || !provider) return
     const cached = mixThumbCache.get(mixItem.title)
     if (cached) { setArtistThumb(cached); return }
     const artistName = mixTitleToArtistName(mixItem.title)
     if (!artistName) return
-    searchLibrary(musicSectionId, artistName, "artist")
+    provider.search(artistName, "artist")
       .then(results => {
         const artist =
           results.find(r => r.type === "artist" && r.title.toLowerCase() === artistName.toLowerCase()) ??
           results.find(r => r.type === "artist")
-        if (artist && artist.type === "artist" && artist.thumb) {
-          const url = buildPlexImageUrl(baseUrl, token, artist.thumb)
-          mixThumbCache.set(mixItem.title, url)
-          setArtistThumb(url)
+        if (artist && artist.type === "artist" && artist.thumbUrl) {
+          mixThumbCache.set(mixItem.title, artist.thumbUrl)
+          setArtistThumb(artist.thumbUrl)
         }
       })
       .catch(() => {})
-  }, [mixItem?.title, musicSectionId])
+  }, [mixItem?.title, provider])
 
   if (!mixItem) {
     return (
@@ -132,9 +132,7 @@ export function MixPage() {
     )
   }
 
-  const artPath = mixItem.thumb ?? mixItem.composite
-  const thumbUrl = artPath ? buildPlexImageUrl(baseUrl, token, artPath) : null
-  const displayThumb = artistThumb ?? thumbUrl
+  const displayThumb = artistThumb ?? mixItem.thumbUrl
   const totalMs = tracks.reduce((sum, t) => sum + t.duration, 0)
 
   function handlePlayInOrder() {
@@ -149,8 +147,8 @@ export function MixPage() {
   }
 
   function handlePlayRadio() {
-    if (!sectionUuid || !mixItem.key) return
-    void playFromUri(buildItemUri(sectionUuid, mixItem.key))
+    if (!mixKey || !provider?.buildItemUri) return
+    void playFromUri(provider.buildItemUri(mixKey))
   }
 
   return (
@@ -237,7 +235,7 @@ export function MixPage() {
                 {/* Continuous radio — server generates an endless stream */}
                 <button
                   onClick={handlePlayRadio}
-                  disabled={!sectionUuid || !mixItem.key}
+                  disabled={!mixKey || !provider?.buildItemUri}
                   title="Play as continuous radio"
                   className="flex h-11 w-11 items-center justify-center rounded-full bg-black/30 backdrop-blur-sm border border-white/10 text-accent hover:bg-black/45 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -282,15 +280,11 @@ export function MixPage() {
             ))}
 
             {tracks.map((track, idx) => {
-              const rawThumb = track.thumb || track.parent_thumb || null
-              const trackThumb = rawThumb ? buildPlexImageUrl(baseUrl, token, rawThumb) : null
-              const albumId = keyToId(track.parent_key)
-              const artistId = keyToId(track.grandparent_key)
-              const isActive = currentTrack?.rating_key === track.rating_key
+              const isActive = currentTrack?.id === track.id
               return (
                 <tr
-                  key={`${track.rating_key}-${idx}`}
-                  className={`group cursor-pointer rounded ${isActive ? "bg-accent/5" : "hover:bg-accent/5"}`}
+                  key={`${track.id}-${idx}`}
+                  className={`group cursor-pointer rounded ${isActive ? "bg-hl-row" : "hover:bg-hl-row"}`}
                   onClick={() => void playTrack(track, tracks, mixItem.title, "/mix")}
                 >
                   <td className="p-2 text-center w-8">
@@ -323,8 +317,8 @@ export function MixPage() {
 
                   <td className="p-2">
                     <div className="flex items-center gap-3">
-                      {trackThumb ? (
-                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={trackThumb} alt="" />
+                      {track.thumbUrl ? (
+                        <img className="h-10 w-10 rounded-sm flex-shrink-0 object-cover" src={track.thumbUrl} alt="" />
                       ) : (
                         <div className="h-10 w-10 rounded-sm flex-shrink-0 bg-app-surface" />
                       )}
@@ -332,21 +326,21 @@ export function MixPage() {
                         <div className={`truncate ${isActive ? "text-accent" : "text-white"}`}>{track.title}</div>
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="truncate shrink min-w-0">
-                            {artistId ? (
+                            {track.artistId ? (
                               <Link
-                                href={`/artist/${artistId}`}
+                                href={`/artist/${track.artistId}`}
                                 className="text-gray-500 hover:text-white hover:underline transition-colors"
                                 onClick={e => e.stopPropagation()}
                               >
-                                {track.grandparent_title}
+                                {track.artistName}
                               </Link>
                             ) : (
-                              <span className="text-gray-500">{track.grandparent_title}</span>
+                              <span className="text-gray-500">{track.artistName}</span>
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                             <button
-                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-accent/10"
+                              className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-hl-menu"
                               title="Add to Queue"
                               onClick={e => { e.stopPropagation(); addToQueue([track]) }}
                             >
@@ -362,16 +356,16 @@ export function MixPage() {
                   </td>
 
                   <td className="p-2 truncate max-w-[200px]">
-                    {albumId ? (
+                    {track.albumId ? (
                       <Link
-                        href={`/album/${albumId}`}
+                        href={`/album/${track.albumId}`}
                         className="hover:text-white hover:underline transition-colors"
                         onClick={e => e.stopPropagation()}
                       >
-                        {track.parent_title}
+                        {track.albumName}
                       </Link>
                     ) : (
-                      track.parent_title
+                      track.albumName
                     )}
                   </td>
 

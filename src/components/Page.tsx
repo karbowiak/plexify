@@ -96,7 +96,7 @@ export function Page() {
 
         <Route path="/playlist/:id" key="playlist">
           {(params: { id?: string }) => {
-            const id = parseInt(params.id ?? "0", 10)
+            const id = params.id ?? ""
             return id ? <Playlist playlistId={id} /> : null
           }}
         </Route>
@@ -107,7 +107,7 @@ export function Page() {
 
         <Route path="/artist/:id" key="artist">
           {(params: { id?: string }) => {
-            const id = parseInt(params.id ?? "0", 10)
+            const id = params.id ?? ""
             return id ? <ArtistPage artistId={id} /> : null
           }}
         </Route>
@@ -130,7 +130,7 @@ export function Page() {
 
         <Route path="/album/:id" key="album">
           {(params: { id?: string }) => {
-            const id = parseInt(params.id ?? "0", 10)
+            const id = params.id ?? ""
             return id ? <AlbumPage albumId={id} /> : null
           }}
         </Route>
@@ -141,8 +141,8 @@ export function Page() {
           )}
         </Route>
 
-        <Route path="/settings" key="settings">
-          <SettingsPage />
+        <Route path="/settings/*?" key="settings">
+          {(params: { "*"?: string }) => <SettingsPage section={params["*"]} />}
         </Route>
 
         <Route path="/hub/:hubId" key="hub">

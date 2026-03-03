@@ -1,33 +1,43 @@
-import { buildItemUri } from "./plex"
-import type { PlexMedia, Track } from "../types/plex"
+import type { MusicItem, MusicTrack } from "../types/music"
+import type { MusicProvider } from "../providers/types"
 
 interface PlayStore {
-  playTrack: (track: Track, queue?: Track[], title?: string, sourceUri?: string | null) => Promise<void>
+  playTrack: (track: MusicTrack, queue?: MusicTrack[], title?: string, sourceUri?: string | null) => Promise<void>
   playFromUri: (uri: string, forceShuffle?: boolean, title?: string, sourceUri?: string | null) => Promise<void>
-  playPlaylist: (playlistId: number, leafCount: number, title: string, sourceUri: string | null) => Promise<void>
-  sectionUuid: string | null
+  playPlaylist: (playlistId: string, totalCount: number, title: string, sourceUri: string | null) => Promise<void>
+  provider: MusicProvider | null
 }
 
 /**
- * Returns an onPlay callback for a PlexMedia item, or undefined if the item
- * type is not playable (or sectionUuid is not available).
+ * Returns an onPlay callback for a MusicItem, or undefined if the item
+ * type is not playable (or provider is not available).
  */
-export function makeOnPlay(item: PlexMedia, store: PlayStore): (() => void) | undefined {
-  const { playTrack, playFromUri, playPlaylist, sectionUuid } = store
+export function makeOnPlay(item: MusicItem, store: PlayStore): (() => void) | undefined {
+  const { playTrack, playFromUri, playPlaylist, provider } = store
   if (item.type === "track") {
-    return () => void playTrack(item, [item], item.grandparent_title, null)
+    return () => void playTrack(item, [item], item.artistName, null)
   }
-  if (!sectionUuid) return undefined
+  if (!provider) return undefined
   if (item.type === "album") {
-    const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-    return () => void playFromUri(uri, false, item.title, `/album/${item.rating_key}`)
+    if (provider.buildItemUri) {
+      const uri = provider.buildItemUri(`/library/metadata/${item.id}`)
+      if (uri) return () => void playFromUri(uri, false, item.title, `/album/${item.id}`)
+    }
+    return () => void provider.getAlbumTracks(item.id).then(tracks => {
+      if (tracks.length > 0) playTrack(tracks[0], tracks, item.title, `/album/${item.id}`)
+    })
   }
   if (item.type === "artist") {
-    const uri = buildItemUri(sectionUuid, `/library/metadata/${item.rating_key}`)
-    return () => void playFromUri(uri, false, item.title, `/artist/${item.rating_key}`)
+    if (provider.buildItemUri) {
+      const uri = provider.buildItemUri(`/library/metadata/${item.id}`)
+      if (uri) return () => void playFromUri(uri, false, item.title, `/artist/${item.id}`)
+    }
+    return () => void provider.getArtistPopularTracks(item.id).then(tracks => {
+      if (tracks.length > 0) playTrack(tracks[0], tracks, item.title, `/artist/${item.id}`)
+    })
   }
   if (item.type === "playlist") {
-    return () => void playPlaylist(item.rating_key, item.leaf_count, item.title, `/playlist/${item.rating_key}`)
+    return () => void playPlaylist(item.id, item.trackCount, item.title, `/playlist/${item.id}`)
   }
   return undefined
 }

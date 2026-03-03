@@ -1,20 +1,20 @@
 import { useCallback } from "react"
 import { useContextMenuStore, type ContextMenuType } from "../stores/contextMenuStore"
-import type { Track, Album, Artist } from "../types/plex"
+import type { MusicTrack, MusicAlbum, MusicArtist, MusicPlaylist } from "../types/music"
 
-type ContextMenuData = Track | Album | Artist
+type ContextMenuData = MusicTrack | MusicAlbum | MusicArtist | MusicPlaylist
 
 /**
  * Unified hook for context menu integration.
  *
  * Returns:
  * - `handler(type, data)` — builds an `onContextMenu` React handler
- * - `isTarget(ratingKey)` — true if this key's row should be highlighted
+ * - `isTarget(id)` — true if this id's row should be highlighted
  */
 export function useContextMenu() {
   const show = useContextMenuStore(s => s.show)
   const open = useContextMenuStore(s => s.open)
-  const targetKey = useContextMenuStore(s => (s.data as any)?.rating_key ?? null)
+  const targetId = useContextMenuStore(s => (s.data as any)?.id ?? null)
 
   const handler = useCallback(
     (type: ContextMenuType, data: ContextMenuData) =>
@@ -27,8 +27,8 @@ export function useContextMenu() {
   )
 
   const isTarget = useCallback(
-    (ratingKey: number) => open && targetKey === ratingKey,
-    [open, targetKey],
+    (id: string) => open && targetId === id,
+    [open, targetId],
   )
 
   return { handler, isTarget }

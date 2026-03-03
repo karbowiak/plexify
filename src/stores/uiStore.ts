@@ -3,7 +3,7 @@ import { create } from "zustand"
 interface UIState {
   showCreatePlaylist: boolean
   /** Item IDs to add to the newly created playlist after the create dialog completes. */
-  pendingPlaylistItemIds: number[] | null
+  pendingPlaylistItemIds: string[] | null
   isRefreshing: boolean
   /** Incremented by the Refresh button — pages add this to their useEffect deps to re-run fetches. */
   pageRefreshKey: number
@@ -19,7 +19,7 @@ interface UIState {
   queueActiveTab: "queue" | "lyrics"
 
   setShowCreatePlaylist: (v: boolean) => void
-  setPendingPlaylistItemIds: (ids: number[] | null) => void
+  setPendingPlaylistItemIds: (ids: string[] | null) => void
   setIsRefreshing: (v: boolean) => void
   incrementPageRefreshKey: () => void
   setQueueOpen: (v: boolean) => void
@@ -41,7 +41,7 @@ export const useUIStore = create<UIState>((set) => ({
   queueActiveTab: "queue",
 
   setShowCreatePlaylist: (v: boolean) => set({ showCreatePlaylist: v }),
-  setPendingPlaylistItemIds: (ids: number[] | null) => set({ pendingPlaylistItemIds: ids }),
+  setPendingPlaylistItemIds: (ids: string[] | null) => set({ pendingPlaylistItemIds: ids }),
   setIsRefreshing: (v: boolean) => set({ isRefreshing: v }),
   incrementPageRefreshKey: () => set(s => ({ pageRefreshKey: s.pageRefreshKey + 1 })),
   setQueueOpen: (v: boolean) => set({ isQueueOpen: v }),

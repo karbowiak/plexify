@@ -22,6 +22,18 @@
   --border:        rgba(255, 255, 255, 0.10);
   --border-subtle: rgba(255, 255, 255, 0.05);
 
+  /* Highlight opacities — updated by highlightStore.ts */
+  --hl-card-opacity:  0.06;
+  --hl-row-opacity:   0.05;
+  --hl-menu-opacity:  0.10;
+  --hl-queue-opacity: 0.05;
+
+  /* Composed highlight colours — auto-update when accent or opacity changes */
+  --hl-card:  rgb(var(--accent-rgb) / var(--hl-card-opacity));
+  --hl-row:   rgb(var(--accent-rgb) / var(--hl-row-opacity));
+  --hl-menu:  rgb(var(--accent-rgb) / var(--hl-menu-opacity));
+  --hl-queue: rgb(var(--accent-rgb) / var(--hl-queue-opacity));
+
   /* Font — overridden by fontStore.ts */
   --font-family: CircularSp, CircularSp-Arab, CircularSp-Hebr, CircularSp-Cyrl, CircularSp-Grek, CircularSp-Deva, sans-serif;
 }

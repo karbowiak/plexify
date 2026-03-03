@@ -6,26 +6,32 @@
  * shows best currently-known image, upgrades on re-render when higher-priority
  * source resolves).
  *
+ * When a metadata source wins, the hook builds a semantic image URL using
+ * buildImageUrl() with the entity info embedded — the Rust handler then
+ * fetches + caches the CDN image.
+ *
  * Hooks use stable Zustand selectors (returning existing object references, not
  * new objects) to avoid the infinite-loop issue documented in MEMORY.md.
  */
 
 import { useEffect } from "react"
 import { useMetadataSourceStore } from "../stores/metadataSourceStore"
-import { useDeezerMetadataStore } from "../stores/deezerMetadataStore"
-import { useItunesMetadataStore } from "../stores/itunesMetadataStore"
-import { buildMetaImageUrl } from "../lib/metadataImage"
+import { useDeezerMetadataStore } from "../backends/deezer/store"
+import { useItunesMetadataStore } from "../backends/apple/store"
+import { buildImageUrl } from "../lib/imageUrl"
 
 /**
  * Returns the best available image for an artist per the current source priority.
  * Only Plex and Deezer have artist images; Last.fm and Apple are always skipped.
  *
  * @param artistName  Artist name used for external lookups (null = skip all external)
- * @param plexThumb   Plex artist.thumb URL (already a pleximg:// URL or null)
+ * @param plexThumb   Plex artist.thumb URL (already an image:// URL or null)
+ * @param artistId    Entity ID for building semantic URLs
  */
 export function useArtistImage(
   artistName: string | null,
   plexThumb: string | null,
+  artistId?: string | null,
 ): string | null {
   const priority = useMetadataSourceStore(s => s.priority)
 
@@ -47,7 +53,10 @@ export function useArtistImage(
 
   for (const source of priority) {
     if (source === "plex" && plexThumb) return plexThumb
-    if (source === "deezer" && deezerUrl) return buildMetaImageUrl(deezerUrl)
+    if (source === "deezer" && deezerUrl) {
+      const id = artistId ?? key
+      return id ? buildImageUrl("artist", id, deezerUrl, artistName) : null
+    }
     // "lastfm" and "apple" have no artist images — skip
   }
 
@@ -61,12 +70,14 @@ export function useArtistImage(
  *
  * @param artistName  Artist name (for cache key)
  * @param albumName   Album title (for cache key)
- * @param plexThumb   Plex album.thumb URL (already a pleximg:// URL or null)
+ * @param plexThumb   Plex album.thumb URL (already an image:// URL or null)
+ * @param albumId     Entity ID for building semantic URLs
  */
 export function useAlbumImage(
   artistName: string | null,
   albumName: string | null,
   plexThumb: string | null,
+  albumId?: string | null,
 ): string | null {
   const priority = useMetadataSourceStore(s => s.priority)
 
@@ -95,8 +106,14 @@ export function useAlbumImage(
 
   for (const source of priority) {
     if (source === "plex"   && plexThumb) return plexThumb
-    if (source === "deezer" && deezerUrl) return buildMetaImageUrl(deezerUrl)
-    if (source === "apple"  && appleUrl)  return buildMetaImageUrl(appleUrl)
+    if (source === "deezer" && deezerUrl) {
+      const id = albumId ?? key
+      return id ? buildImageUrl("album", id, deezerUrl, albumName, artistName) : null
+    }
+    if (source === "apple" && appleUrl) {
+      const id = albumId ?? key
+      return id ? buildImageUrl("album", id, appleUrl, albumName, artistName) : null
+    }
     // "lastfm" has no album images — skip
   }
 
