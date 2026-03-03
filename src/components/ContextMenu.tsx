@@ -295,7 +295,7 @@ export function ContextMenu() {
         <div
           ref={menuRef}
           style={{ left: menuPos.left, top: menuPos.top }}
-          className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-[#1a1a1f] shadow-2xl py-1 text-sm select-none"
+          className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-app-card shadow-2xl py-1 text-sm select-none"
         >
           <Item icon={IconPlay} label="Play" onClick={doPlayPlaylist} />
           <Item icon={IconShuffle} label="Play shuffled" onClick={doShufflePlaylist} />
@@ -331,7 +331,7 @@ export function ContextMenu() {
       <div
         ref={menuRef}
         style={{ left: menuPos.left, top: menuPos.top }}
-        className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-[#1a1a1f] shadow-2xl py-1 text-sm select-none"
+        className="fixed z-[9999] w-60 rounded-lg border border-white/10 bg-app-card shadow-2xl py-1 text-sm select-none"
       >
         {/* Play */}
         <Item

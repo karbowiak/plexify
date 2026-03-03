@@ -14,6 +14,8 @@ pub struct TrackMeta {
     /// Track gain from Plex loudness analysis in dB (e.g. -14.1).
     /// None if the server hasn't analysed this track yet.
     pub gain_db: Option<f32>,
+    /// When true, skip crossfade for this track (e.g. podcast episodes).
+    pub skip_crossfade: bool,
 }
 
 /// Commands sent from the Tauri thread to the decoder thread

@@ -302,6 +302,12 @@ impl AudioEngine {
             .unwrap_or_default()
     }
 
+    /// Store a backend-configured HTTP client for audio fetching.
+    /// The cache layer will use this client instead of the bare default.
+    pub fn set_backend_http(&self, client: reqwest::Client) {
+        *self.shared.backend_http.lock().unwrap() = Some(client);
+    }
+
     /// Update the maximum audio cache size. Pass 0 for unlimited.
     pub fn set_max_cache_bytes(&self, max_bytes: u64) {
         self.shared.max_cache_bytes.store(max_bytes, Ordering::Relaxed);

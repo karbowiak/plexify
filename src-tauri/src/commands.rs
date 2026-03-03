@@ -56,6 +56,7 @@ pub async fn connect_plex(
     base_url: String,
     token: String,
     state: State<'_, PlexState>,
+    audio_state: State<'_, AudioEngineState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Manager;
@@ -66,12 +67,12 @@ pub async fn connect_plex(
     let client_id = if settings.client_id.is_empty() {
         "plexify-client".to_string()
     } else {
-        settings.client_id
+        settings.client_id.clone()
     };
     let config = PlexClientConfig {
         base_url,
-        token,
-        client_id,
+        token: token.clone(),
+        client_id: client_id.clone(),
         // Plex servers on the LAN commonly use self-signed or Plex-issued
         // certificates that may not validate against the system trust store.
         accept_invalid_certs: true,
@@ -84,6 +85,40 @@ pub async fn connect_plex(
     }
     let mut guard = state.0.lock().await;
     *guard = Some(client);
+
+    // Build a matching HTTP client for audio fetching with the same Plex
+    // identification headers. This makes the audio cache layer backend-agnostic —
+    // it uses whatever client the active backend provides.
+    {
+        use reqwest::header::{HeaderMap, HeaderValue};
+
+        let platform = std::env::consts::OS;
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Plex-Product",     HeaderValue::from_static("Plexify"));
+        headers.insert("X-Plex-Version",     HeaderValue::from_static(env!("CARGO_PKG_VERSION")));
+        headers.insert("X-Plex-Platform",    HeaderValue::from_str(platform).unwrap_or(HeaderValue::from_static("Desktop")));
+        headers.insert("X-Plex-Device",      HeaderValue::from_static("Desktop"));
+        headers.insert("X-Plex-Device-Name", HeaderValue::from_static("Plexify"));
+        if let Ok(v) = HeaderValue::from_str(&client_id) {
+            headers.insert("X-Plex-Client-Identifier", v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&token) {
+            headers.insert("X-Plex-Token", v);
+        }
+
+        let audio_client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(120))
+            .default_headers(headers)
+            .build()
+            .map_err(|e| format!("Failed to build audio HTTP client: {e}"))?;
+
+        let guard = audio_state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+        if let Some(engine) = guard.as_ref() {
+            engine.set_backend_http(audio_client);
+        }
+    }
+
     Ok(())
 }
 
@@ -1004,6 +1039,7 @@ pub fn audio_play(
     parent_key: String,
     track_index: i64,
     gain_db: Option<f32>,
+    skip_crossfade: Option<bool>,
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
     audio_send(&state, crate::audio::AudioCommand::Play(crate::audio::TrackMeta {
@@ -1014,6 +1050,7 @@ pub fn audio_play(
         parent_key,
         track_index,
         gain_db,
+        skip_crossfade: skip_crossfade.unwrap_or(false),
     }))
 }
 
@@ -1069,6 +1106,7 @@ pub fn audio_preload_next(
     parent_key: String,
     track_index: i64,
     gain_db: Option<f32>,
+    skip_crossfade: Option<bool>,
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
     audio_send(&state, crate::audio::AudioCommand::PreloadNext(crate::audio::TrackMeta {
@@ -1079,6 +1117,7 @@ pub fn audio_preload_next(
         parent_key,
         track_index,
         gain_db,
+        skip_crossfade: skip_crossfade.unwrap_or(false),
     }))
 }
 
@@ -2036,6 +2075,104 @@ pub fn db_get_playlist_tracks(
 ) -> Result<Vec<db::playlists::PlaylistTrackRow>, String> {
     let conn = db_conn!(db);
     db::playlists::get_tracks(&conn, playlist_id)
+}
+
+// ---------------------------------------------------------------------------
+// Radio Browser (internet radio)
+// ---------------------------------------------------------------------------
+
+/// Search internet radio stations by name, tag, country, etc.
+#[tauri::command]
+pub async fn radiobrowser_search(
+    params: crate::radiobrowser::SearchParams,
+) -> Result<Vec<crate::radiobrowser::RadioStation>, String> {
+    crate::radiobrowser::search_stations(params)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Get top stations by category ("topvote", "topclick", "lastclick").
+#[tauri::command]
+pub async fn radiobrowser_top_stations(
+    category: String,
+    count: u32,
+) -> Result<Vec<crate::radiobrowser::RadioStation>, String> {
+    crate::radiobrowser::top_stations(&category, count)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Get all countries with station counts.
+#[tauri::command]
+pub async fn radiobrowser_countries() -> Result<Vec<crate::radiobrowser::RadioCountry>, String> {
+    crate::radiobrowser::get_countries()
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Get popular tags/genres with station counts.
+#[tauri::command]
+pub async fn radiobrowser_tags(
+    limit: u32,
+) -> Result<Vec<crate::radiobrowser::RadioTag>, String> {
+    crate::radiobrowser::get_tags(limit)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Register a click on a station for community stats (fire-and-forget).
+#[tauri::command]
+pub async fn radiobrowser_click(uuid: String) -> Result<(), String> {
+    crate::radiobrowser::register_click(&uuid)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Podcasts (iTunes Search + RSS)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn podcast_search(
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::podcast::PodcastSearchResult>, String> {
+    crate::podcast::search_podcasts(&query, limit.unwrap_or(20))
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+#[tauri::command]
+pub async fn podcast_get_top(
+    genre_id: Option<u32>,
+    limit: Option<u32>,
+) -> Result<Vec<crate::podcast::PodcastTopChart>, String> {
+    crate::podcast::get_top_podcasts(genre_id, limit.unwrap_or(20))
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+#[tauri::command]
+pub async fn podcast_get_feed(
+    feed_url: String,
+) -> Result<crate::podcast::PodcastDetail, String> {
+    crate::podcast::get_podcast_feed(&feed_url)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+#[tauri::command]
+pub async fn podcast_lookup(
+    itunes_id: u64,
+) -> Result<Option<crate::podcast::PodcastSearchResult>, String> {
+    crate::podcast::lookup_podcast(itunes_id)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+#[tauri::command]
+pub fn podcast_get_categories() -> Vec<crate::podcast::PodcastCategory> {
+    crate::podcast::get_podcast_categories()
 }
 
 // ---------------------------------------------------------------------------

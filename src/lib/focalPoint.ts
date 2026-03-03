@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react"
 
 /**
- * Detect the most visually interesting point in an image using canvas pixel sampling.
+ * Detect the most visually interesting point in an image using multi-signal
+ * saliency analysis on a low-resolution canvas.
  *
- * Algorithm: fetch the image as a blob (avoids canvas CORS tainting), draw it at
- * low resolution, compute the saturation of each pixel, then find the weighted
- * centroid of the most saturated region. A mild center-bias discourages edge
- * artefacts in mono-colour backgrounds.
+ * Signals (weighted):
+ *  - Edge density (Sobel-like gradients on luminance) — 0.45
+ *  - Local luminance contrast (3×3 neighborhood) — 0.35
+ *  - Saturation (max-min RGB) — 0.20
+ *  - Skin-tone boost (1.5× for pixels in common skin-tone RGB ranges)
+ *  - Position bias: gentle upper-portion vertical bias + mild horizontal center bias
  *
- * Returns {x, y} in the 0–1 range (relative to image dimensions).
+ * Returns {x, y} in the 0–1 range, clamped to 0.10–0.90 (x) / 0.15–0.85 (y).
  * Falls back to {0.5, 0.5} on any error.
  */
 export async function detectFocalPoint(imageUrl: string): Promise<{ x: number; y: number }> {
@@ -23,7 +26,7 @@ export async function detectFocalPoint(imageUrl: string): Promise<{ x: number; y
       img.onload = () => {
         if (blobUrl) URL.revokeObjectURL(blobUrl)
 
-        const SIZE = 64
+        const SIZE = 100
         const canvas = document.createElement("canvas")
         canvas.width = SIZE
         canvas.height = SIZE
@@ -33,25 +36,58 @@ export async function detectFocalPoint(imageUrl: string): Promise<{ x: number; y
         ctx.drawImage(img, 0, 0, SIZE, SIZE)
         const { data } = ctx.getImageData(0, 0, SIZE, SIZE)
 
+        // Pass 1: compute luminance for all pixels
+        const lum = new Float32Array(SIZE * SIZE)
+        for (let i = 0; i < SIZE * SIZE; i++) {
+          const off = i * 4
+          lum[i] = 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2]
+        }
+
         let weightedX = 0
         let weightedY = 0
         let totalWeight = 0
 
-        for (let py = 0; py < SIZE; py++) {
-          for (let px = 0; px < SIZE; px++) {
-            const i = (py * SIZE + px) * 4
-            const r = data[i]
-            const g = data[i + 1]
-            const b = data[i + 2]
-            // Saturation (colorfulness) as the primary saliency signal.
-            const max = Math.max(r, g, b)
-            const min = Math.min(r, g, b)
-            const saturation = max - min
-            // Mild center-bias to avoid fixating on colorful edges.
-            const nx = (px / SIZE - 0.5) * 2  // -1..1
-            const ny = (py / SIZE - 0.5) * 2  // -1..1
-            const centerBias = 1 - 0.25 * Math.sqrt(nx * nx + ny * ny)
-            const weight = saturation * Math.max(0, centerBias)
+        // Pass 2: compute saliency for each pixel (skip 1px border for neighbor access)
+        for (let py = 1; py < SIZE - 1; py++) {
+          for (let px = 1; px < SIZE - 1; px++) {
+            const idx = py * SIZE + px
+            const off = idx * 4
+            const r = data[off]
+            const g = data[off + 1]
+            const b = data[off + 2]
+
+            // Edge density (Sobel-like gradient magnitude on luminance)
+            const gx = -lum[idx - SIZE - 1] - 2 * lum[idx - 1] - lum[idx + SIZE - 1]
+                       + lum[idx - SIZE + 1] + 2 * lum[idx + 1] + lum[idx + SIZE + 1]
+            const gy = -lum[idx - SIZE - 1] - 2 * lum[idx - SIZE] - lum[idx - SIZE + 1]
+                       + lum[idx + SIZE - 1] + 2 * lum[idx + SIZE] + lum[idx + SIZE + 1]
+            const edgeMag = Math.sqrt(gx * gx + gy * gy)
+
+            // Local luminance contrast (difference from 3×3 neighborhood mean)
+            const neighborSum = lum[idx - SIZE - 1] + lum[idx - SIZE] + lum[idx - SIZE + 1]
+                              + lum[idx - 1]                          + lum[idx + 1]
+                              + lum[idx + SIZE - 1] + lum[idx + SIZE] + lum[idx + SIZE + 1]
+            const neighborMean = neighborSum / 8
+            const localContrast = Math.abs(lum[idx] - neighborMean)
+
+            // Saturation
+            const saturation = Math.max(r, g, b) - Math.min(r, g, b)
+
+            // Skin-tone boost
+            const isSkinTone = r > 80 && r > g && g > b && (r - g) > 15 && (r - b) > 25
+            const skinBoost = isSkinTone ? 1.5 : 1.0
+
+            // Position bias
+            const ny = py / SIZE        // 0..1 from top
+            const nx = (px / SIZE - 0.5) * 2  // -1..1 from center
+            const yBias = 1.0 - 0.4 * Math.max(0, ny - 0.2)
+            const xBias = 1.0 - 0.15 * Math.abs(nx)
+            const posBias = xBias * yBias
+
+            // Combine signals
+            const saliency = (0.45 * edgeMag + 0.35 * localContrast + 0.20 * saturation) * skinBoost
+            const weight = saliency * posBias
+
             weightedX += px * weight
             weightedY += py * weight
             totalWeight += weight
@@ -59,9 +95,12 @@ export async function detectFocalPoint(imageUrl: string): Promise<{ x: number; y
         }
 
         if (totalWeight === 0) { resolve({ x: 0.5, y: 0.5 }); return }
+
+        const rawX = weightedX / totalWeight / SIZE
+        const rawY = weightedY / totalWeight / SIZE
         resolve({
-          x: weightedX / totalWeight / SIZE,
-          y: weightedY / totalWeight / SIZE,
+          x: Math.max(0.10, Math.min(0.90, rawX)),
+          y: Math.max(0.15, Math.min(0.85, rawY)),
         })
       }
 

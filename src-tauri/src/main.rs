@@ -10,6 +10,8 @@ mod lastfm;
 mod mediasession;
 mod plex;
 mod plextv;
+mod podcast;
+mod radiobrowser;
 
 use commands::{AudioEngineState, PlexState};
 use mediasession::MediaSessionState;
@@ -463,6 +465,18 @@ pub fn run() {
             commands::db_get_playlists,
             commands::db_add_playlist_track,
             commands::db_get_playlist_tracks,
+            // Radio Browser (internet radio)
+            commands::radiobrowser_search,
+            commands::radiobrowser_top_stations,
+            commands::radiobrowser_countries,
+            commands::radiobrowser_tags,
+            commands::radiobrowser_click,
+            // Podcasts (iTunes + RSS)
+            commands::podcast_search,
+            commands::podcast_get_top,
+            commands::podcast_get_feed,
+            commands::podcast_lookup,
+            commands::podcast_get_categories,
             // Generic HTTP proxy
             commands::http_get_json,
         ])

@@ -15,6 +15,9 @@ import { StationsPage } from "./Pages/Stations"
 import { HubPage } from "./Pages/HubPage"
 import { RecentlyAddedPage } from "./Pages/RecentlyAddedPage"
 import { TagPage } from "./Pages/TagPage"
+import { InternetRadioPage } from "./Pages/InternetRadio"
+import { PodcastsPage } from "./Pages/Podcasts"
+import { PodcastDetailPage } from "./Pages/PodcastDetail"
 // MixPage uses module-level selectMix() state — no URL param needed
 import clsx from "clsx"
 import { TopBar } from "./TopBar"
@@ -42,10 +45,13 @@ const bg = {
   album:      "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
   stations:   "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
   radio:      "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
+  "internet-radio": "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
+  podcasts:   "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
+  podcast:    "bg-gradient-to-b from-[var(--bg-base)] from-10% via-[var(--bg-base)] via-40% to-[var(--bg-base)] to-90%",
   settings:   "bg-[var(--bg-base)]",
 }
 
-const NO_PADDING_ROUTES = new Set(["playlist", "mix", "artist", "album", "collection", "settings"])
+const NO_PADDING_ROUTES = new Set(["playlist", "mix", "artist", "album", "collection", "settings", "internet-radio", "podcast"])
 
 export function Page() {
   const [location] = useLocation()
@@ -74,7 +80,7 @@ export function Page() {
         ref={scrollRef}
         onScroll={e => verticalScrollPositions.set(location, e.currentTarget.scrollTop)}
         className={clsx(
-          "flex-1 overflow-auto border-[#413a43] transition-colors scrollbar scrollbar-track-transparent scrollbar-thumb-[#636363] scrollbar-track-rounded-lg scrollbar-w-3 hover:scrollbar-thumb-[#8f8f8f] dark:border-neutral-600",
+          "flex-1 overflow-auto border-[var(--border)] transition-colors scrollbar scrollbar-track-transparent scrollbar-thumb-[var(--scrollbar-thumb)] scrollbar-track-rounded-lg scrollbar-w-3 hover:scrollbar-thumb-[var(--scrollbar-thumb-hover)]",
           hasPadding ? "p-8" : undefined
         )}
       >
@@ -126,6 +132,25 @@ export function Page() {
 
         <Route path="/stations" key="stations">
           <StationsPage />
+        </Route>
+
+        <Route path="/internet-radio" key="internet-radio">
+          <InternetRadioPage />
+        </Route>
+
+        <Route path="/podcasts" key="podcasts">
+          <PodcastsPage />
+        </Route>
+
+        <Route path="/podcast/:encoded" key="podcast">
+          {(params: { encoded?: string }) => {
+            try {
+              const url = params.encoded ? atob(params.encoded) : ""
+              return url ? <PodcastDetailPage feedUrl={url} /> : null
+            } catch {
+              return null
+            }
+          }}
         </Route>
 
         <Route path="/album/:id" key="album">

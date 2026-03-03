@@ -18,7 +18,7 @@ export function WindowTitleBar() {
   return (
     <div
       data-tauri-drag-region
-      className="flex h-8 shrink-0 select-none items-center justify-between bg-[#1a1a1a]"
+      className="flex h-8 shrink-0 select-none items-center justify-between bg-app-bg"
     >
       {/* App label */}
       <span data-tauri-drag-region className="pl-3 text-xs font-semibold text-white/70">

@@ -88,6 +88,9 @@ pub struct DecoderShared {
     pub current_device_name: Mutex<String>,
     /// Crossfade mixing style (0=Smooth, 1=DjFilter, 2=EchoOut, 3=HardCut).
     pub crossfade_style: AtomicU64,
+    /// HTTP client configured by the active backend (e.g. Plex headers + auth).
+    /// When set, the cache layer uses this instead of the bare default client.
+    pub backend_http: Mutex<Option<reqwest::Client>>,
 }
 
 impl DecoderShared {
@@ -127,6 +130,7 @@ impl DecoderShared {
             eq_postgain_auto: AtomicBool::new(true),
             current_device_name: Mutex::new(String::new()),
             crossfade_style: AtomicU64::new(0),
+            backend_http: Mutex::new(None),
         }
     }
 
@@ -151,6 +155,16 @@ impl DecoderShared {
 
     pub fn normalization_gain(&self) -> f32 {
         self.normalization_gain_millths.load(Ordering::Relaxed) as f32 / 1_000.0
+    }
+
+    /// Return the backend-configured HTTP client, or fall back to the bare
+    /// default audio client (no backend-specific headers).
+    pub fn http_client(&self) -> reqwest::Client {
+        self.backend_http
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| super::cache::AUDIO_HTTP.clone())
     }
 }
 

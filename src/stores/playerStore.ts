@@ -80,6 +80,9 @@ interface PlayerState {
   /** Transient error message shown briefly in the Player UI. Null when no error. */
   playerError: string | null
 
+  /** True when internet radio (HTML5 audio) is active instead of the Rust engine. */
+  isInternetRadioActive: boolean
+
   /** Display name for the current playback context ("My Playlist", "Ado Radio", etc.). */
   contextName: string | null
   /** Optional deep-link for the context label (e.g. "/playlist/123"). */
@@ -413,6 +416,10 @@ async function insertDjTracks(
 export function prefetchTrackAudio(track: MusicTrack): void {
   if (_prefetchedPartKeys.has(track.id)) return
   _prefetchedPartKeys.add(track.id)
+  if (track.streamUrl?.startsWith("http")) {
+    fireAndForget(audioPrefetch(track.streamUrl))
+    return
+  }
   const provider = getProvider()
   if (!provider) return
   fireAndForget(provider.getPlaybackInfo(track)
@@ -498,8 +505,28 @@ async function fetchGainDb(track: MusicTrack): Promise<number | null> {
   }
 }
 
+/** Simple string hash for synthetic track keys. */
+function hashCode(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  return h
+}
+
+/** Check if a track is a podcast episode (has direct stream URL + podcast provider data). */
+function _isPodcastTrack(track: MusicTrack): boolean {
+  const pd = track._providerData as Record<string, unknown> | undefined
+  return pd?.isPodcast === true
+}
+
 /** Send a track to the Rust audio engine for playback. */
 async function sendToAudioEngine(track: MusicTrack): Promise<void> {
+  // Direct URL tracks (podcasts, external audio) bypass provider.getPlaybackInfo()
+  if (track.streamUrl?.startsWith("http")) {
+    const syntheticKey = Math.abs(hashCode(track.id))
+    _ratingKeyToTrackId.set(syntheticKey, track.id)
+    await audioPlay(track.streamUrl, syntheticKey, track.duration, 0, "", track.trackNumber ?? 0, null, true)
+    return
+  }
   const provider = getProvider()
   if (!provider) return
   const info = await provider.getPlaybackInfo(track)
@@ -556,6 +583,16 @@ async function preloadNextTrack(queue: MusicTrack[], queueIndex: number, repeat:
   const nextTrack = queue[nextIndex]
   if (!nextTrack) return
 
+  // Direct URL tracks (podcasts) — preload without provider
+  if (nextTrack.streamUrl?.startsWith("http")) {
+    try {
+      const syntheticKey = Math.abs(hashCode(nextTrack.id))
+      _ratingKeyToTrackId.set(syntheticKey, nextTrack.id)
+      await audioPreloadNext(nextTrack.streamUrl, syntheticKey, nextTrack.duration, 0, "", nextTrack.trackNumber ?? 0, null, true)
+    } catch { /* non-critical */ }
+    return
+  }
+
   const provider = getProvider()
   if (!provider) return
 
@@ -604,6 +641,49 @@ async function loadMorePlaylistTracks(get: () => PlayerState, set: (fn: (s: Play
 }
 
 // ---------------------------------------------------------------------------
+// Track enrichment — fetch full metadata for tracks from list endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks from list endpoints (playlists, liked, albums, popular) lack Stream
+ * sub-elements (codec, bitrate, bit depth, sample rate, gain, etc.).
+ * This fetches the full metadata once, updates currentTrack + the queue entry,
+ * and populates the gain and waveform stream caches — consolidating what were
+ * previously 2–3 separate getTrack() calls into one.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function enrichCurrentTrack(track: MusicTrack, index: number, get: () => PlayerState, set: any): Promise<void> {
+  const provider = getProvider()
+  if (!provider) return
+  try {
+    const full = await provider.getTrack(track.id)
+    // Only update if this track is still the active one
+    if (get().currentTrack?.id !== track.id) return
+    // Merge: keep fields from full metadata, preserving any non-null originals
+    const enriched: MusicTrack = { ...track, ...full }
+    set((s: PlayerState) => ({
+      currentTrack: enriched,
+      queue: s.queue.map((t, i) => i === index ? enriched : t),
+    }))
+    // Populate caches so fetchGainDb/fetchAudioStreamId don't re-fetch
+    _gainCache.set(track.id, { trackGain: full.gain, albumGain: full.albumGain })
+    evictMap(_gainCache, 500)
+    const streamId = full.mediaInfo?.audioStreamId ?? null
+    _waveformStreamCache.set(track.id, streamId)
+    evictMap(_waveformStreamCache, 500)
+    // Fetch waveform levels now that we have the stream ID
+    if (streamId && provider.getStreamLevels) {
+      const levels = await provider.getStreamLevels(streamId, 128)
+      if (levels.length > 0 && get().currentTrack?.id === track.id) {
+        set({ waveformLevels: levels })
+      }
+    }
+  } catch {
+    // Non-critical — track still plays, just without enriched metadata
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Shared playback ceremony — every track transition funnels through here
 // ---------------------------------------------------------------------------
 
@@ -615,6 +695,7 @@ async function loadMorePlaylistTracks(get: () => PlayerState, set: (fn: (s: Play
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => PlayerState, set: any): void {
   const provider = getProvider()
+  const isPodcast = _isPodcastTrack(track)
   set({ currentTrack: track, queueIndex: index, isPlaying: true, positionMs: 0,
         waveformLevels: null, lyricsLines: null })
   _lastTimelineReportMs = 0
@@ -626,13 +707,23 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
     })
   }
 
-  fireAndForget(fetchAudioStreamId(track).then(streamId => {
-    if (!streamId || !provider?.getStreamLevels) return
-    return provider.getStreamLevels(streamId, 128)
-      .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
-  }))
-  fetchLyricsForTrack(track.id, get, set)
-  _reportProgress(track.id, "playing", 0, track.duration)
+  if (!isPodcast) {
+    // If the track lacks stream details (from a list endpoint), enrich it.
+    // This single call replaces separate fetchAudioStreamId + fetchGainDb calls.
+    const needsEnrichment = track.codec == null && track.mediaInfo?.audioStreamId == null
+    if (needsEnrichment) {
+      fireAndForget(enrichCurrentTrack(track, index, get, set))
+    } else {
+      // Track already has full data (from PlayQueue/radio) — just fetch waveform
+      fireAndForget(fetchAudioStreamId(track).then(streamId => {
+        if (!streamId || !provider?.getStreamLevels) return
+        return provider.getStreamLevels(streamId, 128)
+          .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
+      }))
+    }
+    fetchLyricsForTrack(track.id, get, set)
+    _reportProgress(track.id, "playing", 0, track.duration)
+  }
   if (provider?.updateNowPlaying) {
     fireAndForget(provider.updateNowPlaying(
       track.title,
@@ -649,8 +740,8 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
   // Record when this track started (for scrobble timestamp)
   _trackStartedAtUnix = Math.floor(Date.now() / 1000)
 
-  // Notify provider of track start (scrobbling, external integrations)
-  if (provider?.onTrackStart) {
+  // Notify provider of track start (scrobbling, external integrations) — skip for podcasts
+  if (provider?.onTrackStart && !isPodcast) {
     provider.onTrackStart(track)
   }
 
@@ -664,10 +755,18 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
  */
 function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): void {
   const provider = getProvider()
-  if (!provider) return
   for (let i = 1; i <= count; i++) {
     const t = queue[fromIndex + i]
     if (!t) continue
+    // Direct URL tracks (podcasts) — prefetch without provider
+    if (t.streamUrl?.startsWith("http")) {
+      const key = Math.abs(hashCode(t.id))
+      _ratingKeyToTrackId.set(key, t.id)
+      fireAndForget(audioPrefetch(t.streamUrl))
+      fireAndForget(audioAnalyzeTrack(t.streamUrl, key, t.duration))
+      continue
+    }
+    if (!provider) continue
     fireAndForget(provider.getPlaybackInfo(t).then(info => {
       _ratingKeyToTrackId.set(info.trackKey, t.id)
       fireAndForget(audioPrefetch(info.url))
@@ -683,6 +782,12 @@ function prefetchAhead(queue: MusicTrack[], fromIndex: number, count: number): v
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function _startPlayback(track: MusicTrack, index: number, get: () => PlayerState, set: any): Promise<void> {
+  // If internet radio is active, stop it before starting Plex playback
+  if (get().isInternetRadioActive) {
+    const { radioStop } = await import("../lib/radioAudio")
+    radioStop()
+    set({ isInternetRadioActive: false })
+  }
   const gen = ++_playGeneration
   _onTrackBecomesActive(track, index, get, set)
   try {
@@ -746,6 +851,7 @@ export const usePlayerStore = create<PlayerState>()(
   waveformLevels: null,
   lyricsLines: null,
   playerError: null,
+  isInternetRadioActive: false,
   contextName: null,
   contextHref: null,
 
@@ -1030,6 +1136,10 @@ export const usePlayerStore = create<PlayerState>()(
     // Cubic curve: maps 0-100 slider to 0.0-1.0 gain matching human loudness perception
     const gain = clamped <= 0 ? 0 : clamped >= 100 ? 1 : Math.pow(clamped / 100, 3)
     fireAndForget(audioSetVolume(gain))
+    // Also route volume to the internet radio HTML5 audio element
+    if (get().isInternetRadioActive) {
+      import("../lib/radioAudio").then(m => m.radioSetVolume(clamped))
+    }
     set({ volume: clamped })
   },
 
@@ -1151,12 +1261,15 @@ export const usePlayerStore = create<PlayerState>()(
         if (currentTrack?.id === endedId) {
           set({ waveformLevels: null, lyricsLines: null })
         }
-        _markPlayed(endedId)
+        const isPodcast = currentTrack ? _isPodcastTrack(currentTrack) : false
+        if (!isPodcast) _markPlayed(endedId)
         if (currentTrack) {
-          _reportProgress(currentTrack.id, "stopped", currentTrack.duration, currentTrack.duration)
-          // Notify provider of track end (scrobbling, external integrations)
+          if (!isPodcast) {
+            _reportProgress(currentTrack.id, "stopped", currentTrack.duration, currentTrack.duration)
+          }
+          // Notify provider of track end (scrobbling, external integrations) — skip for podcasts
           const provider = getProvider()
-          if (provider?.onTrackEnd) {
+          if (provider?.onTrackEnd && !isPodcast) {
             provider.onTrackEnd(currentTrack, _trackStartedAtUnix, get().positionMs)
           }
         }

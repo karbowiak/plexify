@@ -236,8 +236,10 @@ pub fn decoder_thread(
                                 .zip(state.next_meta.as_ref())
                                 .map(|(c, n)| !c.parent_key.is_empty() && c.parent_key == n.parent_key)
                                 .unwrap_or(false);
-                            let suppress_xfade = same_album
-                                && !shared.same_album_crossfade.load(Ordering::Relaxed);
+                            let suppress_xfade = (same_album
+                                && !shared.same_album_crossfade.load(Ordering::Relaxed))
+                                || state.current_track.as_ref().map_or(false, |m| m.skip_crossfade)
+                                || state.next_meta.as_ref().map_or(false, |m| m.skip_crossfade);
 
                             if cfade_ms > 0 && !suppress_xfade && state.crossfade.is_none() && state.next_meta.is_some() {
                                 let duration_ms = state.current_track

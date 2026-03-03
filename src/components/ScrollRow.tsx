@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react"
 import { Link } from "wouter"
 import { useScrollRestore } from "../hooks/useScrollRestore"
 
@@ -9,11 +10,33 @@ interface ScrollRowProps {
 }
 
 export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowProps) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
   const scrollRef = useScrollRestore(restoreKey, "x")
+
+  useEffect(() => {
+    if (expanded) return
+    const el = scrollRef.current
+    if (!el) return
+
+    const check = () => setOverflows(el.scrollWidth > el.clientWidth)
+    check()
+
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+
+    // Re-check when children are added/removed (e.g. lazy-loaded stations)
+    const mo = new MutationObserver(check)
+    mo.observe(el, { childList: true, subtree: true })
+
+    return () => { ro.disconnect(); mo.disconnect() }
+  }, [expanded, scrollRef])
 
   const scroll = (dir: "left" | "right") => {
     scrollRef.current?.scrollBy({ left: dir === "left" ? -440 : 440, behavior: "smooth" })
   }
+
+  const showButtons = expanded || overflows
 
   return (
     <div>
@@ -32,31 +55,58 @@ export function ScrollRow({ title, titleHref, children, restoreKey }: ScrollRowP
         ) : (
           <span className="grow text-2xl font-bold">{title}</span>
         )}
-        <button
-          onClick={() => scroll("left")}
-          aria-label="Scroll left"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-black transition-all hover:brightness-110 active:scale-95"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-        </button>
-        <button
-          onClick={() => scroll("right")}
-          aria-label="Scroll right"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-black transition-all hover:brightness-110 active:scale-95"
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        </button>
+        {!expanded && overflows && (
+          <>
+            <button
+              onClick={() => scroll("left")}
+              aria-label="Scroll left"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-black transition-all hover:brightness-110 active:scale-95"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+            <button
+              onClick={() => scroll("right")}
+              aria-label="Scroll right"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-black transition-all hover:brightness-110 active:scale-95"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          </>
+        )}
+        {showButtons && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            aria-label={expanded ? "Collapse" : "Expand"}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-black transition-all hover:brightness-110 active:scale-95"
+          >
+            <svg
+              viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+        )}
       </div>
-      <div
-        ref={scrollRef}
-        className="flex gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-      >
-        {children}
-      </div>
+      {expanded ? (
+        <div
+          className="scroll-row-grid grid gap-3"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(var(--card-size, 160px), 1fr))" }}
+        >
+          {children}
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          className="flex gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {children}
+        </div>
+      )}
     </div>
   )
 }

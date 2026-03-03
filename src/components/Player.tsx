@@ -19,8 +19,228 @@ import PlayerPopover from "./PlayerPopover"
 import VisualizerCanvas from "./VisualizerCanvas"
 import VisualizerFullscreen from "./VisualizerFullscreen"
 import { useSleepTimerStore } from "../stores/sleepTimerStore"
+import { useRadioStreamStore } from "../stores/radioStreamStore"
 
 const CACHE_SIZE_KEY = "plexify-audio-cache-max-bytes"
+
+// ---------------------------------------------------------------------------
+// RadioPlayerBar — shown when internet radio is active
+// ---------------------------------------------------------------------------
+
+function countryFlag(code: string): string {
+  if (!code || code.length !== 2) return ""
+  return String.fromCodePoint(
+    ...code.toUpperCase().split("").map(c => 0x1F1E6 + c.charCodeAt(0) - 65)
+  )
+}
+
+function RadioPlayerBar() {
+  const volumeSliderRef = useRef<HTMLDivElement>(null)
+  const volumeTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [volumeTooltipVisible, setVolumeTooltipVisible] = useState(false)
+
+  const { currentStation, isStreamPlaying, isStreamBuffering, streamError, stopStream, pauseStream, resumeStream } =
+    useRadioStreamStore(useShallow(s => ({
+      currentStation: s.currentStation,
+      isStreamPlaying: s.isStreamPlaying,
+      isStreamBuffering: s.isStreamBuffering,
+      streamError: s.streamError,
+      stopStream: s.stopStream,
+      pauseStream: s.pauseStream,
+      resumeStream: s.resumeStream,
+    })))
+
+  const { volume, setVolume } = usePlayerStore(useShallow(s => ({
+    volume: s.volume,
+    setVolume: s.setVolume,
+  })))
+
+  // Media session metadata for internet radio
+  useEffect(() => {
+    if (!navigator.mediaSession || !currentStation) return
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentStation.name,
+      artist: currentStation.tags.slice(0, 2).join(", ") || "Internet Radio",
+    })
+    navigator.mediaSession.playbackState = isStreamPlaying ? "playing" : "paused"
+  }, [currentStation?.uuid, isStreamPlaying])
+
+  // Media session action handlers for radio
+  useEffect(() => {
+    if (!navigator.mediaSession) return
+    navigator.mediaSession.setActionHandler("play", () => resumeStream())
+    navigator.mediaSession.setActionHandler("pause", () => pauseStream())
+    navigator.mediaSession.setActionHandler("stop", () => stopStream())
+    return () => {
+      for (const a of ["play", "pause", "stop"] as const)
+        navigator.mediaSession.setActionHandler(a, null)
+    }
+  }, [])
+
+  // Scroll wheel volume
+  useEffect(() => {
+    const el = volumeSliderRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY < 0 ? 2.5 : -2.5
+      setVolume(usePlayerStore.getState().volume + delta)
+      setVolumeTooltipVisible(true)
+      if (volumeTooltipTimer.current) clearTimeout(volumeTooltipTimer.current)
+      volumeTooltipTimer.current = setTimeout(() => setVolumeTooltipVisible(false), 1500)
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [])
+
+  if (!currentStation) return null
+
+  const tags = currentStation.tags.slice(0, 3)
+  const codecLabel = [currentStation.codec, currentStation.bitrate > 0 ? `${currentStation.bitrate}k` : ""]
+    .filter(Boolean).join(" ")
+
+  return (
+    <div className="relative border-t border-[var(--border)] bg-app-card">
+      {streamError && (
+        <div className="absolute bottom-28 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-900/90 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm max-w-md text-center">
+          {streamError}
+        </div>
+      )}
+      <div className="flex h-fit w-screen min-w-[620px] flex-col overflow-clip bg-app-card">
+        <div className="h-24">
+          <div className="flex h-full items-center justify-between px-4">
+
+            {/* Left: station info */}
+            <div className="w-[30%] min-w-[11.25rem]">
+              <div className="flex items-center">
+                <div className="mr-3 h-14 w-14 flex-shrink-0 rounded-lg overflow-hidden bg-app-surface flex items-center justify-center">
+                  {currentStation.favicon ? (
+                    <img src={currentStation.favicon} alt="" className="h-full w-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none" }} />
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" className="text-white/30">
+                      <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                    </svg>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <h6 className="line-clamp-1 text-sm font-medium text-white">{currentStation.name}</h6>
+                  <p className="truncate text-[0.688rem] text-white/50 mt-0.5">
+                    {currentStation.country && <>{countryFlag(currentStation.country_code)} {currentStation.country}</>}
+                  </p>
+                  {tags.length > 0 && (
+                    <div className="mt-0.5 flex gap-1">
+                      {tags.map(t => (
+                        <span key={t} className="rounded-full bg-white/5 px-1.5 py-0 text-[0.5625rem] text-white/30">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Center: play/pause + LIVE indicator */}
+            <div className="flex w-[40%] max-w-[45.125rem] flex-col items-center px-4 pt-2">
+              <div className="flex items-center gap-x-3">
+                {/* Play/Pause */}
+                <button
+                  onClick={isStreamPlaying ? pauseStream : resumeStream}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-base)] hover:scale-[1.06]"
+                >
+                  {isStreamPlaying ? (
+                    <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M2.7 1a.7.7 0 0 0-.7.7v12.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V1.7a.7.7 0 0 0-.7-.7H2.7zm8 0a.7.7 0 0 0-.7.7v12.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V1.7a.7.7 0 0 0-.7-.7h-2.6z" />
+                    </svg>
+                  ) : (
+                    <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M3 1.713a.7.7 0 0 1 1.05-.607l10.89 6.288a.7.7 0 0 1 0 1.212L4.05 14.894A.7.7 0 0 1 3 14.288V1.713z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+
+              {/* Live indicator bar */}
+              <div className="mt-3 flex w-full items-center justify-center gap-3">
+                {isStreamBuffering ? (
+                  <span className="text-xs text-white/40 animate-pulse">Buffering...</span>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-0.5 text-[0.6875rem] font-bold uppercase text-red-400">
+                      <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                      LIVE
+                    </span>
+                    {codecLabel && (
+                      <span className="rounded-full bg-white/5 px-2 py-0.5 text-[0.6875rem] font-mono text-white/30">
+                        {codecLabel}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right: volume + stop */}
+            <div className="flex w-[30%] min-w-[11.25rem] items-center justify-end gap-1">
+              {/* Stop Radio button */}
+              <button
+                onClick={stopStream}
+                className="mr-2 flex items-center gap-1.5 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                  <rect x="3" y="3" width="10" height="10" rx="1" />
+                </svg>
+                Stop Radio
+              </button>
+
+              {/* Volume icon */}
+              <button onClick={() => setVolume(volume === 0 ? 80 : 0)} className="flex-shrink-0 flex h-8 w-8 items-center justify-center text-white/70 hover:text-white transition-colors">
+                {volume === 0 ? (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M13.86 5.47a.75.75 0 0 0-1.061 0l-1.47 1.47-1.47-1.47A.75.75 0 0 0 8.8 6.53L10.269 8l-1.47 1.47a.75.75 0 1 0 1.06 1.06l1.47-1.47 1.47 1.47a.75.75 0 0 0 1.06-1.06L12.39 8l1.47-1.47a.75.75 0 0 0 0-1.06z" />
+                    <path d="M10.116 1.5A.75.75 0 0 0 8.991.85l-6.925 4a3.642 3.642 0 0 0-1.33 4.967 3.639 3.639 0 0 0 1.33 1.332l6.925 4a.75.75 0 0 0 1.125-.649v-13a.75.75 0 0 0-.002-.001zm0 12.34L3.322 9.688a2.14 2.14 0 0 1 0-3.7l6.794-3.99v11.84z" />
+                  </svg>
+                ) : volume < 50 ? (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 4.21v-4.2a2.447 2.447 0 0 1 0 4.2z" />
+                  </svg>
+                ) : (
+                  <svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.741.85a.75.75 0 0 1 .375.65v13a.75.75 0 0 1-1.125.65l-6.925-4a3.642 3.642 0 0 1-1.33-4.967 3.639 3.639 0 0 1 1.33-1.332l6.925-4a.75.75 0 0 1 .75 0zm-6.924 5.3a2.139 2.139 0 0 0 0 3.7l5.8 3.35V2.8l-5.8 3.35zm8.683 6.087a4.502 4.502 0 0 0 0-8.474v1.65a2.999 2.999 0 0 1 0 5.175v1.649z" />
+                  </svg>
+                )}
+              </button>
+              {/* Volume slider */}
+              <div ref={volumeSliderRef} className="relative flex h-7 w-32 items-center">
+                {volumeTooltipVisible && (
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 rounded-md bg-app-card border border-[var(--border)] text-xs font-bold text-white shadow-lg pointer-events-none whitespace-nowrap">
+                    {Math.round(volume)}%
+                  </div>
+                )}
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={volume}
+                  onChange={e => {
+                    setVolume(parseInt(e.target.value, 10))
+                    setVolumeTooltipVisible(true)
+                    if (volumeTooltipTimer.current) clearTimeout(volumeTooltipTimer.current)
+                    volumeTooltipTimer.current = setTimeout(() => setVolumeTooltipVisible(false), 1500)
+                  }}
+                  className="h-1 w-full cursor-pointer appearance-none rounded-full"
+                  style={{
+                    background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${volume}%, #535353 ${volume}%, #535353 100%)`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function Player() {
   const volumeSliderRef = useRef<HTMLDivElement>(null)
@@ -45,6 +265,7 @@ export function Player() {
     contextHref,
     waveformLevels,
     lyricsLines,
+    isInternetRadioActive,
     pause,
     resume,
     next,
@@ -68,6 +289,7 @@ export function Player() {
     contextHref: s.contextHref,
     waveformLevels: s.waveformLevels,
     lyricsLines: s.lyricsLines,
+    isInternetRadioActive: s.isInternetRadioActive,
     pause: s.pause,
     resume: s.resume,
     next: s.next,
@@ -271,6 +493,9 @@ export function Player() {
   const cfStyleInfo = CROSSFADE_STYLES.find(s => s.value === crossfadeStyle) ?? CROSSFADE_STYLES[0]
   const cfActive = crossfadeStyle !== 0 && cfWindowMs > 0
 
+  // When internet radio is active, show the radio-specific player bar
+  if (isInternetRadioActive) return <RadioPlayerBar />
+
   return (
     <div className="relative border-t border-[var(--border)] bg-app-card">
       {/* Error toast — shown briefly when playRadio or other player actions fail */}
@@ -464,14 +689,21 @@ export function Player() {
                 </button>
 
                 {/* Media info chip — shows codec + bitrate, opens track info panel */}
-                {currentTrack && mediaLabel && (
+                {currentTrack && (
                   <PlayerPopover
                     icon={
-                      <span className="font-mono text-[0.6875rem] font-semibold tracking-wide">
-                        {mediaLabel}
-                      </span>
+                      mediaLabel ? (
+                        <span className="font-mono text-[0.6875rem] font-semibold tracking-wide">
+                          {mediaLabel}
+                        </span>
+                      ) : (
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                          <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                          <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
+                        </svg>
+                      )
                     }
-                    wide
+                    wide={!!mediaLabel}
                     label="Track info"
                     align="center"
                     width="auto"

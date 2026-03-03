@@ -540,7 +540,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
                 const isContextTarget = isCtxTarget(track.id)
                 return (
                   <div
-                    key={track.id}
+                    key={`${track.id}-${i}`}
                     onClick={() => playTrack(track, popularTracks, artist.title, `/artist/${artistId}`)}
                     onMouseEnter={() => prefetchTrackAudio(track)}
                     onContextMenu={ctxMenu("track", track)}

@@ -45,27 +45,45 @@ pub static DECODER_RT: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
         .expect("failed to build decoder tokio runtime")
 });
 
-/// Fetch audio bytes from a URL
-pub fn fetch_audio(url: &str) -> Result<Vec<u8>, String> {
+/// Fetch audio bytes from a URL using the provided HTTP client.
+/// Retries once on transient errors (503, connection resets).
+pub fn fetch_audio(url: &str, client: &reqwest::Client) -> Result<Vec<u8>, String> {
     info!(url = url, "Fetching audio data");
     DECODER_RT.block_on(async {
-        let resp = AUDIO_HTTP
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP fetch failed: {e}"))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {} for audio URL", resp.status()));
+        let mut last_err = String::new();
+        for attempt in 0..2u8 {
+            if attempt > 0 {
+                warn!(url = url, attempt = attempt + 1, "Retrying audio fetch");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            match client.get(url).send().await {
+                Ok(resp) => {
+                    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                        last_err = "HTTP 503 Service Unavailable for audio URL".into();
+                        continue; // retry 503
+                    }
+                    if !resp.status().is_success() {
+                        return Err(format!("HTTP {} for audio URL", resp.status()));
+                    }
+                    match resp.bytes().await {
+                        Ok(bytes) => {
+                            info!(size = bytes.len(), "Audio data fetched");
+                            return Ok(bytes.to_vec());
+                        }
+                        Err(e) => {
+                            last_err = format!("Failed to read audio bytes: {e}");
+                            continue; // retry body read errors (connection resets)
+                        }
+                    }
+                }
+                Err(e) if e.is_connect() || e.is_request() => {
+                    last_err = format!("HTTP fetch failed: {e}");
+                    continue; // retry connection errors
+                }
+                Err(e) => return Err(format!("HTTP fetch failed: {e}")),
+            }
         }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read audio bytes: {e}"))?;
-
-        info!(size = bytes.len(), "Audio data fetched");
-        Ok(bytes.to_vec())
+        Err(last_err)
     })
 }
 
@@ -150,7 +168,8 @@ pub fn open_for_decode(
     }
 
     // Cache miss — fetch from network
-    let bytes = fetch_audio(url)?;
+    let client = shared.http_client();
+    let bytes = fetch_audio(url, &client)?;
 
     // Fix Deezer MP3 issues: strip empty ID3v2 header + add bit reservoir padding.
     let bytes = fix_mp3_bytes(bytes);
@@ -234,7 +253,8 @@ pub fn prefetch_url_bg(url: String, shared: Arc<DecoderShared>) {
             return;
         }
 
-        let resp = match AUDIO_HTTP.get(&url).send().await {
+        let client = shared.http_client();
+        let resp = match client.get(&url).send().await {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => { warn!(url = %url, status = %r.status(), "Audio prefetch: bad status"); return; }
             Err(e) => { warn!(url = %url, error = %e, "Audio prefetch: request failed"); return; }
@@ -520,7 +540,7 @@ mod tests {
     #[test]
     fn raw_deezer_bytes_fail_symphonia_probe() {
         let preview_url = get_deezer_preview_url();
-        let bytes = fetch_audio(&preview_url).expect("fetch should succeed");
+        let bytes = fetch_audio(&preview_url, &AUDIO_HTTP).expect("fetch should succeed");
 
         // Verify file has an empty ID3v2 header
         assert_eq!(&bytes[..3], b"ID3", "Should have ID3v2 header");
@@ -539,7 +559,7 @@ mod tests {
     #[test]
     fn fix_mp3_bytes_fixes_deezer_probe() {
         let preview_url = get_deezer_preview_url();
-        let bytes = fetch_audio(&preview_url).expect("fetch should succeed");
+        let bytes = fetch_audio(&preview_url, &AUDIO_HTTP).expect("fetch should succeed");
         println!("Fetched {} bytes", bytes.len());
 
         // After fixing, probe should succeed
@@ -561,7 +581,7 @@ mod tests {
     #[test]
     fn deezer_preview_full_pipeline() {
         let preview_url = get_deezer_preview_url();
-        let bytes = fetch_audio(&preview_url).expect("fetch should succeed");
+        let bytes = fetch_audio(&preview_url, &AUDIO_HTTP).expect("fetch should succeed");
 
         // Verify the raw file has a non-zero main_data_begin (the reservoir problem)
         let id3_skip = if &bytes[..3] == b"ID3" { id3v2_total_size(&bytes) } else { 0 };

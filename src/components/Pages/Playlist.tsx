@@ -363,7 +363,7 @@ export function Playlist({ playlistId }: { playlistId: string }) {
               const isContextTarget = isCtxTarget(track.id)
               return (
                 <tr
-                  key={track.id}
+                  key={`${track.id}-${idx}`}
                   className={`group cursor-pointer rounded ${isActive || isContextTarget ? "bg-hl-row" : "hover:bg-hl-row"}`}
                   onClick={() => void playTrack(track, sortedItems, currentPlaylist?.title, `/playlist/${playlistId}`)}
                   onMouseEnter={() => prefetchTrackAudio(track)}

@@ -14,8 +14,9 @@ export function audioPlay(
   parentKey: string,
   trackIndex: number,
   gainDb: number | null,
+  skipCrossfade?: boolean,
 ): Promise<void> {
-  return invoke("audio_play", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb })
+  return invoke("audio_play", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb, skipCrossfade: skipCrossfade ?? null })
 }
 
 /** Pause audio playback. */
@@ -52,8 +53,9 @@ export function audioPreloadNext(
   parentKey: string,
   trackIndex: number,
   gainDb: number | null,
+  skipCrossfade?: boolean,
 ): Promise<void> {
-  return invoke("audio_preload_next", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb })
+  return invoke("audio_preload_next", { url, ratingKey, durationMs, partId, parentKey, trackIndex, gainDb, skipCrossfade: skipCrossfade ?? null })
 }
 
 /** Warm the audio disk cache for a URL in the background. Returns immediately. */

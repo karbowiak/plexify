@@ -57,7 +57,7 @@ export function CreatePlaylist({ onClose, onCreated }: { onClose: () => void; on
               value={playlistName}
               onChange={(e) => setPlaylistName(e.target.value)}
               placeholder="My playlist #1"
-              className="w-full rounded-md bg-[#3e3e3e] px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-white/30"
+              className="w-full rounded-md bg-app-surface px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-white/30"
               autoFocus
             />
             {error && <p className="text-sm text-red-400">{error}</p>}
