@@ -107,12 +107,15 @@ function PillGroup<T>({
   value,
   onChange,
   getLabel,
+  isActive,
 }: {
   options: readonly T[]
   value: T
   onChange: (v: T) => void
   getLabel: (v: T) => string
+  isActive?: (opt: T, value: T) => boolean
 }) {
+  const check = isActive ?? ((a: T, b: T) => a === b)
   return (
     <div className="flex gap-2 flex-wrap">
       {options.map((opt, i) => (
@@ -121,7 +124,7 @@ function PillGroup<T>({
           onClick={() => onChange(opt)}
           className={clsx(
             "rounded-full px-4 py-1.5 text-sm transition-colors",
-            value === opt
+            check(opt, value)
               ? "bg-accent text-black font-semibold"
               : "bg-white/10 text-white hover:bg-white/20"
           )}
@@ -234,11 +237,20 @@ const CROSSFADE_OPTIONS = [
   { label: "30s",  ms: 30000 },
 ] as const
 
+const CROSSFADE_STYLE_OPTIONS = [
+  { value: 0, label: "Smooth" },
+  { value: 1, label: "DJ Filter" },
+  { value: 2, label: "Echo Out" },
+  { value: 3, label: "Hard Cut" },
+] as const
+
 function PlaybackSection() {
   const [cacheInfo, setCacheInfo] = useState<{ size_bytes: number; file_count: number } | null>(null)
   const [maxBytes, setMaxBytes] = useState<number>(1_073_741_824)
   const [isClearing, setIsClearing] = useState(false)
   const [outputDevices, setOutputDevices] = useState<string[]>([])
+  const [customCache, setCustomCache] = useState("")
+  const isCustomCacheSize = !CACHE_OPTIONS.some(o => o.bytes === maxBytes)
 
   const {
     normalizationEnabled, setNormalizationEnabled,
@@ -318,26 +330,18 @@ function PlaybackSection() {
               value={CROSSFADE_OPTIONS.find(o => o.ms === crossfadeWindowMs) ?? CROSSFADE_OPTIONS[0]}
               onChange={opt => setCrossfadeWindowMs(opt.ms)}
               getLabel={opt => opt.label}
+              isActive={(opt, val) => opt.ms === val.ms}
             />
           </SettingRow>
 
           {crossfadeWindowMs > 0 && (
             <SettingRow label="Style" description="Controls how the two tracks are blended during a crossfade transition.">
               <PillGroup
-                options={[
-                  { value: 0, label: "Smooth" },
-                  { value: 1, label: "DJ Filter" },
-                  { value: 2, label: "Echo Out" },
-                  { value: 3, label: "Hard Cut" },
-                ] as const}
-                value={([
-                  { value: 0, label: "Smooth" },
-                  { value: 1, label: "DJ Filter" },
-                  { value: 2, label: "Echo Out" },
-                  { value: 3, label: "Hard Cut" },
-                ] as const).find(o => o.value === crossfadeStyle) ?? { value: 0, label: "Smooth" }}
+                options={CROSSFADE_STYLE_OPTIONS}
+                value={CROSSFADE_STYLE_OPTIONS.find(o => o.value === crossfadeStyle) ?? CROSSFADE_STYLE_OPTIONS[0]}
                 onChange={opt => setCrossfadeStyle(opt.value)}
                 getLabel={opt => opt.label}
+                isActive={(opt, val) => opt.value === val.value}
               />
             </SettingRow>
           )}
@@ -398,12 +402,48 @@ function PlaybackSection() {
       <SettingCard title="Audio Cache">
         <div className="flex flex-col gap-5">
           <SettingRow label="Cache Size Limit" description="Tracks are cached to disk for instant replay. Older files are removed automatically when the limit is reached.">
-            <PillGroup
-              options={CACHE_OPTIONS}
-              value={CACHE_OPTIONS.find(o => o.bytes === maxBytes) ?? CACHE_OPTIONS[2]}
-              onChange={opt => void handleMaxChange(opt.bytes)}
-              getLabel={opt => opt.label}
-            />
+            <div className="flex flex-col gap-3">
+              <div className="flex gap-2 flex-wrap">
+                {CACHE_OPTIONS.map(opt => (
+                  <button
+                    key={opt.bytes}
+                    onClick={() => { void handleMaxChange(opt.bytes); setCustomCache("") }}
+                    className={clsx(
+                      "rounded-full px-4 py-1.5 text-sm transition-colors",
+                      maxBytes === opt.bytes && !customCache
+                        ? "bg-accent text-black font-semibold"
+                        : "bg-white/10 text-white hover:bg-white/20"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={customCache}
+                    onChange={e => {
+                      const raw = e.target.value
+                      setCustomCache(raw)
+                      const mb = parseInt(raw, 10)
+                      if (mb >= 64) void handleMaxChange(mb * 1024 * 1024)
+                    }}
+                    placeholder={isCustomCacheSize ? String(Math.round(maxBytes / (1024 * 1024))) : "Custom"}
+                    min={64}
+                    className={clsx(
+                      "w-28 rounded-lg bg-white/10 py-1.5 px-3 text-sm font-mono text-white placeholder-white/20 focus:outline-none focus:ring-1 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                      isCustomCacheSize ? "ring-1 ring-accent" : "focus:ring-white/30"
+                    )}
+                  />
+                </div>
+                <span className="text-xs text-white/30">MB</span>
+                {isCustomCacheSize && (
+                  <span className="text-xs text-white/40">{formatBytes(maxBytes)}</span>
+                )}
+              </div>
+            </div>
           </SettingRow>
 
           <div className="flex items-center justify-between">
