@@ -190,7 +190,7 @@ export function AlbumPage({ albumId }: { albumId: string }) {
     : deezerLabel
 
   // Show all non-empty hubs (sonically similar, more by artist, etc.)
-  const nonEmptyHubs = relatedHubs.filter(h => h.items.length > 0)
+  const nonEmptyHubs = relatedHubs.filter(h => h.identifier && h.items.length > 0)
   const review = album.reviews && album.reviews.length > 0 ? album.reviews[0] : null
 
   return (

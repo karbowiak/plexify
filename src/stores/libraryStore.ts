@@ -209,7 +209,7 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     const provider = getProvider()
     if (!provider) return
     try {
-      const hubs = await provider.getHubs()
+      const hubs = (await provider.getHubs()).filter(h => h.identifier)
       set({ hubs, _hubsFetchedAt: Date.now() })
     } catch (err) {
       set({ error: String(err) })
@@ -405,7 +405,7 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     if (!provider || !provider.getMixTracks) return
 
     const mixItems = hubs
-      .filter(h => h.identifier.startsWith("music.mixes"))
+      .filter(h => h.identifier?.startsWith("music.mixes"))
       .flatMap(h => h.items)
       .filter(item => {
         if (item.type !== "playlist") return false
@@ -601,4 +601,14 @@ export const useLibraryStore = create<LibraryState>()(persist((set, get) => ({
     _likedAlbumsFetchedAt: state._likedAlbumsFetchedAt,
     _tagsFetchedAt: state._tagsFetchedAt,
   }),
+  // Sanitize persisted data — stale hubs may lack `items` or `identifier`
+  // after schema changes, which causes crashes during render.
+  merge: (persisted, current) => {
+    const p = persisted as Partial<LibraryState> | undefined
+    if (!p) return current
+    const sanitizedHubs = Array.isArray(p.hubs)
+      ? p.hubs.filter(h => h && h.identifier && Array.isArray(h.items))
+      : []
+    return { ...current, ...p, hubs: sanitizedHubs }
+  },
 }))

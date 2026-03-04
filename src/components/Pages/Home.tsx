@@ -120,7 +120,7 @@ export function Home() {
   const hasRealData = recentlyAdded.length > 0 || hubs.length > 0
 
   const { mixesItems, mixesTitle } = useMemo(() => {
-    const mh = hubs.filter(h => h.identifier.startsWith("music.mixes"))
+    const mh = hubs.filter(h => h.identifier?.startsWith("music.mixes"))
     return { mixesItems: mh.flatMap(h => h.items), mixesTitle: mh[0]?.title ?? "Mixes for You" }
   }, [hubs])
 
@@ -256,7 +256,7 @@ export function Home() {
       )}
 
       {hubs.map(hub => {
-        if (hub.items.length === 0) return null
+        if (hub.items.length === 0 || !hub.identifier) return null
         // Skip mixes hubs — already rendered as the pinned top section
         if (hub.identifier.startsWith("music.mixes")) return null
         // Skip recently-added hubs — identifier-based + title fallback for server-variant identifiers

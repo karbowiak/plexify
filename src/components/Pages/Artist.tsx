@@ -211,7 +211,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
   // Memoize album/hub filtering — depends on relatedHubs, fullAlbums, singles
   const { albumHubs, displayAlbums, displaySingles, genres } = useMemo(() => {
     const albumHubs = relatedHubs.filter(h =>
-      !SKIP_HUB_IDS.has(h.identifier) &&
+      h.identifier && !SKIP_HUB_IDS.has(h.identifier) &&
       h.items.some(m => m.type === "album")
     )
     const hubAlbumKeys = new Set(
