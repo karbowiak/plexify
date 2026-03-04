@@ -15,6 +15,11 @@
  * (see backends/plex/imageUrl.ts, backends/demo/imageUrl.ts).
  */
 
+import { IS_WINDOWS } from "./platform"
+
+// Tauri v2: WebView2 on Windows serves custom protocols as https://{scheme}.localhost/
+const IMAGE_BASE = IS_WINDOWS ? "https://image.localhost" : "image://localhost"
+
 type EntityType = "artist" | "album" | "track" | "playlist"
 
 /**
@@ -42,7 +47,7 @@ export function buildImageUrl(
   if (name) params.set("name", name)
   if (artist) params.set("artist", artist)
 
-  return `image://localhost/${entityType}/${entityId}?${params.toString()}`
+  return `${IMAGE_BASE}/${entityType}/${entityId}?${params.toString()}`
 }
 
 /**
@@ -54,5 +59,5 @@ export function buildImageUrl(
  */
 export function buildExternalImageUrl(sourceUrl: string | null | undefined): string | null {
   if (!sourceUrl) return null
-  return `image://localhost/ext/img?src=${encodeURIComponent(sourceUrl)}`
+  return `${IMAGE_BASE}/ext/img?src=${encodeURIComponent(sourceUrl)}`
 }
