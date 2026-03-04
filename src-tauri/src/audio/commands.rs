@@ -125,6 +125,7 @@ pub(super) fn handle_command(
             state.current_track = None;
             state.next_meta = None;
             state.crossfade = None;
+            shared.flush_pending.store(true, Ordering::Release);
             shared.paused.store(false, Ordering::Release);
             shared.finished.store(true, Ordering::Release);
             shared.prebuffering.store(false, Ordering::Release);

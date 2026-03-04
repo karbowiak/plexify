@@ -716,6 +716,7 @@ pub fn decoder_thread(
                             // PUSH TO RING BUFFER
                             // ===============================================
                             let mut written = 0;
+                            let push_start = std::time::Instant::now();
                             while written < samples_to_push.len() {
                                 if let Ok(cmd) = cmd_rx.try_recv() {
                                     if handle_command(
@@ -736,6 +737,15 @@ pub fn decoder_thread(
                                 let n = producer.push_slice(&samples_to_push[written..]);
                                 written += n;
                                 if n == 0 {
+                                    // Safety timeout: if the ring buffer has been full for >2s
+                                    // something is wrong (output stalled). Drop remaining samples.
+                                    if push_start.elapsed() > std::time::Duration::from_secs(2) {
+                                        warn!(
+                                            remaining = samples_to_push.len() - written,
+                                            "Push loop stalled for >2s — dropping remaining samples"
+                                        );
+                                        break;
+                                    }
                                     std::thread::sleep(std::time::Duration::from_millis(5));
                                 }
                             }

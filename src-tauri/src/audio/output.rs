@@ -170,6 +170,13 @@ fn build_f32_stream(
                     return;
                 }
 
+                // Finished gate: output silence when playback has stopped.
+                // Safety net to prevent any buffered audio from playing after Stop.
+                if shared.finished.load(Ordering::Acquire) {
+                    data.fill(0.0);
+                    return;
+                }
+
                 // Pause/resume transition detection
                 let is_paused = shared.paused.load(Ordering::Acquire);
 

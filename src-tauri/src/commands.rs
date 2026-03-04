@@ -1042,16 +1042,20 @@ pub fn audio_play(
     skip_crossfade: Option<bool>,
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::Play(crate::audio::TrackMeta {
-        url,
-        rating_key,
-        duration_ms,
-        part_id,
-        parent_key,
-        track_index,
-        gain_db,
-        skip_crossfade: skip_crossfade.unwrap_or(false),
-    }))
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => engine.send_play(crate::audio::TrackMeta {
+            url,
+            rating_key,
+            duration_ms,
+            part_id,
+            parent_key,
+            track_index,
+            gain_db,
+            skip_crossfade: skip_crossfade.unwrap_or(false),
+        }),
+        None => Err("Audio engine not initialized.".to_string()),
+    }
 }
 
 /// Pause audio playback.
@@ -1075,7 +1079,11 @@ pub fn audio_resume(
 pub fn audio_stop(
     state: State<'_, AudioEngineState>,
 ) -> Result<(), String> {
-    audio_send(&state, crate::audio::AudioCommand::Stop)
+    let guard = state.0.lock().map_err(|e| format!("Audio lock poisoned: {e}"))?;
+    match guard.as_ref() {
+        Some(engine) => engine.send_stop(),
+        None => Err("Audio engine not initialized.".to_string()),
+    }
 }
 
 /// Seek to a position in the current track.

@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 use super::decoder::decoder_thread;
 use super::state::DecoderShared;
 use super::output::{start_output, RING_BUFFER_SIZE};
-use super::types::{AudioCommand, AudioEvent, PlaybackState};
+use super::types::{AudioCommand, AudioEvent, PlaybackState, TrackMeta};
 
 /// Wrapper for cpal::Stream that is !Send+!Sync on macOS due to PhantomData<*mut ()>.
 /// The stream is only ever accessed behind a Mutex so concurrent access is safe.
@@ -168,6 +168,29 @@ impl AudioEngine {
     pub fn send(&self, cmd: AudioCommand) -> Result<(), String> {
         self.cmd_tx
             .send(cmd)
+            .map_err(|e| format!("Failed to send audio command: {e}"))
+    }
+
+    /// Send a Play command with immediate flush.
+    /// Sets flush_pending and prebuffering BEFORE sending the command so the
+    /// output callback stops playing old audio within one callback period (~5-21ms)
+    /// instead of waiting for the decoder thread to process the command.
+    pub fn send_play(&self, meta: TrackMeta) -> Result<(), String> {
+        self.shared.flush_pending.store(true, Ordering::Release);
+        self.shared.prebuffering.store(true, Ordering::Release);
+        self.cmd_tx
+            .send(AudioCommand::Play(meta))
+            .map_err(|e| format!("Failed to send audio command: {e}"))
+    }
+
+    /// Send a Stop command with immediate flush.
+    /// Sets flush_pending and finished BEFORE sending the command so the
+    /// output callback stops playing buffered tail audio immediately.
+    pub fn send_stop(&self) -> Result<(), String> {
+        self.shared.flush_pending.store(true, Ordering::Release);
+        self.shared.finished.store(true, Ordering::Release);
+        self.cmd_tx
+            .send(AudioCommand::Stop)
             .map_err(|e| format!("Failed to send audio command: {e}"))
     }
 
