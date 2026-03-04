@@ -71,6 +71,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
   const { playTrack, playFromUri, playRadio, addToQueue, currentTrack } = usePlayerStore(useShallow(s => ({ playTrack: s.playTrack, playFromUri: s.playFromUri, playRadio: s.playRadio, addToQueue: s.addToQueue, currentTrack: s.currentTrack })))
   const { handler: ctxMenu, isTarget: isCtxTarget } = useContextMenu()
   const pageRefreshKey = useUIStore(s => s.pageRefreshKey)
+  const shouldDedup = useUIStore(s => s.deduplicateAlbums)
   const hasRadio = useCapability("radio")
   const hasSonicSimilarity = useCapability("sonicSimilarity")
 
@@ -151,9 +152,10 @@ export function ArtistPage({ artistId }: { artistId: string }) {
       provider.getArtistStations ? provider.getArtistStations(artistId).catch(() => [] as MusicPlaylist[]) : Promise.resolve([] as MusicPlaylist[]),
     ])
       .then(([a, allAlbums, singleList, tracks, sim, sonic, hubs, stationList]) => {
-        const dedupedSingles = deduplicateAlbums(singleList)
+        const maybeDedup = shouldDedup ? deduplicateAlbums : dedupe
+        const dedupedSingles = maybeDedup(singleList)
         const singleKeys = collectAllIds(dedupedSingles)
-        const albums = deduplicateAlbums(allAlbums).filter(a =>
+        const albums = maybeDedup(allAlbums).filter(a =>
           !singleKeys.has(a.id) && !(a._alternateIds ?? []).some(id => singleKeys.has(id))
         )
         const popularTracks = dedupe(tracks)
@@ -181,7 +183,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
       })
       .catch(e => setError(String(e)))
       .finally(() => setIsLoading(false))
-  }, [artistId, pageRefreshKey])
+  }, [artistId, pageRefreshKey, shouldDedup])
 
   // Compute artUrl before early returns so useFocalPoint can be called unconditionally.
   // Respect source priority — iterate through priority order, pick first source with an image.
@@ -218,7 +220,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
         h.identifier && !SKIP_HUB_IDS.has(h.identifier) &&
         h.items.some(m => m.type === "album")
       )
-      .map(deduplicateHubAlbums)
+      .map(h => shouldDedup ? deduplicateHubAlbums(h) : h)
     const hubAlbumKeys = new Set(
       albumHubs.flatMap(h => h.items.filter(m => m.type === "album").map(m => m.id))
     )
@@ -234,7 +236,7 @@ export function ArtistPage({ artistId }: { artistId: string }) {
       }
     }
     return { albumHubs, displayAlbums: da, displaySingles: ds, genres: g }
-  }, [relatedHubs, fullAlbums, singles])
+  }, [relatedHubs, fullAlbums, singles, shouldDedup])
 
   // Count how many duplicate albums were merged (for the hero badge)
   const dedupStats = useMemo(() => {

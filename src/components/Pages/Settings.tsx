@@ -16,6 +16,7 @@ import { useCardSizeStore, CARD_SIZE_MIN, CARD_SIZE_MAX } from "../../stores/car
 import { useHighlightStore, HIGHLIGHT_DEFAULTS, type HighlightCategory } from "../../stores/highlightStore"
 import { useNotificationStore } from "../../stores/notificationStore"
 import { useDebugStore } from "../../stores/debugStore"
+import { useUIStore } from "../../stores"
 import { useEasterEggStore } from "../../stores/easterEggStore"
 import { getBackends, getMetadataBackends, getMetadataBackend, getBackend } from "../../backends/registry"
 import type { ProviderCapabilities } from "../../providers/types"
@@ -772,6 +773,8 @@ function HighlightCard() {
 function GeneralSection() {
   const { notificationsEnabled, setNotificationsEnabled } = useNotificationStore()
   const { debugEnabled, setDebugEnabled } = useDebugStore()
+  const deduplicateAlbums = useUIStore(s => s.deduplicateAlbums)
+  const setDeduplicateAlbums = useUIStore(s => s.setDeduplicateAlbums)
 
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
@@ -783,6 +786,16 @@ function GeneralSection() {
             inline
           >
             <Toggle value={notificationsEnabled} onChange={setNotificationsEnabled} />
+          </SettingRow>
+
+          <div className="border-t border-white/[0.06]" />
+
+          <SettingRow
+            label="Album Deduplication"
+            description="Merge duplicate albums on artist pages and pick the best quality version for playback."
+            inline
+          >
+            <Toggle value={deduplicateAlbums} onChange={setDeduplicateAlbums} />
           </SettingRow>
 
           <div className="border-t border-white/[0.06]" />

@@ -17,6 +17,8 @@ interface UIState {
   isLyricsPinned: boolean
   /** Active tab in the pinned queue panel. Only relevant when isQueuePinned is true. */
   queueActiveTab: "queue" | "lyrics"
+  /** When true, duplicate albums on artist pages are merged into a single entry. */
+  deduplicateAlbums: boolean
 
   setShowCreatePlaylist: (v: boolean) => void
   setPendingPlaylistItemIds: (ids: string[] | null) => void
@@ -27,6 +29,7 @@ interface UIState {
   setLyricsOpen: (v: boolean) => void
   setLyricsPinned: (v: boolean) => void
   setQueueActiveTab: (tab: "queue" | "lyrics") => void
+  setDeduplicateAlbums: (v: boolean) => void
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -39,6 +42,7 @@ export const useUIStore = create<UIState>((set) => ({
   isLyricsOpen: false,
   isLyricsPinned: localStorage.getItem("plex-lyrics-pinned") === "1",
   queueActiveTab: "queue",
+  deduplicateAlbums: localStorage.getItem("plex-dedup-albums") !== "0",
 
   setShowCreatePlaylist: (v: boolean) => set({ showCreatePlaylist: v }),
   setPendingPlaylistItemIds: (ids: string[] | null) => set({ pendingPlaylistItemIds: ids }),
@@ -55,4 +59,8 @@ export const useUIStore = create<UIState>((set) => ({
     set({ isLyricsPinned: v, ...(v ? { isLyricsOpen: true } : {}) })
   },
   setQueueActiveTab: (tab: "queue" | "lyrics") => set({ queueActiveTab: tab }),
+  setDeduplicateAlbums: (v: boolean) => {
+    localStorage.setItem("plex-dedup-albums", v ? "1" : "0")
+    set({ deduplicateAlbums: v })
+  },
 }))
