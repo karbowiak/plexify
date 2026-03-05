@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolveEntityBackend } from '$lib/stores/backendStore.svelte';
-	import { bumpPlaylistVersion } from '$lib/stores/uiStore.svelte';
+	import { bumpPlaylistVersion } from '$lib/stores/uiEphemeral.svelte';
 	import type { Playlist, Track } from '$lib/backends/types';
 	import { Capability } from '$lib/backends/types';
 	import { formatDuration } from '$lib/utils/format';
@@ -11,6 +11,7 @@
 	import { Play, Shuffle, Trash2, Loader2 } from 'lucide-svelte';
 	import { playTracksNow, shuffleQueue } from '$lib/stores/unifiedQueue.svelte';
 	import { playCurrentItem } from '$lib/stores/playerStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	let id = $derived(page.params.id ?? '');
 
@@ -28,7 +29,7 @@
 
 		const b = resolveEntityBackend(entityId);
 		if (!b) {
-			error = 'No backend found for this playlist';
+			error = m.playlist_no_backend();
 			loading = false;
 			return;
 		}
@@ -47,7 +48,7 @@
 				tracks = result.items;
 			})
 			.catch((e: any) => {
-				error = e.message ?? 'Failed to load playlist';
+				error = e.message ?? m.playlist_failed_load();
 			})
 			.finally(() => {
 				loading = false;
@@ -88,15 +89,15 @@
 {:else if error}
 	<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
 		<p class="text-lg">{error}</p>
-		<a href="/settings/backends" class="text-sm text-accent hover:underline">Manage backends</a>
+		<a href="/settings/backends" class="text-sm text-accent hover:underline">{m.action_manage_backends()}</a>
 	</div>
 {:else if playlist}
 	<section>
 		<PageHeader
 			title={playlist.title}
-			type="Playlist"
+			type={m.playlist_type()}
 			subtitle={playlist.description ?? ''}
-			meta="{tracks.length} songs"
+			meta={m.playlist_songs_count({ count: tracks.length })}
 		/>
 
 		<div class="mt-6 mb-6 flex items-center gap-4">
@@ -142,6 +143,6 @@
 	</section>
 {:else}
 	<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
-		<p class="text-lg">Playlist not found</p>
+		<p class="text-lg">{m.playlist_not_found()}</p>
 	</div>
 {/if}

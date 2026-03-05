@@ -21,6 +21,7 @@
 		Radio,
 		Activity
 	} from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
 	import Slider from '$lib/components/ui/Slider.svelte';
 	import StarRating from '$lib/components/ui/StarRating.svelte';
@@ -36,15 +37,17 @@
 		getSidePanel,
 		getArtExpanded,
 		setArtExpanded,
+		getVisualizerMode,
+		cycleVisualizerMode
+	} from '$lib/stores/configStore.svelte';
+	import {
 		getArtFullscreen,
 		setArtFullscreen,
-		getVisualizerMode,
-		cycleVisualizerMode,
 		getFullscreenVisualizer,
 		setFullscreenVisualizer
-	} from '$lib/stores/uiStore.svelte';
+	} from '$lib/stores/uiEphemeral.svelte';
 	import { getVolume, setVolume, getPlayback, getRepeatMode, cycleRepeatMode, getShuffled, setShuffled } from '$lib/stores/configStore.svelte';
-	import { getCurrentItem, toDisplay, getActiveMediaType, hasNext, hasPrevious, getQueueCount, getItems, getCurrentIndex, shuffleQueue, unshuffleQueue, clearQueue } from '$lib/stores/unifiedQueue.svelte';
+	import { getCurrentItem, toDisplay, getActiveMediaType, getItems, getCurrentIndex, shuffleQueue, unshuffleQueue, clearQueue } from '$lib/stores/unifiedQueue.svelte';
 	import { getHasLyrics } from '$lib/stores/lyricsAvailableStore.svelte';
 	import { getSleepTimer, formatRemaining } from '$lib/stores/sleepTimerStore.svelte';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
@@ -61,6 +64,8 @@
 		stopPlayback
 	} from '$lib/stores/playerStore.svelte';
 	import { getNowPlaying } from '$lib/stores/radioStore.svelte';
+	import { hasCapability } from '$lib/stores/backendStore.svelte';
+	import { Capability } from '$lib/backends/types';
 
 	let compact = $derived(getAppearance().compactMode);
 
@@ -250,7 +255,7 @@
 							e.stopPropagation();
 							setArtExpanded(true);
 						}}
-						aria-label="Expand"
+						aria-label={m.aria_expand()}
 					>
 						<ChevronUp size={12} />
 					</button>
@@ -262,7 +267,7 @@
 							e.stopPropagation();
 							setArtFullscreen(true);
 						}}
-						aria-label="Fullscreen"
+						aria-label={m.aria_fullscreen()}
 					>
 						<Maximize2 size={10} />
 					</button>
@@ -274,13 +279,13 @@
 				{#if radioNowPlaying?.title}
 					<div class="flex items-center gap-1.5">
 						<p class="truncate text-sm font-medium text-text-primary">{radioNowPlaying.title}</p>
-						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">LIVE</span>
+						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">{m.player_live()}</span>
 					</div>
 					<p class="truncate text-xs text-text-secondary">{radioNowPlaying.artist ? `${radioNowPlaying.artist} — ` : ''}{display.title}</p>
 				{:else}
 					<div class="flex items-center gap-1.5">
 						<p class="truncate text-sm font-medium text-text-primary">{display.title}</p>
-						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">LIVE</span>
+						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">{m.player_live()}</span>
 					</div>
 					<p class="truncate text-xs text-text-secondary">{display.subtitle}</p>
 				{/if}
@@ -288,7 +293,7 @@
 				<p class="truncate text-sm font-medium text-text-primary">{display.title}</p>
 				<p class="truncate text-xs text-text-secondary">{display.subtitle}</p>
 			{:else}
-				<p class="truncate text-sm font-medium text-text-primary">No track playing</p>
+				<p class="truncate text-sm font-medium text-text-primary">{m.player_no_track()}</p>
 				<p class="truncate text-xs text-text-secondary">&nbsp;</p>
 			{/if}
 		</div>
@@ -301,12 +306,12 @@
 	<div class="flex flex-col items-center gap-1">
 		<div class="flex items-center {compact ? 'gap-2' : 'gap-3'}">
 			{#if mediaType === 'radio'}
-				<IconButton icon={Radio} size={16} label="Radio" active={true} />
+				<IconButton icon={Radio} size={16} label={m.player_radio()} active={true} />
 			{:else if mediaType === 'track'}
-				<IconButton icon={Shuffle} size={16} label="Shuffle" active={shuffled} onclick={toggleShuffle} />
+				<IconButton icon={Shuffle} size={16} label={m.player_shuffle()} active={shuffled} onclick={toggleShuffle} />
 			{/if}
 			{#if mediaType !== 'radio'}
-				<IconButton icon={SkipBack} size={18} label="Previous" onclick={skipPrevious} />
+				<IconButton icon={SkipBack} size={18} label={m.player_previous()} onclick={skipPrevious} />
 			{/if}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<span
@@ -314,13 +319,13 @@
 				onpointerup={onPlayPointerUp}
 				onpointercancel={onPlayPointerUp}
 			>
-				<IconButton icon={PlayPauseIcon} size={20} label={playState === 'playing' ? 'Pause' : 'Play'} variant="play" />
+				<IconButton icon={PlayPauseIcon} size={20} label={playState === 'playing' ? m.player_pause() : m.player_play()} variant="play" />
 			</span>
 			{#if mediaType !== 'radio'}
-				<IconButton icon={SkipForward} size={18} label="Next" onclick={skipNext} />
+				<IconButton icon={SkipForward} size={18} label={m.player_next()} onclick={skipNext} />
 			{/if}
 			{#if mediaType === 'track'}
-				<IconButton icon={RepeatIcon} size={16} label="Repeat" active={repeatMode !== 'off'} onclick={cycleRepeatMode} />
+				<IconButton icon={RepeatIcon} size={16} label={m.player_repeat()} active={repeatMode !== 'off'} onclick={cycleRepeatMode} />
 			{/if}
 			{#if item}
 				<TrackInfoCard />
@@ -353,7 +358,7 @@
 						value={progress}
 						oninput={onProgressInput}
 						class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-						aria-label="Seek"
+						aria-label={m.aria_seek()}
 					/>
 				</div>
 				<span class="w-16 text-xs tabular-nums text-text-muted">{formatTime(dur)}</span>
@@ -375,7 +380,7 @@
 			<IconButton
 				icon={ListMusic}
 				size={18}
-				label="Queue"
+				label={m.player_queue()}
 				active={activePanel === 'queue'}
 				onclick={toggleQueue}
 			/>
@@ -385,26 +390,28 @@
 				</span>
 			{/if}
 		</div>
-		<IconButton
-			icon={Mic2}
-			size={18}
-			label="Lyrics"
-			active={activePanel === 'lyrics' || lyricsAvailable}
-			onclick={toggleLyrics}
-		/>
+		{#if hasCapability(Capability.Lyrics)}
+			<IconButton
+				icon={Mic2}
+				size={18}
+				label={m.player_lyrics()}
+				active={activePanel === 'lyrics' || lyricsAvailable}
+				onclick={toggleLyrics}
+			/>
+		{/if}
 		<EQCard />
 		{#if visualizerEnabled}
 			<IconButton
 				icon={Activity}
 				size={18}
-				label="Visualizer ({visualizerMode})"
+				label={m.player_visualizer_mode({ mode: visualizerMode })}
 				active={visActive}
 				onclick={cycleVisualizerMode}
 			/>
 			<IconButton
 				icon={Maximize2}
 				size={18}
-				label="Fullscreen visualizer"
+				label={m.player_fullscreen_visualizer()}
 				onclick={() => setFullscreenVisualizer(true)}
 			/>
 		{/if}
@@ -428,7 +435,7 @@
 				type="button"
 				class="flex items-center justify-center text-text-secondary transition-colors hover:text-text-primary"
 				onclick={toggleMute}
-				aria-label="Toggle mute"
+				aria-label={m.aria_toggle_mute()}
 			>
 				<VolumeIcon size={18} />
 			</button>
@@ -463,7 +470,7 @@
 						e.stopPropagation();
 						setArtExpanded(false);
 					}}
-					aria-label="Collapse"
+					aria-label={m.aria_collapse()}
 				>
 					<ChevronDown size={16} />
 				</button>
@@ -475,7 +482,7 @@
 						e.stopPropagation();
 						setArtFullscreen(true);
 					}}
-					aria-label="Fullscreen"
+					aria-label={m.aria_fullscreen()}
 				>
 					<Maximize2 size={14} />
 				</button>
@@ -493,13 +500,13 @@
 		role="dialog"
 		tabindex="-1"
 		aria-modal="true"
-		aria-label="Album art fullscreen"
+		aria-label={m.aria_album_art_fullscreen()}
 	>
 		<button
 			type="button"
 			class="absolute top-6 right-6 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
 			onclick={() => setArtFullscreen(false)}
-			aria-label="Close"
+			aria-label={m.aria_close()}
 		>
 			<X size={20} />
 		</button>
@@ -508,7 +515,7 @@
 				type="button"
 				class="h-[80vh] max-h-[80vw] w-[80vw] max-w-[80vh] cursor-default overflow-hidden rounded-2xl shadow-2xl"
 				onclick={(e) => e.stopPropagation()}
-				aria-label="Album artwork"
+				aria-label={m.aria_album_artwork()}
 			>
 				<CachedImage
 					src={display.artwork}
@@ -522,7 +529,7 @@
 				type="button"
 				class="h-[80vh] max-h-[80vw] w-[80vw] max-w-[80vh] cursor-default rounded-2xl bg-bg-highlight shadow-2xl"
 				onclick={(e) => e.stopPropagation()}
-				aria-label="Album artwork"
+				aria-label={m.aria_album_artwork()}
 			></button>
 		{/if}
 	</div>

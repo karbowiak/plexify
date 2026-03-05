@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Star } from 'lucide-svelte';
 
 	interface Props {
@@ -32,7 +33,7 @@
 	class="flex gap-0.5 {className}"
 	onmouseleave={() => (hovered = -1)}
 	role={interactive ? 'radiogroup' : 'img'}
-	aria-label="Rating: {rating} out of {max}"
+	aria-label={m.aria_rating({ rating, max })}
 >
 	{#each Array(max) as _, i}
 		{@const filled = hovered >= 0 ? i <= hovered : i < rating}
@@ -43,7 +44,7 @@
 				: 'text-text-muted hover:text-accent/60'}"
 			onclick={() => handleClick(i)}
 			onmouseenter={() => interactive && (hovered = i)}
-			aria-label="{i + 1} star{i === 0 ? '' : 's'}"
+			aria-label={m.aria_star_rating_value({ count: i + 1 })}
 			disabled={!interactive}
 		>
 			<Star {size} class={filled ? 'fill-current' : ''} />

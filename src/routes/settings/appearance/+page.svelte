@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { getAppearance, setAppearance, getVisualizerColors, getVisualizerColorDefaults, type CustomColors } from '$lib/stores/configStore.svelte';
+	import { browser } from '$app/environment';
+	import type { CustomColors } from '$lib/configTypes';
+	import { getAppearance, setAppearance, getVisualizerColors } from '$lib/stores/configStore.svelte';
 	import {
 		DARK_DEFAULTS, LIGHT_DEFAULTS,
 		DARK_OVERLAY_BASE, LIGHT_OVERLAY_BASE,
@@ -7,6 +9,7 @@
 		DARK_RANGE_TRACK_BASE, LIGHT_RANGE_TRACK_BASE,
 		ACCENT_SECONDARY_DEFAULT
 	} from '$lib/stores/applyTheme.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import Slider from '$lib/components/ui/Slider.svelte';
 	import ColorPicker from '$lib/components/ui/ColorPicker.svelte';
 	import { Play, Check, ChevronDown, Music, Disc3, ListMusic } from 'lucide-svelte';
@@ -56,20 +59,20 @@
 	let visHighPickerOpen = $state(false);
 	let visColors = $derived(getVisualizerColors());
 
-	const colorLabels: { key: keyof CustomColors; label: string; cssVar: string }[] = [
-		{ key: 'bgBase', label: 'Background Base', cssVar: '--color-bg-base' },
-		{ key: 'bgSurface', label: 'Background Surface', cssVar: '--color-bg-surface' },
-		{ key: 'bgElevated', label: 'Background Elevated', cssVar: '--color-bg-elevated' },
-		{ key: 'bgHighlight', label: 'Background Highlight', cssVar: '--color-bg-highlight' },
-		{ key: 'bgHover', label: 'Background Hover', cssVar: '--color-bg-hover' },
-		{ key: 'textPrimary', label: 'Text Primary', cssVar: '--color-text-primary' },
-		{ key: 'textSecondary', label: 'Text Secondary', cssVar: '--color-text-secondary' },
-		{ key: 'textMuted', label: 'Text Muted', cssVar: '--color-text-muted' }
+	const colorLabels: { key: keyof CustomColors; label: () => string; cssVar: string }[] = [
+		{ key: 'bgBase', label: () => m.appearance_bg_base(), cssVar: '--color-bg-base' },
+		{ key: 'bgSurface', label: () => m.appearance_bg_surface(), cssVar: '--color-bg-surface' },
+		{ key: 'bgElevated', label: () => m.appearance_bg_elevated(), cssVar: '--color-bg-elevated' },
+		{ key: 'bgHighlight', label: () => m.appearance_color_highlight(), cssVar: '--color-bg-highlight' },
+		{ key: 'bgHover', label: () => m.appearance_color_hover(), cssVar: '--color-bg-hover' },
+		{ key: 'textPrimary', label: () => m.appearance_color_primary_text(), cssVar: '--color-text-primary' },
+		{ key: 'textSecondary', label: () => m.appearance_color_secondary_text(), cssVar: '--color-text-secondary' },
+		{ key: 'textMuted', label: () => m.appearance_color_muted_text(), cssVar: '--color-text-muted' }
 	];
 
 	let resolvedTheme = $derived(
 		config.theme === 'system'
-			? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+			? (browser ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : 'dark')
 			: config.theme
 	);
 
@@ -100,11 +103,11 @@
 		});
 	}
 
-	const systemColorLabels: { key: keyof CustomColors; label: string; description: string }[] = [
-		{ key: 'overlayBase', label: 'Overlay & Border Base', description: 'Controls overlay, overlay-hover, overlay-subtle, overlay-medium, and border colors' },
-		{ key: 'scrollbarBase', label: 'Scrollbar Base', description: 'Controls scrollbar thumb and thumb hover colors' },
-		{ key: 'rangeTrackBase', label: 'Range Track Base', description: 'Controls the background track of range sliders' },
-		{ key: 'accentSecondary', label: 'Accent Secondary', description: 'Secondary accent color used for highlights and badges' }
+	const systemColorLabels: { key: keyof CustomColors; label: () => string; description: () => string }[] = [
+		{ key: 'overlayBase', label: () => m.appearance_color_overlay(), description: () => m.appearance_color_overlay_desc() },
+		{ key: 'scrollbarBase', label: () => m.appearance_color_scrollbar(), description: () => m.appearance_color_scrollbar_desc() },
+		{ key: 'rangeTrackBase', label: () => m.appearance_color_range_track(), description: () => m.appearance_color_range_track_desc() },
+		{ key: 'accentSecondary', label: () => m.appearance_color_accent_secondary(), description: () => m.appearance_color_accent_secondary_desc() }
 	];
 
 	function resetCustomColors() {
@@ -113,9 +116,9 @@
 
 	// Data
 	const themes = [
-		{ label: 'Dark', value: 'dark' as const },
-		{ label: 'Light', value: 'light' as const },
-		{ label: 'System', value: 'system' as const }
+		{ label: () => m.appearance_theme_dark(), value: 'dark' as const },
+		{ label: () => m.appearance_theme_light(), value: 'light' as const },
+		{ label: () => m.appearance_theme_system(), value: 'system' as const }
 	];
 
 	const fonts = ['System', 'Inter', 'Geist', 'Montserrat', 'Nunito'];
@@ -129,18 +132,18 @@
 	};
 
 	const accentColors = [
-		{ label: 'Emerald', value: '#10b981' },
-		{ label: 'Green', value: '#1db954' },
-		{ label: 'Blue', value: '#3b82f6' },
-		{ label: 'Cobalt', value: '#2563eb' },
-		{ label: 'Cyan', value: '#06b6d4' },
-		{ label: 'Purple', value: '#8b5cf6' },
-		{ label: 'Magenta', value: '#d946ef' },
-		{ label: 'Pink', value: '#ec4899' },
-		{ label: 'Orange', value: '#f97316' },
-		{ label: 'Amber', value: '#f59e0b' },
-		{ label: 'Rose', value: '#f43f5e' },
-		{ label: 'Red', value: '#ef4444' }
+		{ label: () => m.color_emerald(), value: '#10b981' },
+		{ label: () => m.color_green(), value: '#1db954' },
+		{ label: () => m.color_blue(), value: '#3b82f6' },
+		{ label: () => m.color_cobalt(), value: '#2563eb' },
+		{ label: () => m.color_cyan(), value: '#06b6d4' },
+		{ label: () => m.color_purple(), value: '#8b5cf6' },
+		{ label: () => m.color_magenta(), value: '#d946ef' },
+		{ label: () => m.color_pink(), value: '#ec4899' },
+		{ label: () => m.color_orange(), value: '#f97316' },
+		{ label: () => m.color_amber(), value: '#f59e0b' },
+		{ label: () => m.color_rose(), value: '#f43f5e' },
+		{ label: () => m.color_red(), value: '#ef4444' }
 	];
 
 	// Computed preview values
@@ -156,11 +159,11 @@
 </script>
 
 <div class="space-y-6">
-	<h1 class="text-2xl font-bold text-text-primary">Appearance</h1>
+	<h1 class="text-2xl font-bold text-text-primary">{m.appearance_title()}</h1>
 
 	<!-- Theme Selector -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Theme</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_theme()}</h2>
 		<div class="px-6 pb-5">
 			<div class="flex gap-2">
 				{#each themes as t}
@@ -170,7 +173,7 @@
 							? 'bg-accent text-bg-base shadow-lg shadow-glow-accent'
 							: 'bg-overlay text-text-secondary hover:bg-overlay-hover hover:text-text-primary'}"
 					>
-						{t.label}
+						{t.label()}
 					</button>
 				{/each}
 			</div>
@@ -179,7 +182,7 @@
 
 	<!-- Font Selector -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Font</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_font()}</h2>
 		<div class="px-6 pb-5">
 			<div class="flex flex-wrap gap-2">
 				{#each fonts as f}
@@ -199,14 +202,14 @@
 
 	<!-- Accent Colour -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Accent Colour</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_accent_colour()}</h2>
 		<div class="space-y-4 px-6 pb-5">
 			<!-- Color swatches + hex input -->
 			<div class="flex items-center gap-3">
 				{#each accentColors as color}
 					<button
-						aria-label="Set accent color to {color.label}"
-						title={color.label}
+						aria-label={m.aria_set_accent({ color: color.label() })}
+						title={color.label()}
 						onclick={() => setAppearance({ accentColor: color.value })}
 						class="relative h-9 w-9 shrink-0 rounded-full transition-transform hover:scale-110"
 						style="background-color: {color.value}"
@@ -233,7 +236,7 @@
 
 			<!-- Accent preview bar -->
 			<div class="rounded-lg bg-overlay-subtle p-4">
-				<p class="mb-3 text-xs font-medium text-text-muted">Preview</p>
+				<p class="mb-3 text-xs font-medium text-text-muted">{m.appearance_preview()}</p>
 				<div class="flex items-center gap-4">
 					<button class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-lg" style="background-color: {config.accentColor}">
 						<Play size={16} fill="currentColor" class="text-bg-base" />
@@ -243,8 +246,8 @@
 							<div class="h-full w-2/3 rounded-full" style="background-color: {config.accentColor}"></div>
 						</div>
 						<div class="flex items-center justify-between">
-							<span class="text-xs font-medium" style="color: {config.accentColor}">Now Playing</span>
-							<span class="rounded-full px-3 py-0.5 text-xs font-semibold text-bg-base" style="background-color: {config.accentColor}">Active</span>
+							<span class="text-xs font-medium" style="color: {config.accentColor}">{m.appearance_now_playing()}</span>
+							<span class="rounded-full px-3 py-0.5 text-xs font-semibold text-bg-base" style="background-color: {config.accentColor}">{m.appearance_active()}</span>
 						</div>
 					</div>
 				</div>
@@ -254,12 +257,12 @@
 
 	<!-- Card Size -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Card Size</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_card_size()}</h2>
 		<div class="space-y-3 px-6 pb-5">
 			<div class="flex items-center gap-4">
-				<span class="text-xs text-text-muted">Small</span>
+				<span class="text-xs text-text-muted">{m.appearance_small()}</span>
 				<Slider bind:value={cardSize} min={80} max={200} step={5} class="flex-1" />
-				<span class="text-xs text-text-muted">Large</span>
+				<span class="text-xs text-text-muted">{m.appearance_large()}</span>
 				<span class="w-14 text-right text-sm font-medium text-text-secondary">{Math.round(160 * cardSize / 100)}px</span>
 			</div>
 		</div>
@@ -267,18 +270,18 @@
 
 	<!-- Highlight Intensity -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Highlight Intensity</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_highlight_intensity()}</h2>
 		<div class="space-y-4 px-6 pb-5">
 			<div class="flex items-center gap-4">
-				<span class="text-xs text-text-muted">Subtle</span>
+				<span class="text-xs text-text-muted">{m.appearance_subtle()}</span>
 				<Slider bind:value={highlightIntensity} min={0} max={200} step={5} class="flex-1" />
-				<span class="text-xs text-text-muted">Vivid</span>
+				<span class="text-xs text-text-muted">{m.appearance_vivid()}</span>
 				<span class="w-12 text-right text-sm font-medium text-text-secondary">{highlightIntensity}%</span>
 			</div>
 
 			<!-- Live preview -->
 			<div class="space-y-2 rounded-lg bg-overlay-subtle p-4">
-				<p class="mb-3 text-xs font-medium text-text-muted">Preview</p>
+				<p class="mb-3 text-xs font-medium text-text-muted">{m.appearance_preview()}</p>
 
 				<!-- Card hover -->
 				<div
@@ -289,8 +292,8 @@
 						<Disc3 size={14} class="text-text-secondary" />
 					</div>
 					<div class="min-w-0 flex-1">
-						<p class="truncate text-sm font-medium text-text-primary">Card hover state</p>
-						<p class="truncate text-xs text-text-secondary">Hover highlight preview</p>
+						<p class="truncate text-sm font-medium text-text-primary">{m.appearance_card_hover()}</p>
+						<p class="truncate text-xs text-text-secondary">{m.appearance_hover_preview()}</p>
 					</div>
 				</div>
 
@@ -302,7 +305,7 @@
 					<span class="w-5 text-center text-xs text-text-muted">1</span>
 					<div class="h-8 w-8 shrink-0 rounded bg-overlay-medium"></div>
 					<div class="min-w-0 flex-1">
-						<p class="truncate text-sm text-text-primary">Track row highlight</p>
+						<p class="truncate text-sm text-text-primary">{m.appearance_track_highlight()}</p>
 					</div>
 					<span class="text-xs text-text-muted">3:42</span>
 				</div>
@@ -313,7 +316,7 @@
 					style="background-color: rgba({accentRgb()}, {tintOpacity * 1.2})"
 				>
 					<Play size={14} class="text-text-secondary" />
-					<span class="text-sm text-text-primary">Menu item</span>
+					<span class="text-sm text-text-primary">{m.appearance_menu_item()}</span>
 				</div>
 
 				<!-- Queue item -->
@@ -323,8 +326,8 @@
 				>
 					<div class="h-8 w-8 shrink-0 rounded bg-overlay-medium"></div>
 					<div class="min-w-0 flex-1">
-						<p class="truncate text-sm text-text-primary">Queue item</p>
-						<p class="truncate text-xs text-text-muted">Artist name</p>
+						<p class="truncate text-sm text-text-primary">{m.appearance_queue_item()}</p>
+						<p class="truncate text-xs text-text-muted">{m.appearance_artist_name()}</p>
 					</div>
 					<ListMusic size={14} class="text-text-muted" />
 				</div>
@@ -334,12 +337,12 @@
 
 	<!-- Visualizer Colors -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Visualizer Colors</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.appearance_visualizer_colors()}</h2>
 		<div class="space-y-4 px-6 pb-5">
-			<p class="text-xs text-text-secondary">Customize the gradient colors for spectrum, oscilloscope, and VU visualizers.</p>
+			<p class="text-xs text-text-secondary">{m.appearance_visualizer_colors_desc()}</p>
 			<div class="flex items-center gap-6">
 				<div class="flex items-center gap-2">
-					<span class="text-xs text-text-muted">Low</span>
+					<span class="text-xs text-text-muted">{m.appearance_low()}</span>
 					<ColorPicker
 						value={visColors.low}
 						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, low: hex } })}
@@ -348,7 +351,7 @@
 					/>
 				</div>
 				<div class="flex items-center gap-2">
-					<span class="text-xs text-text-muted">Mid</span>
+					<span class="text-xs text-text-muted">{m.appearance_mid()}</span>
 					<ColorPicker
 						value={visColors.mid}
 						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, mid: hex } })}
@@ -357,7 +360,7 @@
 					/>
 				</div>
 				<div class="flex items-center gap-2">
-					<span class="text-xs text-text-muted">High</span>
+					<span class="text-xs text-text-muted">{m.appearance_high()}</span>
 					<ColorPicker
 						value={visColors.high}
 						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, high: hex } })}
@@ -375,7 +378,7 @@
 					onclick={() => setAppearance({ visualizerColors: null })}
 					class="rounded-lg bg-overlay px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-overlay-hover hover:text-text-primary"
 				>
-					Reset to Defaults
+					{m.appearance_reset_defaults()}
 				</button>
 			{/if}
 		</div>
@@ -385,11 +388,11 @@
 	<div class="rounded-xl border border-border bg-bg-elevated">
 		<div class="flex items-center justify-between px-6 py-5">
 			<div>
-				<p class="text-sm font-medium text-text-primary">Compact Mode</p>
-				<p class="text-xs text-text-secondary">Reduce spacing and padding for a denser layout.</p>
+				<p class="text-sm font-medium text-text-primary">{m.appearance_compact_mode()}</p>
+				<p class="text-xs text-text-secondary">{m.appearance_compact_mode_desc()}</p>
 			</div>
 			<button
-				aria-label="Toggle compact mode"
+				aria-label={m.aria_toggle_compact()}
 				onclick={() => setAppearance({ compactMode: !config.compactMode })}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.compactMode ? 'bg-accent' : 'bg-overlay-medium'}"
 			>
@@ -405,8 +408,8 @@
 			class="flex w-full items-center justify-between px-6 py-5 text-left"
 		>
 			<div>
-				<p class="text-sm font-medium text-text-primary">Customize Colors</p>
-				<p class="text-xs text-text-secondary">Override individual theme colors.</p>
+				<p class="text-sm font-medium text-text-primary">{m.appearance_customize_colors()}</p>
+				<p class="text-xs text-text-secondary">{m.appearance_customize_colors_desc()}</p>
 			</div>
 			<ChevronDown
 				size={18}
@@ -420,7 +423,7 @@
 				<div class="space-y-3">
 					{#each colorLabels as { key, label }}
 						<div class="flex items-center gap-3">
-							<span class="min-w-0 flex-1 text-sm text-text-secondary">{label}</span>
+							<span class="min-w-0 flex-1 text-sm text-text-secondary">{label()}</span>
 							<ColorPicker
 								value={getCustomColor(key)}
 								onchange={(hex) => setCustomColor(key, hex)}
@@ -433,13 +436,13 @@
 
 				<!-- System Colors -->
 				<div class="mt-5 border-t border-border pt-4">
-					<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-text-muted">System Colors</h3>
+					<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-text-muted">{m.appearance_system_colors()}</h3>
 					<div class="space-y-3">
 						{#each systemColorLabels as { key, label, description }}
 							<div class="flex items-center gap-3">
 								<div class="min-w-0 flex-1">
-									<span class="text-sm text-text-secondary">{label}</span>
-									<p class="text-xs text-text-muted">{description}</p>
+									<span class="text-sm text-text-secondary">{label()}</span>
+									<p class="text-xs text-text-muted">{description()}</p>
 								</div>
 								<ColorPicker
 									value={getCustomColor(key)}
@@ -456,7 +459,7 @@
 					onclick={resetCustomColors}
 					class="mt-4 rounded-lg bg-overlay px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-overlay-hover hover:text-text-primary"
 				>
-					Reset to Defaults
+					{m.appearance_reset_defaults()}
 				</button>
 			</div>
 		{/if}

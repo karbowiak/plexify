@@ -2,6 +2,7 @@
 	import { getAll } from '$lib/backends/registry';
 	import { getBackendConfig } from '$lib/stores/configStore.svelte';
 	import { Server, Music, Radio, Database, Cloud, HardDrive } from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const iconMap: Record<string, any> = {
@@ -21,10 +22,10 @@
 </script>
 
 <div class="space-y-6">
-	<h1 class="text-2xl font-bold text-text-primary">Backends</h1>
+	<h1 class="text-2xl font-bold text-text-primary">{m.backends_title()}</h1>
 
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Connected Services</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.backends_connected_services()}</h2>
 
 		{#each backends as backend}
 			{@const config = getBackendConfig(backend.id)}
@@ -47,10 +48,10 @@
 						? 'bg-accent/10 text-accent'
 						: 'bg-overlay-light text-text-muted'}"
 				>
-					{config.enabled ? 'Active' : 'Inactive'}
+					{config.enabled ? m.backends_active() : m.backends_inactive()}
 				</span>
 				<span class="rounded-full bg-overlay-light px-2 py-0.5 text-xs text-text-secondary">
-					{backend.capabilities.size} capabilities
+					{m.backends_capabilities_count({ count: backend.capabilities.size })}
 				</span>
 			</a>
 		{/each}

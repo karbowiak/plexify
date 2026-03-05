@@ -6,27 +6,44 @@
 	import PlayerBar from '$lib/components/layout/PlayerBar.svelte';
 	import GlobalHotkeys from '$lib/components/layout/GlobalHotkeys.svelte';
 	import SidePanel from '$lib/components/layout/SidePanel.svelte';
-	import { getSidePanel, getShowCreatePlaylist } from '$lib/stores/uiStore.svelte';
+	import { getShowCreatePlaylist } from '$lib/stores/uiEphemeral.svelte';
 	import CreatePlaylistModal from '$lib/components/ui/CreatePlaylistModal.svelte';
 	import { applyTheme } from '$lib/stores/applyTheme.svelte';
 	import { scrollMemory, trackPath } from '$lib/actions/scrollMemory';
 	import { page } from '$app/state';
-	import { getAppearance } from '$lib/stores/configStore.svelte';
-	import { restoreBackends } from '$lib/stores/backendStore.svelte';
+	import { getAppearance, getGeneral, getSidePanel, initFromServer } from '$lib/stores/configStore.svelte';
+	import { restoreBackends, initCapabilitiesFromSSR } from '$lib/stores/backendStore.svelte';
 	import { initMediaSession, destroyMediaSession } from '$lib/stores/mediaSession.svelte';
 	import { initEventStore, destroyEventStore } from '$lib/stores/eventStore.svelte';
 	import { startDiscoveryScheduler, stopDiscoveryScheduler } from '$lib/stores/discoveryScheduler.svelte';
+	import { setLocale, isLocale } from '$lib/paraglide/runtime.js';
+	import { computeThemeProperties } from '$lib/theme';
 	import { onMount } from 'svelte';
 
 	let compact = $derived(getAppearance().compactMode);
 
-	let { children } = $props();
+	let { data, children } = $props();
+
+	// Seed stores from server-provided config — runs during SSR + client init
+	initFromServer(data.config);
+	initCapabilitiesFromSSR(data.backendCaps);
+
+	// Generate SSR theme CSS from server-provided config
+	let themeCSS = $derived.by(() => {
+		if (!data.config) return '';
+		const { properties } = computeThemeProperties(data.config.appearance);
+		return ':root{' + Object.entries(properties).map(([k, v]) => `${k}:${v}`).join(';') + '}';
+	});
 
 	$effect(() => {
 		applyTheme();
 	});
 
 	onMount(() => {
+		const savedLang = getGeneral().language;
+		if (savedLang && isLocale(savedLang)) {
+			setLocale(savedLang);
+		}
 		restoreBackends();
 		initMediaSession();
 		initEventStore().then(() => startDiscoveryScheduler());
@@ -48,6 +65,9 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
+	{#if themeCSS}
+		{@html `<style id="ssr-theme">${themeCSS}</style>`}
+	{/if}
 </svelte:head>
 
 <div class="flex h-screen flex-col bg-bg-base">

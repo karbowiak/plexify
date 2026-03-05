@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Play, Pause, Check, Podcast as PodcastIcon } from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
-	import type { PodcastEpisode } from '$lib/podcast/types';
+	import type { PodcastEpisode } from '$lib/backends/models/podcast';
 
 	let {
 		episode,

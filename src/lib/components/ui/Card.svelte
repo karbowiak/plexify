@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Play } from 'lucide-svelte';
 	import CachedImage from './CachedImage.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	interface Props {
 		title: string;
@@ -33,7 +34,7 @@
 		{#if playable}
 			<button
 				type="button"
-				aria-label="Play {title}"
+				aria-label={m.aria_play_title({ title })}
 				onclick={(e) => {
 					e.preventDefault();
 					e.stopPropagation();

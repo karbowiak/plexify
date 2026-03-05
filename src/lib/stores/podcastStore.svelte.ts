@@ -1,7 +1,7 @@
 import type {
 	Podcast,
 	PodcastSubscription
-} from '$lib/podcast/types';
+} from '$lib/backends/models/podcast';
 
 const STORAGE_KEY = 'podcast-state';
 

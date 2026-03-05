@@ -4,10 +4,11 @@
 	import ActivityDropdown from '$lib/components/features/ActivityDropdown.svelte';
 	import SearchDropdown from '$lib/components/ui/SearchDropdown.svelte';
 	import HotkeyHelpModal from '$lib/components/ui/HotkeyHelpModal.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { getAppearance, cycleRepeatMode, getShuffled, setShuffled } from '$lib/stores/configStore.svelte';
-	import { getFullscreenVisualizer, setFullscreenVisualizer } from '$lib/stores/uiStore.svelte';
+	import { getFullscreenVisualizer, setFullscreenVisualizer } from '$lib/stores/uiEphemeral.svelte';
 	import { shuffleQueue, unshuffleQueue } from '$lib/stores/unifiedQueue.svelte';
 
 	let compact = $derived(getAppearance().compactMode);
@@ -93,8 +94,8 @@
 >
 	<!-- Left: Navigation -->
 	<div class="flex items-center gap-1">
-		<IconButton icon={ChevronLeft} label="Go back" onclick={() => history.back()} />
-		<IconButton icon={ChevronRight} label="Go forward" onclick={() => history.forward()} />
+		<IconButton icon={ChevronLeft} label={m.aria_go_back()} onclick={() => history.back()} />
+		<IconButton icon={ChevronRight} label={m.aria_go_forward()} onclick={() => history.forward()} />
 	</div>
 
 	<!-- Center: Search -->
@@ -102,7 +103,7 @@
 		<Search size={16} class="absolute top-1/2 left-3 -translate-y-1/2 text-text-muted" />
 		<input
 			type="text"
-			placeholder="Search..."
+			placeholder={m.search_placeholder()}
 			bind:value={query}
 			bind:this={searchInput}
 			onfocus={() => focused = true}
@@ -118,8 +119,8 @@
 	<!-- Right: Actions -->
 	<div class="flex items-center gap-1">
 		<ActivityDropdown />
-		<IconButton icon={RefreshCw} label="Refresh" />
-		<IconButton icon={Settings} label="Settings" active={isSettings} onclick={onSettingsClick} />
+		<IconButton icon={RefreshCw} label={m.aria_refresh()} />
+		<IconButton icon={Settings} label={m.aria_settings()} active={isSettings} onclick={onSettingsClick} />
 	</div>
 </header>
 

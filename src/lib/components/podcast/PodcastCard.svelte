@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Podcast as PodcastIcon, Check } from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
-	import type { Podcast, PodcastSubscription } from '$lib/podcast/types';
+	import type { Podcast, PodcastSubscription } from '$lib/backends/models/podcast';
 	import { isSubscribed } from '$lib/stores/podcastStore.svelte';
 
 	let {

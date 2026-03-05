@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getPlayback, setPlayback } from '$lib/stores/configStore.svelte';
 	import { syncConfig } from '$lib/stores/playerStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	let config = $derived(getPlayback());
 
@@ -11,19 +12,19 @@
 </script>
 
 <div class="space-y-6">
-	<h1 class="text-2xl font-bold text-text-primary">Playback</h1>
+	<h1 class="text-2xl font-bold text-text-primary">{m.playback_title()}</h1>
 
 	<!-- Card 1: Crossfade -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Crossfade</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.playback_crossfade()}</h2>
 
 		<div class="flex items-center justify-between px-6 py-4">
 			<div>
-				<p class="text-sm font-medium text-text-primary">Crossfade</p>
-				<p class="text-xs text-text-secondary">Smoothly blend between tracks.</p>
+				<p class="text-sm font-medium text-text-primary">{m.playback_crossfade()}</p>
+				<p class="text-xs text-text-secondary">{m.playback_crossfade_desc()}</p>
 			</div>
 			<button
-				aria-label="Toggle crossfade"
+				aria-label={m.aria_toggle_crossfade()}
 				onclick={() => updatePlayback({ crossfadeEnabled: !config.crossfadeEnabled })}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.crossfadeEnabled
 					? 'bg-accent'
@@ -40,7 +41,7 @@
 		{#if config.crossfadeEnabled}
 			<div class="px-6 pb-4">
 				<label for="crossfadeDuration" class="block text-xs text-text-secondary">
-					Duration: {config.crossfadeDuration}s
+					{m.playback_duration({ seconds: config.crossfadeDuration })}
 				</label>
 				<input
 					id="crossfadeDuration"
@@ -59,11 +60,11 @@
 
 			<div class="flex items-center justify-between px-6 py-4">
 				<div>
-					<p class="text-sm font-medium text-text-primary">Smart Crossfade</p>
-					<p class="text-xs text-text-secondary">Analyze track endings for optimal blend timing.</p>
+					<p class="text-sm font-medium text-text-primary">{m.playback_smart_crossfade()}</p>
+					<p class="text-xs text-text-secondary">{m.playback_smart_crossfade_desc()}</p>
 				</div>
 				<button
-					aria-label="Toggle smart crossfade"
+					aria-label={m.aria_toggle_smart_crossfade()}
 					onclick={() => updatePlayback({ smartCrossfade: !config.smartCrossfade })}
 					class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.smartCrossfade
 						? 'bg-accent'
@@ -81,11 +82,11 @@
 
 			<div class="flex items-center justify-between px-6 py-4 pb-5">
 				<div>
-					<p class="text-sm font-medium text-text-primary">Same-Album Crossfade</p>
-					<p class="text-xs text-text-secondary">Apply crossfade between tracks on the same album.</p>
+					<p class="text-sm font-medium text-text-primary">{m.playback_same_album()}</p>
+					<p class="text-xs text-text-secondary">{m.playback_same_album_desc()}</p>
 				</div>
 				<button
-					aria-label="Toggle same-album crossfade"
+					aria-label={m.aria_toggle_same_album_crossfade()}
 					onclick={() => updatePlayback({ sameAlbumCrossfade: !config.sameAlbumCrossfade })}
 					class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.sameAlbumCrossfade
 						? 'bg-accent'
@@ -103,18 +104,18 @@
 
 	<!-- Card 2: Playback -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Playback</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.playback_title()}</h2>
 
 		<!-- Gapless Playback -->
 		<div class="flex items-center justify-between px-6 py-4">
 			<div>
-				<p class="text-sm font-medium text-text-primary">Gapless Playback</p>
+				<p class="text-sm font-medium text-text-primary">{m.playback_gapless()}</p>
 				<p class="text-xs text-text-secondary">
-					Eliminate silence between tracks on the same album.
+					{m.playback_gapless_desc()}
 				</p>
 			</div>
 			<button
-				aria-label="Toggle gapless playback"
+				aria-label={m.aria_toggle_gapless()}
 				onclick={() => updatePlayback({ gaplessPlayback: !config.gaplessPlayback })}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.gaplessPlayback
 					? 'bg-accent'
@@ -133,13 +134,13 @@
 		<!-- Volume Normalization -->
 		<div class="flex items-center justify-between px-6 py-4">
 			<div>
-				<p class="text-sm font-medium text-text-primary">Volume Normalization</p>
+				<p class="text-sm font-medium text-text-primary">{m.playback_normalize()}</p>
 				<p class="text-xs text-text-secondary">
-					Adjust volume levels so all tracks play at a similar loudness.
+					{m.playback_normalize_desc()}
 				</p>
 			</div>
 			<button
-				aria-label="Toggle volume normalization"
+				aria-label={m.aria_toggle_normalization()}
 				onclick={() => updatePlayback({ normalizeVolume: !config.normalizeVolume })}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.normalizeVolume
 					? 'bg-accent'
@@ -158,11 +159,11 @@
 		<!-- Visualizer -->
 		<div class="flex items-center justify-between px-6 py-4 pb-5">
 			<div>
-				<p class="text-sm font-medium text-text-primary">Visualizer</p>
-				<p class="text-xs text-text-secondary">Enable audio visualizer in the player bar.</p>
+				<p class="text-sm font-medium text-text-primary">{m.playback_visualizer()}</p>
+				<p class="text-xs text-text-secondary">{m.playback_visualizer_desc()}</p>
 			</div>
 			<button
-				aria-label="Toggle visualizer"
+				aria-label={m.aria_toggle_visualizer()}
 				onclick={() => updatePlayback({ visualizerEnabled: !config.visualizerEnabled })}
 				class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.visualizerEnabled
 					? 'bg-accent'
@@ -177,4 +178,3 @@
 		</div>
 	</div>
 </div>
-

@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { stations } from '$lib/data/stations';
 	import { Play, Radio } from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
 </script>
 
 <section>
-	<h1 class="mb-6 text-2xl font-bold">Stations</h1>
+	<h1 class="mb-6 text-2xl font-bold">{m.stations_title()}</h1>
 
 	{#each ['artist', 'mood', 'genre', 'decade'] as type}
 		{@const items = stations.filter((s) => s.type === type)}
 		<section class="mb-8">
-			<h2 class="mb-4 text-lg font-bold capitalize">{type} Stations</h2>
+			<h2 class="mb-4 text-lg font-bold capitalize">{m.stations_type_title({ type })}</h2>
 			<div class="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
 				{#each items as station}
 					<div class="group flex items-center gap-3 rounded-lg bg-bg-elevated p-4 transition-colors hover:bg-bg-hover">

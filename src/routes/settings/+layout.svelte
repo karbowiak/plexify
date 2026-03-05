@@ -3,40 +3,41 @@
 	import { scrollMemory } from '$lib/actions/scrollMemory';
 	import { getAll } from '$lib/backends/registry';
 	import { Cog, Server, Headphones, Palette, Tags, Info, Database } from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	let { children } = $props();
 
 	interface MenuItem {
-		label: string;
+		label: () => string;
 		href: string;
 		icon: any;
-		children?: { label: string; href: string }[];
+		children?: { label: () => string; href: string }[];
 	}
 
 	const menuItems: MenuItem[] = $derived([
-		{ label: 'General', href: '/settings/general', icon: Cog },
+		{ label: () => m.settings_general(), href: '/settings/general', icon: Cog },
 		{
-			label: 'Backends',
+			label: () => m.settings_backends(),
 			href: '/settings/backends',
 			icon: Server,
 			children: getAll().map((b) => ({
-				label: b.metadata.name.replace(' Backend', ''),
+				label: () => b.metadata.name.replace(' Backend', ''),
 				href: `/settings/backends/${b.id}`
 			}))
 		},
-		{ label: 'Metadata', href: '/settings/metadata', icon: Tags },
-		{ label: 'Playback', href: '/settings/playback', icon: Headphones },
-		{ label: 'Appearance', href: '/settings/appearance', icon: Palette },
+		{ label: () => m.settings_metadata(), href: '/settings/metadata', icon: Tags },
+		{ label: () => m.settings_playback(), href: '/settings/playback', icon: Headphones },
+		{ label: () => m.settings_appearance(), href: '/settings/appearance', icon: Palette },
 		{
-			label: 'Cache',
+			label: () => m.settings_cache(),
 			href: '/settings/cache',
 			icon: Database,
 			children: [
-				{ label: 'Image', href: '/settings/cache/image' },
-				{ label: 'Media', href: '/settings/cache/media' },
-				{ label: 'Metadata', href: '/settings/cache/metadata' },
-				{ label: 'Audio Analysis', href: '/settings/cache/audio-analysis' },
-				{ label: 'API', href: '/settings/cache/api' }
+				{ label: () => m.settings_image(), href: '/settings/cache/image' },
+				{ label: () => m.settings_media(), href: '/settings/cache/media' },
+				{ label: () => m.settings_metadata(), href: '/settings/cache/metadata' },
+				{ label: () => m.settings_audio_analysis(), href: '/settings/cache/audio-analysis' },
+				{ label: () => m.settings_api(), href: '/settings/cache/api' }
 			]
 		}
 	]);
@@ -50,7 +51,7 @@
 	<!-- Settings Sidebar -->
 	<nav class="flex w-[180px] shrink-0 flex-col pt-6 pl-2">
 		<p class="mb-4 px-3 text-xs font-semibold uppercase tracking-wider text-text-muted">
-			Settings
+			{m.settings_title()}
 		</p>
 
 		<div class="flex flex-1 flex-col gap-0.5">
@@ -69,7 +70,7 @@
 						strokeWidth={isActive(item.href) ? 2.5 : 2}
 						class={isActive(item.href) ? 'text-accent' : ''}
 					/>
-					<span>{item.label}</span>
+					<span>{item.label()}</span>
 				</a>
 
 				{#if item.children && isActive(item.href)}
@@ -82,7 +83,7 @@
 								? 'text-text-primary'
 								: 'text-text-secondary hover:text-text-primary'}"
 						>
-							{child.label}
+							{child.label()}
 						</a>
 					{/each}
 				{/if}
@@ -106,7 +107,7 @@
 					strokeWidth={isActive('/settings/about') ? 2.5 : 2}
 					class={isActive('/settings/about') ? 'text-accent' : ''}
 				/>
-				<span>About</span>
+				<span>{m.settings_about()}</span>
 			</a>
 		</div>
 	</nav>

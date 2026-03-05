@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { getAudioContext, getAnalyserNode } from '$lib/stores/playerStore.svelte';
 	import {
 		getCurrentPresetName,
@@ -95,7 +96,7 @@
 		const audioCtx = getAudioContext();
 		const analyser = getAnalyserNode();
 		if (!audioCtx || !analyser) {
-			error = 'Audio not initialized — play a track first';
+			error = m.milkdrop_error_no_audio();
 			return;
 		}
 
@@ -119,7 +120,7 @@
 			presetKeys = Object.keys(presets);
 
 			if (presetKeys.length === 0) {
-				error = 'No presets found';
+				error = m.milkdrop_error_no_presets();
 				return;
 			}
 
@@ -134,7 +135,7 @@
 					height: H
 				});
 			} catch (err) {
-				error = `WebGL not supported: ${err}`;
+				error = m.milkdrop_error_webgl({ error: String(err) });
 				return;
 			}
 
@@ -179,7 +180,7 @@
 			});
 			resizeObserver.observe(canvas!);
 		})().catch((err) => {
-			if (!cancelled) error = `Failed to load Milkdrop: ${err}`;
+			if (!cancelled) error = m.milkdrop_error_load_failed({ error: String(err) });
 		});
 
 		return () => {

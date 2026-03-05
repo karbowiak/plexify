@@ -1,4 +1,18 @@
+import * as m from '$lib/paraglide/messages.js';
+
 export const bandLabels = ['31', '63', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'] as const;
+
+export function getPresetName(key: string): string {
+	const names: Record<string, () => string> = {
+		flat: () => m.eq_preset_flat(),
+		bass: () => m.eq_preset_bass_boost(),
+		vocal: () => m.eq_preset_vocal(),
+		treble: () => m.eq_preset_treble_boost(),
+		rock: () => m.eq_preset_rock(),
+		electronic: () => m.eq_preset_electronic()
+	};
+	return names[key]?.() ?? key;
+}
 
 export const presetNames: Record<string, string> = {
 	flat: 'Flat',

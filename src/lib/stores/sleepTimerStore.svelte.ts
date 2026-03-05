@@ -133,4 +133,4 @@ function restoreTimer() {
 	}
 }
 
-restoreTimer();
+if (typeof window !== 'undefined') restoreTimer();

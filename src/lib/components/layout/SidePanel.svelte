@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { X, GripVertical, Podcast, Radio, Trash2 } from 'lucide-svelte';
 	import { fly } from 'svelte/transition';
-	import { getSidePanel, setSidePanel, closeSidePanel } from '$lib/stores/uiStore.svelte';
+	import { getSidePanel, setSidePanel, closeSidePanel } from '$lib/stores/configStore.svelte';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
 	import Slider from '$lib/components/ui/Slider.svelte';
@@ -18,10 +18,13 @@
 	import { playCurrentItem, getState, stopPlayback } from '$lib/stores/playerStore.svelte';
 	import { lyricsData } from '$lib/data/lyrics';
 	import { getLyricsState, loadTrackOffset, updateOffset } from '$lib/stores/lyricsOffsetStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
 	import { formatDuration } from '$lib/utils/format';
+	import { hasCapability } from '$lib/stores/backendStore.svelte';
+	import { Capability } from '$lib/backends/types';
 
-	import type { SidePanel } from '$lib/stores/uiStore.svelte';
+	import type { SidePanel } from '$lib/configTypes';
 
 	let compact = $derived(getAppearance().compactMode);
 
@@ -60,10 +63,15 @@
 		loadTrackOffset('demo-track');
 	});
 
-	const tabs: { id: Exclude<SidePanel, null>; label: string }[] = [
-		{ id: 'queue', label: 'Queue' },
-		{ id: 'lyrics', label: 'Lyrics' }
-	];
+	let tabs = $derived.by(() => {
+		const t: { id: Exclude<SidePanel, null>; label: () => string }[] = [
+			{ id: 'queue', label: () => m.queue_title() }
+		];
+		if (hasCapability(Capability.Lyrics)) {
+			t.push({ id: 'lyrics', label: () => m.queue_lyrics() });
+		}
+		return t;
+	});
 
 	// --- Queue drag-to-reorder state ---
 	const DRAG_THRESHOLD = 5; // px movement before entering drag mode
@@ -203,11 +211,11 @@
 						: 'text-text-muted hover:text-text-secondary'}"
 					onclick={() => setSidePanel(tab.id)}
 				>
-					{tab.label}
+					{tab.label()}
 				</button>
 			{/each}
 		</div>
-		<IconButton icon={X} size={16} label="Close panel" onclick={closeSidePanel} />
+		<IconButton icon={X} size={16} label={m.aria_close()} onclick={closeSidePanel} />
 	</div>
 
 	<!-- Queue content -->
@@ -215,10 +223,10 @@
 		<!-- Now Playing -->
 		<div class="px-4 py-3">
 			<p class="mb-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-				Now Playing
+				{m.queue_now_playing()}
 			</p>
 			{#if currentDisplay}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 				<div
 					class="flex items-center gap-3 rounded-lg border border-accent/10 p-3 {playState === 'stopped' ? 'cursor-pointer hover:border-accent/30' : ''}"
 					style="background: var(--color-accent-tint-subtle)"
@@ -243,28 +251,28 @@
 						<span class="text-xs tabular-nums text-text-muted">{formatDuration(currentDisplay.durationMs)}</span>
 					{/if}
 					{#if currentDisplay.isStream}
-						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">LIVE</span>
+						<span class="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none text-red-400">{m.player_live()}</span>
 					{/if}
 				</div>
 			{:else}
-				<p class="text-xs text-text-muted">Nothing playing</p>
+				<p class="text-xs text-text-muted">{m.queue_nothing_playing()}</p>
 			{/if}
 		</div>
 
 		<!-- Up Next -->
 		<div class="flex items-center justify-between px-4 pb-1">
 			<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">
-				Next Up · {upNextCount} item{upNextCount !== 1 ? 's' : ''}
+				{m.queue_next_up({ count: upNextCount, suffix: upNextCount === 1 ? 'item' : 'items' })}
 			</p>
 			{#if upNextCount > 0}
 				<button
 					type="button"
 					class="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text-secondary"
 					onclick={handleClearQueue}
-					title="Clear queue"
+					title={m.queue_clear_title()}
 				>
 					<Trash2 size={10} />
-					Clear
+					{m.action_clear()}
 				</button>
 			{/if}
 		</div>
@@ -315,7 +323,7 @@
 							<span class="text-xs tabular-nums text-text-muted">{formatDuration(d.durationMs)}</span>
 						{/if}
 						{#if d.isStream}
-							<span class="shrink-0 rounded bg-red-500/20 px-1 py-0.5 text-[8px] font-bold uppercase leading-none text-red-400">LIVE</span>
+							<span class="shrink-0 rounded bg-red-500/20 px-1 py-0.5 text-[8px] font-bold uppercase leading-none text-red-400">{m.player_live()}</span>
 						{/if}
 						{#if isOver && overIndex >= dragIndex}
 							<div
@@ -384,14 +392,14 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="flex items-center gap-3 border-t border-border bg-bg-surface px-4 py-3" onwheel={onTimingWheel}>
 			<span class="shrink-0 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-				Timing
+				{m.queue_timing()}
 			</span>
 			<Slider value={lyricsOffset} oninput={onTimingInput} min={-5000} max={5000} step={100} class="flex-1" />
 			<button
 				type="button"
 				class="shrink-0 text-xs tabular-nums text-text-muted transition-colors hover:text-text-secondary"
 				ondblclick={resetTiming}
-				title="Double-click to reset"
+				title={m.queue_timing_reset()}
 			>
 				{offsetDisplay()}
 			</button>

@@ -63,7 +63,3 @@ export async function updateOffset(offsetMs: number) {
 	}
 }
 
-export function clearTrack() {
-	currentTrackId = null;
-	currentOffset = 0;
-}

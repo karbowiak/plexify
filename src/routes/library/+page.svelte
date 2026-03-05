@@ -2,22 +2,14 @@
 	import Card from '$lib/components/ui/Card.svelte';
 	import HorizontalScroller from '$lib/components/ui/HorizontalScroller.svelte';
 	import TrackRow from '$lib/components/ui/TrackRow.svelte';
-	import { Capability } from '$lib/backends/types';
-	import type { Track, Album, Artist } from '$lib/backends/types';
-	import { getBackend, hasCapability } from '$lib/stores/backendStore.svelte';
+	import type { Album, Artist } from '$lib/backends/types';
+	import { getBackend } from '$lib/stores/backendStore.svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import { playTracksNow } from '$lib/stores/unifiedQueue.svelte';
 	import { playCurrentItem } from '$lib/stores/playerStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
-	let likedArtists = $state<Artist[]>([]);
-	let likedAlbums = $state<Album[]>([]);
-	let likedTracks = $state<Track[]>([]);
-	let loading = $state(true);
-
-	function playSingleTrack(track: Track) {
-		playTracksNow([track], 0);
-		playCurrentItem();
-	}
+	let { data } = $props();
 
 	async function playAlbum(album: Album) {
 		const backend = getBackend();
@@ -37,68 +29,28 @@
 		playCurrentItem();
 	}
 
-	$effect(() => {
-		const backend = getBackend();
-		if (!backend) {
-			loading = false;
-			return;
-		}
-
-		loading = true;
-
-		const promises: Promise<void>[] = [];
-
-		if (backend.getLikedArtists && backend.supports(Capability.Artists)) {
-			promises.push(
-				backend.getLikedArtists(20).then((data) => {
-					likedArtists = data;
-				})
-			);
-		}
-
-		if (backend.getLikedAlbums && backend.supports(Capability.Albums)) {
-			promises.push(
-				backend.getLikedAlbums(20).then((data) => {
-					likedAlbums = data;
-				})
-			);
-		}
-
-		if (backend.getLikedTracks && backend.supports(Capability.Tracks)) {
-			promises.push(
-				backend.getLikedTracks(10).then((data) => {
-					likedTracks = data;
-				})
-			);
-		}
-
-		Promise.all(promises).finally(() => {
-			loading = false;
-		});
-	});
-
-	const showArtists = $derived(hasCapability(Capability.Artists) && (loading || likedArtists.length > 0));
-	const showAlbums = $derived(hasCapability(Capability.Albums) && (loading || likedAlbums.length > 0));
-	const showTracks = $derived(hasCapability(Capability.Tracks) && (loading || likedTracks.length > 0));
+	const showArtists = $derived(data.hasArtists && data.likedArtists.length > 0);
+	const showAlbums = $derived(data.hasAlbums && data.likedAlbums.length > 0);
+	const showTracks = $derived(data.hasTracks && data.likedTracks.length > 0);
 </script>
 
 <section>
-	<h1 class="mb-6 text-2xl font-bold">Your Library</h1>
+	<h1 class="mb-6 text-2xl font-bold">{m.library_title()}</h1>
 
 	{#if !showArtists && !showAlbums && !showTracks}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
-			<p class="text-lg">No library content available</p>
+			<p class="text-lg">{m.library_empty()}</p>
 			<a href="/settings/backends" class="text-sm text-accent hover:underline"
-				>Connect a backend to get started</a
+				>{m.library_connect()}</a
 			>
 		</div>
 	{:else}
 		{#if showArtists}
-			<HorizontalScroller title="Liked Artists" {loading}>
+			<HorizontalScroller title={m.liked_artists_title()}>
 				{#snippet action()}
-					<a href="/liked/artists" class="text-sm text-text-secondary hover:text-text-primary">See all</a>
+					<a href="/liked/artists" class="text-sm text-text-secondary hover:text-text-primary">{m.action_see_all()}</a>
 				{/snippet}
-				{#each likedArtists as artist}
+				{#each data.likedArtists as artist}
 					<div class="shrink-0" style:width="var(--scroller-item-width)">
 						<a href="/artist/{artist.id}" class="contents">
 							<Card
@@ -116,11 +68,11 @@
 		{/if}
 
 		{#if showAlbums}
-			<HorizontalScroller title="Liked Albums" {loading}>
+			<HorizontalScroller title={m.liked_albums_title()}>
 				{#snippet action()}
-					<a href="/liked/albums" class="text-sm text-text-secondary hover:text-text-primary">See all</a>
+					<a href="/liked/albums" class="text-sm text-text-secondary hover:text-text-primary">{m.action_see_all()}</a>
 				{/snippet}
-				{#each likedAlbums as album}
+				{#each data.likedAlbums as album}
 					<div class="shrink-0" style:width="var(--scroller-item-width)">
 						<a href="/album/{album.id}" class="contents">
 							<Card
@@ -139,36 +91,26 @@
 		{#if showTracks}
 			<div class="mb-8">
 				<div class="mb-3 flex items-center justify-between">
-					<h2 class="text-lg font-semibold text-text-primary">Liked Songs</h2>
-					<a href="/liked/songs" class="text-sm text-text-secondary hover:text-text-primary">See all</a>
+					<h2 class="text-lg font-semibold text-text-primary">{m.liked_songs_title()}</h2>
+					<a href="/liked/songs" class="text-sm text-text-secondary hover:text-text-primary">{m.action_see_all()}</a>
 				</div>
-				{#if loading}
-					<div class="space-y-1">
-						{#each Array(5) as _}
-							<div class="flex h-10 animate-pulse items-center gap-3 rounded px-3">
-								<div class="h-3 w-6 rounded bg-bg-highlight"></div>
-								<div class="h-3 w-48 rounded bg-bg-highlight"></div>
-								<div class="h-3 w-32 rounded bg-bg-highlight"></div>
-								<div class="ml-auto h-3 w-10 rounded bg-bg-highlight"></div>
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<div class="space-y-0.5">
-						{#each likedTracks as track, i}
-							<TrackRow
-								number={i + 1}
-								title={track.title}
-								artist={track.artistName}
-								artistId={track.artistId}
-								album={track.albumName || undefined}
-								albumId={track.albumId || undefined}
-								duration={formatDuration(track.duration)}
-								onclick={() => playSingleTrack(track)}
-							/>
-						{/each}
-					</div>
-				{/if}
+				<div class="space-y-0.5">
+					{#each data.likedTracks as track, i}
+						<TrackRow
+							number={i + 1}
+							title={track.title}
+							artist={track.artistName}
+							artistId={track.artistId}
+							album={track.albumName || undefined}
+							albumId={track.albumId || undefined}
+							duration={formatDuration(track.duration)}
+							onclick={() => {
+								playTracksNow(data.likedTracks, i);
+								playCurrentItem();
+							}}
+						/>
+					{/each}
+				</div>
 			</div>
 		{/if}
 	{/if}

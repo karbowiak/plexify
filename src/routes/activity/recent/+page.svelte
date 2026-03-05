@@ -30,6 +30,7 @@
 	} from '$lib/stores/eventStore.svelte';
 	import { playTracksNow, playRadioNow, playPodcastNow } from '$lib/stores/unifiedQueue.svelte';
 	import { playCurrentItem } from '$lib/stores/playerStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import type { Track } from '$lib/backends/models/track';
 	import type { RadioStation } from '$lib/backends/models/radioStation';
 	import type { PodcastEpisode } from '$lib/backends/models/podcast';
@@ -102,11 +103,11 @@
 		const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 		const d = new Date(date);
 		const entryDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-		if (entryDay.getTime() >= today.getTime()) return 'Today';
-		if (entryDay.getTime() >= yesterday.getTime()) return 'Yesterday';
-		if (entryDay.getTime() >= weekStart.getTime()) return 'This Week';
-		if (entryDay.getTime() >= lastWeekStart.getTime()) return 'Last Week';
-		if (entryDay.getTime() >= monthStart.getTime()) return 'This Month';
+		if (entryDay.getTime() >= today.getTime()) return m.time_today();
+		if (entryDay.getTime() >= yesterday.getTime()) return m.time_yesterday();
+		if (entryDay.getTime() >= weekStart.getTime()) return m.time_this_week();
+		if (entryDay.getTime() >= lastWeekStart.getTime()) return m.time_last_week();
+		if (entryDay.getTime() >= monthStart.getTime()) return m.time_this_month();
 		return d.toLocaleString('default', { month: 'long', year: 'numeric' });
 	}
 
@@ -115,12 +116,12 @@
 		const d = new Date(date).getTime();
 		const diffMs = now - d;
 		const diffMin = Math.floor(diffMs / 60000);
-		if (diffMin < 1) return 'Just now';
-		if (diffMin < 60) return `${diffMin}m ago`;
+		if (diffMin < 1) return m.time_just_now();
+		if (diffMin < 60) return m.time_minutes_ago({ count: diffMin });
 		const diffHours = Math.floor(diffMin / 60);
-		if (diffHours < 24) return `${diffHours}h ago`;
+		if (diffHours < 24) return m.time_hours_ago({ count: diffHours });
 		const diffDays = Math.floor(diffHours / 24);
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 7) return m.time_days_ago({ count: diffDays });
 		return new Date(date).toLocaleDateString();
 	}
 
@@ -234,7 +235,7 @@
 			<ArrowLeft size={20} />
 		</a>
 		<Clock size={28} class="text-accent" />
-		<h1 class="text-2xl font-bold">Recent Plays</h1>
+		<h1 class="text-2xl font-bold">{m.activity_recent_title()}</h1>
 	</div>
 
 	<!-- Backend filter chips -->
@@ -247,7 +248,7 @@
 					? 'bg-accent/30 text-accent'
 					: 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'}"
 			>
-				All backends
+				{m.activity_all_backends()}
 			</button>
 			{#each breakdown as b}
 				<button
@@ -272,9 +273,9 @@
 						: 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'}"
 				>
 					{#if showHidden}
-						<EyeOff size={12} /> Hide disabled
+						<EyeOff size={12} /> {m.activity_hide_disabled()}
 					{:else}
-						<Eye size={12} /> Show hidden
+						<Eye size={12} /> {m.activity_show_hidden()}
 					{/if}
 				</button>
 			{/if}
@@ -284,13 +285,13 @@
 	{#if events.length === 0 && !loading}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
 			<Clock size={48} class="opacity-30" />
-			<p class="text-lg">No recent plays</p>
-			<p class="text-sm">Play some music and it will show up here</p>
+			<p class="text-lg">{m.activity_no_recent_plays()}</p>
+			<p class="text-sm">{m.activity_no_recent_plays_desc()}</p>
 		</div>
 	{:else}
 		<!-- Recent Artists -->
 		{#if recentArtists.length > 0}
-			<HorizontalScroller title="Recent Artists" baseWidth={130} showUnfold={false}>
+			<HorizontalScroller title={m.activity_recent_artists()} baseWidth={130} showUnfold={false}>
 				{#each recentArtists as artist}
 					<a
 						href="/artist/{artist.artistId}"
@@ -316,7 +317,7 @@
 
 		<!-- Recent Albums -->
 		{#if recentAlbums.length > 0}
-			<HorizontalScroller title="Recent Albums" baseWidth={130} showUnfold={false}>
+			<HorizontalScroller title={m.activity_recent_albums()} baseWidth={130} showUnfold={false}>
 				{#each recentAlbums as album}
 					<a
 						href="/album/{album.albumId}"

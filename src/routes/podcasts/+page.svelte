@@ -1,65 +1,22 @@
 <script lang="ts">
 	import { Podcast as PodcastIcon } from 'lucide-svelte';
-	import type { Podcast, PodcastCategory } from '$lib/podcast/types';
+	import type { PodcastCategory } from '$lib/backends/models/podcast';
 	import { Capability } from '$lib/backends/types';
-	import { getFirstBackendWithCapability, hasCapability } from '$lib/stores/backendStore.svelte';
+	import { hasCapability } from '$lib/stores/backendStore.svelte';
 	import PodcastCard from '$lib/components/podcast/PodcastCard.svelte';
 	import HorizontalScroller from '$lib/components/ui/HorizontalScroller.svelte';
 	import { getSubscriptions } from '$lib/stores/podcastStore.svelte';
-	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import * as m from '$lib/paraglide/messages.js';
 
-	// Subscriptions from store
+	let { data } = $props();
+
 	let subs = $derived(getSubscriptions());
 
-	// Trending
-	let trending = $state<Podcast[]>([]);
-	let trendingLoading = $state(true);
+	let podcastsAvailable = $derived(hasCapability(Capability.Podcasts));
 
-	// Categories
-	let categories = $state<PodcastCategory[]>([]);
-	let categoriesLoading = $state(true);
-
-	// Category results
-	let selectedCategory = $derived(page.url.searchParams.get('cat'));
-	let categoryResults = $state<Podcast[]>([]);
-	let categoryResultsLoading = $state(false);
-
-	function getPodcastBackend() {
-		return getFirstBackendWithCapability(Capability.Podcasts);
-	}
-
-	async function loadTrending() {
-		trendingLoading = true;
-		try {
-			const pb = getPodcastBackend();
-			trending = pb?.getTrendingPodcasts ? await pb.getTrendingPodcasts(15) : [];
-		} catch {
-			// silent
-		}
-		trendingLoading = false;
-	}
-
-	async function loadCategories() {
-		categoriesLoading = true;
-		try {
-			const pb = getPodcastBackend();
-			categories = pb?.getPodcastCategories ? await pb.getPodcastCategories() : [];
-		} catch {
-			// silent
-		}
-		categoriesLoading = false;
-	}
-
-	async function loadCategoryResults(cat: string) {
-		categoryResultsLoading = true;
-		try {
-			const pb = getPodcastBackend();
-			categoryResults = pb?.getTrendingPodcasts ? await pb.getTrendingPodcasts(30, cat) : [];
-		} catch {
-			categoryResults = [];
-		}
-		categoryResultsLoading = false;
+	function navigateToPodcast(feedUrl: string) {
+		goto(`/podcasts/${btoa(feedUrl)}`);
 	}
 
 	function selectCategory(cat: PodcastCategory) {
@@ -68,26 +25,6 @@
 
 	function clearCategory() {
 		goto('/podcasts', { replaceState: false });
-	}
-
-	// Load data on mount
-	loadTrending();
-	loadCategories();
-
-	// React to category changes from URL
-	$effect(() => {
-		const cat = selectedCategory;
-		if (cat) {
-			loadCategoryResults(cat);
-		} else {
-			categoryResults = [];
-		}
-	});
-
-	let podcastsAvailable = $derived(hasCapability(Capability.Podcasts));
-
-	function navigateToPodcast(feedUrl: string) {
-		goto(`/podcasts/${btoa(feedUrl)}`);
 	}
 </script>
 
@@ -104,10 +41,10 @@
 {#if !podcastsAvailable}
 	<section class="flex flex-col items-center justify-center py-24 text-text-muted">
 		<PodcastIcon size={64} class="mb-6 opacity-20" />
-		<h2 class="mb-2 text-lg font-semibold text-text-primary">Podcasts are not available</h2>
-		<p class="mb-4 text-sm">Enable the Podcast Index backend in Settings to browse and listen to podcasts.</p>
+		<h2 class="mb-2 text-lg font-semibold text-text-primary">{m.podcasts_unavailable()}</h2>
+		<p class="mb-4 text-sm">{m.podcasts_unavailable_desc()}</p>
 		<a href="/settings" class="rounded-full bg-accent px-5 py-2 text-sm font-medium text-bg-base transition-colors hover:bg-accent/90">
-			Go to Settings
+			{m.action_go_to_settings()}
 		</a>
 	</section>
 {:else}
@@ -123,14 +60,14 @@
 			<PodcastIcon size={24} class="text-accent" />
 		</div>
 		<div class="relative">
-			<h1 class="text-2xl font-bold text-text-primary">Podcasts</h1>
-			<p class="text-sm text-text-secondary">Discover and subscribe to podcasts</p>
+			<h1 class="text-2xl font-bold text-text-primary">{m.podcasts_title()}</h1>
+			<p class="text-sm text-text-secondary">{m.podcasts_subtitle()}</p>
 		</div>
 	</div>
 
 	<!-- Subscriptions -->
 	{#if subs.length > 0}
-		<HorizontalScroller title="Your Subscriptions" loading={false}>
+		<HorizontalScroller title={m.podcasts_subscriptions()} loading={false}>
 			{#snippet skeleton()}
 				{@render cardSkeleton()}
 			{/snippet}
@@ -143,11 +80,11 @@
 	{/if}
 
 	<!-- Trending -->
-	<HorizontalScroller title="Trending" loading={trendingLoading}>
+	<HorizontalScroller title={m.podcasts_trending()}>
 		{#snippet skeleton()}
 			{@render cardSkeleton()}
 		{/snippet}
-		{#each trending as podcast (podcast.id)}
+		{#each data.trending as podcast (podcast.id)}
 			<div class="shrink-0" style:width="var(--scroller-item-width)">
 				<PodcastCard {podcast} onclick={() => navigateToPodcast(podcast.feed_url)} />
 			</div>
@@ -156,58 +93,41 @@
 
 	<!-- Categories -->
 	<div class="mb-2 mt-6">
-		<h2 class="text-sm font-semibold text-text-primary">Categories</h2>
+		<h2 class="text-sm font-semibold text-text-primary">{m.podcasts_categories()}</h2>
 	</div>
 
-	{#if categoriesLoading}
-		<div class="flex flex-wrap gap-2">
-			{#each Array(20) as _}
-				<div class="h-8 w-24 animate-pulse rounded-full bg-bg-elevated"></div>
-			{/each}
-		</div>
-	{:else}
-		<div class="flex flex-wrap gap-2">
-			{#each categories as cat (cat.id)}
-				<button
-					type="button"
-					onclick={() => (selectedCategory === cat.name ? clearCategory() : selectCategory(cat))}
-					class="rounded-full px-3 py-1.5 text-sm transition-colors {selectedCategory === cat.name
-						? 'bg-accent text-bg-base'
-						: 'bg-bg-elevated text-text-secondary hover:text-text-primary hover:bg-bg-hover'}"
-				>
-					{cat.name}
-				</button>
-			{/each}
-		</div>
-	{/if}
+	<div class="flex flex-wrap gap-2">
+		{#each data.categories as cat (cat.id)}
+			<button
+				type="button"
+				onclick={() => (data.selectedCategory === cat.name ? clearCategory() : selectCategory(cat))}
+				class="rounded-full px-3 py-1.5 text-sm transition-colors {data.selectedCategory === cat.name
+					? 'bg-accent text-bg-base'
+					: 'bg-bg-elevated text-text-secondary hover:text-text-primary hover:bg-bg-hover'}"
+			>
+				{cat.name}
+			</button>
+		{/each}
+	</div>
 
 	<!-- Category Results -->
-	{#if selectedCategory}
+	{#if data.selectedCategory}
 		<div class="mt-4 mb-2">
 			<h2 class="text-sm font-semibold text-text-primary">
-				Trending in {selectedCategory}
+				{m.podcasts_trending_in({ category: data.selectedCategory })}
 			</h2>
 		</div>
-		{#if categoryResultsLoading}
-			<div
-				class="grid gap-3"
-				style:grid-template-columns="repeat(auto-fill, minmax(calc(160px * var(--card-scale, 1)), 1fr))"
-			>
-				{#each Array(6) as _}
-					{@render cardSkeleton()}
-				{/each}
-			</div>
-		{:else if categoryResults.length === 0}
+		{#if data.categoryResults.length === 0}
 			<div class="flex flex-col items-center justify-center py-12 text-text-muted">
 				<PodcastIcon size={48} class="mb-4 opacity-30" />
-				<p class="text-sm">No podcasts found in this category</p>
+				<p class="text-sm">{m.podcasts_no_found()}</p>
 			</div>
 		{:else}
 			<div
 				class="grid gap-3"
 				style:grid-template-columns="repeat(auto-fill, minmax(calc(160px * var(--card-scale, 1)), 1fr))"
 			>
-				{#each categoryResults as podcast (podcast.id)}
+				{#each data.categoryResults as podcast (podcast.id)}
 					<PodcastCard {podcast} onclick={() => navigateToPodcast(podcast.feed_url)} />
 				{/each}
 			</div>

@@ -62,9 +62,6 @@ export interface ResourceResolver {
 	): { url: string; headers?: Record<string, string> };
 }
 
-/** @deprecated Use ResourceResolver instead */
-export type ImageResolver = ResourceResolver;
-
 export interface Backend {
 	readonly id: string;
 	readonly metadata: BackendMetadata;

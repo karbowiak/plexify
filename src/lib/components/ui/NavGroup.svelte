@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import { ChevronRight } from 'lucide-svelte';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
 	import { slide } from 'svelte/transition';
@@ -48,7 +49,7 @@
 		<button
 			onclick={handleChevronClick}
 			class="rounded p-1 transition-all hover:bg-overlay-medium {expanded ? 'opacity-70' : 'opacity-40 group-hover:opacity-70'}"
-			aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
+			aria-label={expanded ? m.aria_collapse_section({ label }) : m.aria_expand_section({ label })}
 		>
 			<ChevronRight
 				size={14}

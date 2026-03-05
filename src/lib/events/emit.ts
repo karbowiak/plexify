@@ -114,29 +114,6 @@ export function emitAnalysisError(trackId: string, error: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Generic system events
-// ---------------------------------------------------------------------------
-
-export function emitSystemEvent(
-	type: Extract<AppEventType, `system_${string}` | `sync_${string}` | `download_${string}`>,
-	payload: {
-		message: string;
-		detail?: string;
-		level: 'info' | 'success' | 'warn' | 'error';
-		operationId?: string;
-		progress?: number;
-		isFinal?: boolean;
-	}
-): void {
-	logAppEvent({
-		category: 'system',
-		type,
-		timestamp: new Date(),
-		payload: payload as unknown as Record<string, unknown>
-	});
-}
-
-// ---------------------------------------------------------------------------
 // Discovery events
 // ---------------------------------------------------------------------------
 

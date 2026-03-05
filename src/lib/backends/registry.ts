@@ -1,7 +1,4 @@
 import type { Backend } from './types';
-import { DemoBackend } from './demo';
-import { RadioBrowserBackend } from './radio-browser';
-import { PodcastIndexBackend } from './podcast-index';
 
 const backends = new Map<string, Backend>();
 
@@ -17,7 +14,26 @@ export function getAll(): Backend[] {
 	return Array.from(backends.values());
 }
 
-// Auto-register built-in backends
-register(new DemoBackend());
-register(new RadioBrowserBackend());
-register(new PodcastIndexBackend());
+// Auto-discover and register all plugins
+interface PluginModule {
+	createBackend: () => Backend;
+}
+
+const pluginModules = import.meta.glob<PluginModule>('../plugins/*/index.ts', { eager: true });
+
+for (const [path, mod] of Object.entries(pluginModules)) {
+	if (typeof mod.createBackend !== 'function') {
+		throw new Error(
+			`Plugin "${path}" does not export createBackend(). ` +
+				`Each plugin index.ts must export: export function createBackend(): Backend`
+		);
+	}
+	try {
+		const backend = mod.createBackend();
+		register(backend);
+	} catch (err) {
+		throw new Error(
+			`Plugin "${path}" failed in createBackend(): ${err instanceof Error ? err.message : err}`
+		);
+	}
+}

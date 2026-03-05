@@ -1,7 +1,9 @@
+import * as m from '$lib/paraglide/messages.js';
+
 export const sleepTimerOptions = [
-	{ label: '15 minutes', value: '15m' },
-	{ label: '30 minutes', value: '30m' },
-	{ label: '45 minutes', value: '45m' },
-	{ label: '1 hour', value: '1h' },
-	{ label: 'End of track', value: 'eot' }
+	{ label: () => m.sleep_timer_15min(), value: '15m' },
+	{ label: () => m.sleep_timer_30min(), value: '30m' },
+	{ label: () => m.sleep_timer_45min(), value: '45m' },
+	{ label: () => m.sleep_timer_1hour(), value: '1h' },
+	{ label: () => m.sleep_timer_end_of_track(), value: 'eot' }
 ] as const;

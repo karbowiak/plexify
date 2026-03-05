@@ -1,12 +1,11 @@
 import type { Backend } from '$lib/backends/types';
 import { Capability } from '$lib/backends/types';
 import * as registry from '$lib/backends/registry';
-import { getBackendConfig, setBackend } from './configStore.svelte';
-
-const ACTIVE_KEY = 'active-backend-id';
+import { getBackendConfig, getGeneral, setBackend, setGeneral } from './configStore.svelte';
 
 let activeBackendId = $state<string | null>(null);
 let connectedBackends = $state(new Map<string, Backend>());
+let ssrCapabilities = $state(new Set<string>());
 
 // ---------------------------------------------------------------------------
 // Primary music backend (backward compat)
@@ -17,7 +16,7 @@ export function getBackend(): Backend | null {
 	return connectedBackends.get(activeBackendId) ?? null;
 }
 
-export function getActiveBackendId(): string | null {
+function getActiveBackendId(): string | null {
 	return activeBackendId;
 }
 
@@ -36,7 +35,7 @@ export function getFirstBackendWithCapability(cap: Capability): Backend | null {
 	return null;
 }
 
-export function getConnectedBackends(): Map<string, Backend> {
+function getConnectedBackends(): Map<string, Backend> {
 	return connectedBackends;
 }
 
@@ -44,7 +43,7 @@ export function getConnectedBackends(): Map<string, Backend> {
 // Capability helpers (union of all connected)
 // ---------------------------------------------------------------------------
 
-export function getCapabilities(): Set<Capability> {
+function getCapabilities(): Set<Capability> {
 	const caps = new Set<Capability>();
 	for (const b of connectedBackends.values()) {
 		for (const c of b.capabilities) caps.add(c);
@@ -56,11 +55,15 @@ export function hasCapability(cap: Capability): boolean {
 	for (const b of connectedBackends.values()) {
 		if (b.supports(cap)) return true;
 	}
+	// SSR fallback — capabilities seeded from server before backends connect
+	if (ssrCapabilities.has(cap)) return true;
 	return false;
 }
 
 export function isConnected(): boolean {
-	return connectedBackends.size > 0;
+	if (connectedBackends.size > 0) return true;
+	// SSR fallback
+	return ssrCapabilities.size > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +101,7 @@ export async function disconnectBackend(id: string): Promise<void> {
 
 	if (activeBackendId === id) {
 		activeBackendId = null;
-		localStorage.removeItem(ACTIVE_KEY);
+		setGeneral({ activeBackendId: null });
 	}
 }
 
@@ -106,17 +109,17 @@ export async function disconnectBackend(id: string): Promise<void> {
 // Set primary music backend
 // ---------------------------------------------------------------------------
 
-export function setActiveMusicBackend(id: string): void {
+function setActiveMusicBackend(id: string): void {
 	if (!connectedBackends.has(id)) return;
 	activeBackendId = id;
-	localStorage.setItem(ACTIVE_KEY, id);
+	setGeneral({ activeBackendId: id });
 }
 
 // ---------------------------------------------------------------------------
 // Set active backend (legacy — connects + sets as primary music backend)
 // ---------------------------------------------------------------------------
 
-export async function setActiveBackend(id: string, config: Record<string, unknown> = {}): Promise<void> {
+async function setActiveBackend(id: string, config: Record<string, unknown> = {}): Promise<void> {
 	await connectBackend(id, config);
 	setActiveMusicBackend(id);
 }
@@ -137,8 +140,8 @@ export async function restoreBackends(): Promise<void> {
 		}
 	}
 
-	// Restore active music backend from localStorage
-	const savedId = localStorage.getItem(ACTIVE_KEY);
+	// Restore active music backend from config
+	const savedId = getGeneral().activeBackendId;
 	if (savedId && connectedBackends.has(savedId)) {
 		activeBackendId = savedId;
 	} else {
@@ -146,11 +149,14 @@ export async function restoreBackends(): Promise<void> {
 		for (const b of connectedBackends.values()) {
 			if (b.supports(Capability.Tracks) || b.supports(Capability.Search)) {
 				activeBackendId = b.id;
-				localStorage.setItem(ACTIVE_KEY, b.id);
+				setGeneral({ activeBackendId: b.id });
 				break;
 			}
 		}
 	}
+
+	// Clear SSR fallback now that real backends are connected
+	ssrCapabilities = new Set();
 }
 
 // ---------------------------------------------------------------------------
@@ -165,5 +171,11 @@ export function resolveEntityBackend(entityId: string): Backend | null {
 	return null;
 }
 
-// Legacy alias
-export const restoreBackend = restoreBackends;
+// ---------------------------------------------------------------------------
+// SSR capability seeding
+// ---------------------------------------------------------------------------
+
+export function initCapabilitiesFromSSR(caps: string[]) {
+	ssrCapabilities = new Set(caps);
+}
+

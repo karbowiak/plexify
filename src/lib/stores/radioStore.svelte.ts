@@ -1,4 +1,5 @@
-import type { RadioStation } from '$lib/radio/types';
+import { browser } from '$app/environment';
+import type { RadioStation } from '$lib/backends/models/radioStation';
 import { emitRadioPlay } from '$lib/events/emit';
 
 const STORAGE_KEY = 'radio-state';
@@ -25,7 +26,7 @@ function load(): RadioPersistedState {
 	return { favorites: [], recentStations: [] };
 }
 
-const initial = load();
+const initial: RadioPersistedState = browser ? load() : { favorites: [], recentStations: [] };
 
 let favorites = $state<RadioStation[]>(initial.favorites);
 let recentStations = $state<RadioStation[]>(initial.recentStations);
@@ -37,6 +38,7 @@ let currentStreamUrl: string | null = null;
 let lastIcyKey: string | null = null;
 
 function save() {
+	if (!browser) return;
 	localStorage.setItem(STORAGE_KEY, JSON.stringify({ favorites, recentStations }));
 }
 

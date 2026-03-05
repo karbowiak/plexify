@@ -30,6 +30,7 @@
 	import type { PodcastEpisode } from '$lib/backends/models/podcast';
 
 	import { onMount } from 'svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	let confirmClear = $state(false);
 	let itemLimit = $state(10);
@@ -50,7 +51,7 @@
 	let systemEvents = $derived(events.filter((e) => e.category === 'system').slice(0, itemLimit));
 	let discoveryEvents = $derived(events.filter((e) => e.category === 'discovery').slice(0, itemLimit));
 
-	$effect(() => {
+	onMount(() => {
 		loadEvents(100);
 	});
 
@@ -66,12 +67,12 @@
 		const d = new Date(date).getTime();
 		const diffMs = now - d;
 		const diffMin = Math.floor(diffMs / 60000);
-		if (diffMin < 1) return 'Just now';
-		if (diffMin < 60) return `${diffMin}m ago`;
+		if (diffMin < 1) return m.time_just_now();
+		if (diffMin < 60) return m.time_minutes_ago({ count: diffMin });
 		const diffHours = Math.floor(diffMin / 60);
-		if (diffHours < 24) return `${diffHours}h ago`;
+		if (diffHours < 24) return m.time_hours_ago({ count: diffHours });
 		const diffDays = Math.floor(diffHours / 24);
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 7) return m.time_days_ago({ count: diffDays });
 		return new Date(date).toLocaleDateString();
 	}
 
@@ -208,28 +209,28 @@
 	<div class="mb-6 flex items-center justify-between">
 		<div class="flex items-center gap-3">
 			<Activity size={28} class="text-accent" />
-			<h1 class="text-2xl font-bold">Activity</h1>
+			<h1 class="text-2xl font-bold">{m.activity_title()}</h1>
 			{#if totalCount > 0}
-				<span class="text-sm text-text-muted">({totalCount} events)</span>
+				<span class="text-sm text-text-muted">{m.activity_events_count({ count: totalCount })}</span>
 			{/if}
 		</div>
 		{#if totalCount > 0}
 			{#if confirmClear}
 				<div class="flex items-center gap-2">
-					<span class="text-sm text-text-secondary">Clear all events?</span>
+					<span class="text-sm text-text-secondary">{m.activity_clear_confirm()}</span>
 					<button
 						type="button"
 						onclick={handleClear}
 						class="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/30"
 					>
-						Confirm
+						{m.action_confirm()}
 					</button>
 					<button
 						type="button"
 						onclick={() => (confirmClear = false)}
 						class="rounded-lg bg-bg-elevated px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover"
 					>
-						Cancel
+						{m.action_cancel()}
 					</button>
 				</div>
 			{:else}
@@ -239,7 +240,7 @@
 					class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
 				>
 					<Trash2 size={14} />
-					Clear
+					{m.action_clear()}
 				</button>
 			{/if}
 		{/if}
@@ -252,7 +253,7 @@
 				<div class="flex items-center gap-3 rounded-lg bg-bg-elevated px-4 py-2.5">
 					<Loader2 size={16} class="shrink-0 animate-spin text-accent" />
 					<div class="min-w-0 flex-1">
-						<p class="text-sm text-text-primary">{payload.message ?? 'Working...'}</p>
+						<p class="text-sm text-text-primary">{payload.message ?? m.activity_working()}</p>
 						{#if payload.detail}
 							<p class="truncate text-xs text-text-muted">{payload.detail}</p>
 						{/if}
@@ -273,8 +274,8 @@
 	{#if events.length === 0 && !loading}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
 			<Activity size={48} class="opacity-30" />
-			<p class="text-lg">No activity yet</p>
-			<p class="text-sm">Tracks, radio stations, system events, and more will appear here</p>
+			<p class="text-lg">{m.activity_no_activity()}</p>
+			<p class="text-sm">{m.activity_no_activity_desc()}</p>
 		</div>
 	{:else}
 		<!-- 3-column summary — fill remaining page height -->
@@ -283,14 +284,14 @@
 			<div class="flex min-h-0 flex-col">
 				<div class="mb-3 flex items-center justify-between">
 					<h2 class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
-						<Music size={12} /> Recent
+						<Music size={12} /> {m.activity_recent()}
 					</h2>
 					<a href="/activity/recent" class="flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-primary">
-						View all <ArrowRight size={12} />
+						{m.action_view_all()} <ArrowRight size={12} />
 					</a>
 				</div>
 				{#if playEvents.length === 0}
-					<p class="py-4 text-center text-xs text-text-muted">No plays yet</p>
+					<p class="py-4 text-center text-xs text-text-muted">{m.activity_no_plays()}</p>
 				{:else}
 					<div class="min-h-0 flex-1 space-y-0.5 overflow-hidden">
 						{#each playEvents as event}
@@ -353,14 +354,14 @@
 			<div class="flex min-h-0 flex-col">
 				<div class="mb-3 flex items-center justify-between">
 					<h2 class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
-						<AlertCircle size={12} /> System
+						<AlertCircle size={12} /> {m.activity_system()}
 					</h2>
 					<a href="/activity/system" class="flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-primary">
-						View all <ArrowRight size={12} />
+						{m.action_view_all()} <ArrowRight size={12} />
 					</a>
 				</div>
 				{#if systemEvents.length === 0}
-					<p class="py-4 text-center text-xs text-text-muted">No system events</p>
+					<p class="py-4 text-center text-xs text-text-muted">{m.activity_no_system_events()}</p>
 				{:else}
 					<div class="min-h-0 flex-1 space-y-0.5 overflow-hidden">
 						{#each systemEvents as event}
@@ -387,14 +388,14 @@
 			<div class="flex min-h-0 flex-col">
 				<div class="mb-3 flex items-center justify-between">
 					<h2 class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
-						<Sparkles size={12} /> Discoveries
+						<Sparkles size={12} /> {m.activity_discoveries()}
 					</h2>
 					<a href="/activity/discoveries" class="flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-primary">
-						View all <ArrowRight size={12} />
+						{m.action_view_all()} <ArrowRight size={12} />
 					</a>
 				</div>
 				{#if discoveryEvents.length === 0}
-					<p class="py-4 text-center text-xs text-text-muted">No discoveries yet</p>
+					<p class="py-4 text-center text-xs text-text-muted">{m.activity_no_discoveries()}</p>
 				{:else}
 					<div class="min-h-0 flex-1 space-y-0.5 overflow-hidden">
 						{#each discoveryEvents as event}

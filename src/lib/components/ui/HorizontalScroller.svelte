@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { ChevronLeft, ChevronRight, LayoutGrid, List } from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
@@ -78,7 +79,7 @@
 					type="button"
 					onclick={() => (unfolded = !unfolded)}
 					class="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-					aria-label={unfolded ? 'Collapse to row' : 'Expand to grid'}
+					aria-label={unfolded ? m.aria_collapse_row() : m.aria_expand_grid()}
 				>
 					{#if unfolded}
 						<List size={14} />
@@ -129,7 +130,7 @@
 					type="button"
 					onclick={() => scroll('left')}
 					class="absolute top-0 left-0 z-10 flex h-full w-10 items-center justify-center bg-gradient-to-r from-bg-surface/90 to-transparent opacity-0 transition-opacity group-hover/scroller:opacity-100"
-					aria-label="Scroll left"
+					aria-label={m.aria_scroll_left()}
 				>
 					<ChevronLeft size={20} class="text-text-primary" />
 				</button>
@@ -151,7 +152,7 @@
 					type="button"
 					onclick={() => scroll('right')}
 					class="absolute top-0 right-0 z-10 flex h-full w-10 items-center justify-center bg-gradient-to-l from-bg-surface/90 to-transparent opacity-0 transition-opacity group-hover/scroller:opacity-100"
-					aria-label="Scroll right"
+					aria-label={m.aria_scroll_right()}
 				>
 					<ChevronRight size={20} class="text-text-primary" />
 				</button>

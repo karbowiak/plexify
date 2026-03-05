@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getVisSamples } from '$lib/stores/playerStore.svelte';
-	import type { CompactVisMode } from '$lib/stores/uiStore.svelte';
+	import type { CompactVisMode } from '$lib/configTypes';
 	import { getVisualizerColors } from '$lib/stores/configStore.svelte';
 
 	interface Props {

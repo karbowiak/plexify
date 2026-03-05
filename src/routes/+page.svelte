@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import HorizontalScroller from '$lib/components/ui/HorizontalScroller.svelte';
 	import TrackRow from '$lib/components/ui/TrackRow.svelte';
@@ -7,18 +8,18 @@
 	import { getBackend, hasCapability } from '$lib/stores/backendStore.svelte';
 	import { formatDuration } from '$lib/utils/format';
 	import { playTracksNow } from '$lib/stores/unifiedQueue.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 	import { playCurrentItem } from '$lib/stores/playerStore.svelte';
 
-	let hubs = $state<Hub[]>([]);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
+	let { data } = $props();
 
-	function greeting(): string {
+	let greetingText = $state('');
+	onMount(() => {
 		const h = new Date().getHours();
-		if (h < 12) return 'Good morning';
-		if (h < 18) return 'Good afternoon';
-		return 'Good evening';
-	}
+		if (h < 12) greetingText = m.home_good_morning();
+		else if (h < 18) greetingText = m.home_good_afternoon();
+		else greetingText = m.home_good_evening();
+	});
 
 	function isTrack(item: Track | Album | Artist): item is Track {
 		return 'duration' in item && 'artistName' in item && !('trackCount' in item);
@@ -54,28 +55,6 @@
 		playTracksNow(tracks, 0);
 		playCurrentItem();
 	}
-
-	$effect(() => {
-		const backend = getBackend();
-		if (!backend || !backend.supports(Capability.Hubs)) {
-			loading = false;
-			return;
-		}
-
-		loading = true;
-		error = null;
-
-		backend.getHubs!().then(
-			(data) => {
-				hubs = data;
-				loading = false;
-			},
-			(err) => {
-				error = err?.message ?? 'Failed to load';
-				loading = false;
-			}
-		);
-	});
 </script>
 
 <section>
@@ -83,23 +62,18 @@
 		<div
 			class="pointer-events-none absolute -top-6 -left-6 h-32 w-96 rounded-full bg-accent/[0.04] blur-3xl"
 		></div>
-		<h1 class="relative text-3xl font-bold">{greeting()}</h1>
+		<h1 class="relative text-3xl font-bold">{greetingText}</h1>
 	</div>
 
-	{#if !hasCapability(Capability.Hubs)}
+	{#if !hasCapability(Capability.Hubs) && data.hubs.length === 0}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
-			<p class="text-lg">No backend connected</p>
+			<p class="text-lg">{m.home_no_backend()}</p>
 			<a href="/settings/backends" class="text-sm text-accent hover:underline"
-				>Connect a backend to get started</a
+				>{m.home_connect_backend()}</a
 			>
 		</div>
-	{:else if error}
-		<div class="flex flex-col items-center justify-center gap-2 py-24 text-text-muted">
-			<p class="text-lg">Something went wrong</p>
-			<p class="text-sm">{error}</p>
-		</div>
 	{:else}
-		{#each hubs as hub}
+		{#each data.hubs as hub}
 			{#if hub.layout === 'list'}
 				{@const tracks = hub.items.filter(isTrack)}
 				<div class="mb-8">
@@ -120,7 +94,7 @@
 					</div>
 				</div>
 			{:else if hub.layout === 'scroller'}
-				<HorizontalScroller title={hub.title} loading={loading}>
+				<HorizontalScroller title={hub.title}>
 					{#each hub.items as item}
 						{#if isTrack(item)}
 							<div class="shrink-0" style:width="var(--scroller-item-width)">
@@ -178,7 +152,7 @@
 									{:else if isArtist(item) && item.thumb}
 										<img src={item.thumb} alt="" class="h-full w-full object-cover transition-transform group-hover:scale-105" />
 									{:else}
-										<div class="flex h-full w-full items-center justify-center bg-bg-highlight text-text-muted">No image</div>
+										<div class="flex h-full w-full items-center justify-center bg-bg-highlight text-text-muted">{m.home_no_image()}</div>
 									{/if}
 								</div>
 								<div class="p-3">
@@ -202,24 +176,5 @@
 				</div>
 			{/if}
 		{/each}
-
-		{#if loading && hubs.length === 0}
-			{#each ['Top Tracks', 'Top Albums', 'Top Artists'] as title}
-				<div class="mb-6">
-					<h2 class="mb-3 text-lg font-semibold text-text-primary">{title}</h2>
-					<div class="flex gap-3">
-						{#each Array(6) as _}
-							<div class="shrink-0 animate-pulse rounded-md bg-bg-elevated" style:width="160px">
-								<div class="aspect-square w-full rounded-t-md bg-bg-highlight"></div>
-								<div class="space-y-2 p-2">
-									<div class="h-3 w-3/4 rounded bg-bg-highlight"></div>
-									<div class="h-2.5 w-1/2 rounded bg-bg-highlight"></div>
-								</div>
-							</div>
-						{/each}
-					</div>
-				</div>
-			{/each}
-		{/if}
 	{/if}
 </section>

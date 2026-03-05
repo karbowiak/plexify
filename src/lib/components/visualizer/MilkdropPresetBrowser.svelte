@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { X, Heart, Search } from 'lucide-svelte';
 	import { fly } from 'svelte/transition';
 	import {
@@ -66,29 +67,34 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- Backdrop -->
 <div
 	class="absolute inset-0 z-20"
+	role="button"
+	tabindex="-1"
 	onclick={closePresetBrowser}
+	onkeydown={(e) => { if (e.key === 'Escape') closePresetBrowser(); }}
 	transition:fly={{ x: 0, duration: 150, opacity: 0 }}
 ></div>
 
 <!-- Panel -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="absolute right-0 top-0 bottom-0 z-30 flex w-80 flex-col border-l border-white/10 bg-black/90 backdrop-blur-md"
+	role="dialog"
+	tabindex="-1"
 	transition:fly={{ x: 320, duration: 200 }}
 	onclick={(e) => e.stopPropagation()}
+	onkeydown={(e) => { if (e.key === 'Escape') closePresetBrowser(); }}
 >
 	<!-- Header -->
 	<div class="flex items-center justify-between border-b border-white/10 px-4 py-3">
-		<span class="text-sm font-semibold text-white">Presets</span>
+		<span class="text-sm font-semibold text-white">{m.visualizer_presets_title()}</span>
 		<button
 			type="button"
 			class="text-white/40 transition-colors hover:text-white"
 			onclick={closePresetBrowser}
-			aria-label="Close preset browser"
+			aria-label={m.aria_close_preset_browser()}
 		>
 			<X size={16} />
 		</button>
@@ -103,7 +109,7 @@
 				onchange={() => setAutoCycleEnabled(!cycleEnabled)}
 				class="accent-accent h-3.5 w-3.5"
 			/>
-			Auto-cycle
+			{m.visualizer_auto_cycle()}
 		</label>
 		<select
 			class="rounded bg-white/10 px-1.5 py-0.5 text-xs text-white/70"
@@ -119,8 +125,8 @@
 			value={cycleMode}
 			onchange={(e) => setAutoCycleMode(e.currentTarget.value as 'random' | 'sequential')}
 		>
-			<option value="random">Random</option>
-			<option value="sequential">Sequential</option>
+			<option value="random">{m.visualizer_random()}</option>
+			<option value="sequential">{m.visualizer_sequential()}</option>
 		</select>
 	</div>
 
@@ -130,7 +136,7 @@
 		<!-- svelte-ignore a11y_autofocus -->
 		<input
 			type="text"
-			placeholder="Search presets…"
+			placeholder={m.visualizer_search_placeholder()}
 			bind:value={searchQuery}
 			autofocus
 			class="w-full rounded bg-white/10 py-1.5 pl-7 pr-3 text-xs text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-accent/50"
@@ -139,7 +145,7 @@
 
 	<!-- Tabs -->
 	<div class="flex border-b border-white/10">
-		{#each [['all', `All (${presetKeys.length})`], ['favorites', `Favorites (${favorites.length})`], ['history', `History (${history.length})`]] as [tab, label]}
+		{#each [['all', m.visualizer_tab_all({ count: presetKeys.length })], ['favorites', m.visualizer_tab_favorites({ count: favorites.length })], ['history', m.visualizer_tab_history({ count: history.length })]] as [tab, label]}
 			<button
 				type="button"
 				class="flex-1 py-2 text-center text-xs transition-colors {activeTab === tab
@@ -155,37 +161,39 @@
 	<!-- Preset list -->
 	<div bind:this={listEl} class="flex-1 overflow-y-auto">
 		{#each filtered as name (name)}
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div
+			<button
+				type="button"
 				class="group flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/5 {currentName === name
 					? 'bg-accent/15 text-accent'
 					: 'text-white/70'}"
 				data-active={currentName === name}
 				onclick={() => selectPreset(name)}
 			>
-				<button
-					type="button"
+				<span
+					role="switch"
+					aria-checked={isFavorite(name)}
+					tabindex="-1"
 					class="shrink-0 transition-colors {isFavorite(name)
 						? 'text-red-400'
 						: 'text-white/20 opacity-0 group-hover:opacity-100'}"
 					onclick={(e) => onToggleFavorite(e, name)}
-					aria-label={isFavorite(name) ? 'Unfavorite' : 'Favorite'}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleFavorite(e as unknown as MouseEvent, name); } }}
+					aria-label={isFavorite(name) ? m.aria_unfavorite() : m.aria_favorite()}
 				>
 					<Heart size={12} fill={isFavorite(name) ? 'currentColor' : 'none'} />
-				</button>
+				</span>
 				<span class="min-w-0 flex-1 truncate text-xs">{name}</span>
-			</div>
+			</button>
 		{/each}
 		{#if filtered.length === 0}
 			<div class="px-4 py-8 text-center text-xs text-white/30">
-				{searchQuery ? 'No matching presets' : 'No presets'}
+				{searchQuery ? m.visualizer_no_matching() : m.visualizer_no_presets()}
 			</div>
 		{/if}
 	</div>
 
 	<!-- Footer -->
 	<div class="border-t border-white/10 px-4 py-2 text-center text-[0.625rem] text-white/30">
-		{filtered.length} presets · {favorites.length} favorites
+		{m.visualizer_footer({ presetCount: filtered.length, favCount: favorites.length })}
 	</div>
 </div>

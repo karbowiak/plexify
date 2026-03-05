@@ -1,251 +1,99 @@
-const STORAGE_KEY = 'app-config';
+import { browser } from '$app/environment';
+import {
+	defaults,
+	type GeneralConfig,
+	type BackendsConfig,
+	type BackendInstanceConfig,
+	type MetadataConfig,
+	type PlaybackConfig,
+	type VolumeConfig,
+	type EQConfig,
+	type AppearanceConfig,
+	type CachesConfig,
+	type CacheConfig,
+	type UiConfig,
+	type VisualizerConfig,
+	type AppConfig,
+	type RepeatMode,
+	type SidePanel,
+	type CompactVisMode,
+	type FullscreenVisMode,
+	type VisualizerColors,
+	type CustomColors,
+	DEFAULT_IMAGE_CACHE,
+	CACHE_DEFAULTS,
+	UI_DEFAULTS,
+	VISUALIZER_DEFAULTS
+} from '$lib/configTypes';
 
-export interface CacheConfig {
-	directory: string;
-	maxSizeMB: number;
-	ttlDays: number;
+
+// ---------------------------------------------------------------------------
+// Reactive state — initialized with defaults, overwritten by initFromServer()
+// ---------------------------------------------------------------------------
+
+let general = $state<GeneralConfig>(defaults.general);
+let backends = $state<BackendsConfig>(defaults.backends);
+let metadata = $state<MetadataConfig>(defaults.metadata);
+let playback = $state<PlaybackConfig>(defaults.playback);
+let appearance = $state<AppearanceConfig>(defaults.appearance);
+let caches = $state<CachesConfig>(defaults.caches);
+let ui = $state<UiConfig>(defaults.ui);
+let visualizer = $state<VisualizerConfig>(defaults.visualizer);
+
+// ---------------------------------------------------------------------------
+// Server initialization — called once from +layout.svelte with SSR data
+// ---------------------------------------------------------------------------
+
+export function initFromServer(config: AppConfig) {
+	general = config.general;
+	backends = config.backends;
+	metadata = config.metadata;
+	playback = config.playback;
+	appearance = config.appearance;
+	caches = config.caches;
+	ui = config.ui;
+	visualizer = config.visualizer;
 }
 
-export type CachesConfig = Record<string, CacheConfig>;
+// ---------------------------------------------------------------------------
+// Debounced persist to server
+// ---------------------------------------------------------------------------
 
-export interface GeneralConfig {
-	language: string;
-	startPage: string;
-	animationsEnabled: boolean;
-	trackNotifications: boolean;
-	debugEnabled: boolean;
-}
+const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
-export interface BackendInstanceConfig {
-	enabled: boolean;
-	config: Record<string, unknown>;
-}
-
-export type BackendsConfig = Record<string, BackendInstanceConfig>;
-
-export interface MetadataConfig {
-	preferredSource: string;
-}
-
-export interface VolumeConfig {
-	level: number;
-	muted: boolean;
-	preMuteLevel: number;
-}
-
-export interface EQConfig {
-	enabled: boolean;
-	preset: string;
-	bands: number[];
-	preampDb: number;
-	postgainDb: number;
-}
-
-export type RepeatMode = 'off' | 'one' | 'all';
-
-export interface PlaybackConfig {
-	crossfadeEnabled: boolean;
-	crossfadeDuration: number;
-	smartCrossfade: boolean;
-	sameAlbumCrossfade: boolean;
-	gaplessPlayback: boolean;
-	normalizeVolume: boolean;
-	visualizerEnabled: boolean;
-	volume: VolumeConfig;
-	eq: EQConfig;
-	repeatMode: RepeatMode;
-	shuffled: boolean;
-}
-
-export interface CustomColors {
-	bgBase: string | null;
-	bgSurface: string | null;
-	bgElevated: string | null;
-	bgHighlight: string | null;
-	bgHover: string | null;
-	textPrimary: string | null;
-	textSecondary: string | null;
-	textMuted: string | null;
-	overlayBase: string | null;
-	scrollbarBase: string | null;
-	rangeTrackBase: string | null;
-	accentSecondary: string | null;
-}
-
-export interface VisualizerColors {
-	low: string;
-	mid: string;
-	high: string;
-}
-
-export interface AppearanceConfig {
-	theme: 'dark' | 'light' | 'system';
-	font: string;
-	accentColor: string;
-	cardSize: number;
-	highlightIntensity: number;
-	compactMode: boolean;
-	customColors: CustomColors | null;
-	visualizerColors: VisualizerColors | null;
-}
-
-export interface AppConfig {
-	general: GeneralConfig;
-	backends: BackendsConfig;
-	metadata: MetadataConfig;
-	playback: PlaybackConfig;
-	appearance: AppearanceConfig;
-	caches: CachesConfig;
-}
-
-const DEFAULT_IMAGE_CACHE: CacheConfig = {
-	directory: '.cache/img',
-	maxSizeMB: 500,
-	ttlDays: 7
-};
-
-const DEFAULT_MEDIA_CACHE: CacheConfig = {
-	directory: '.cache/media',
-	maxSizeMB: 2048,
-	ttlDays: 30
-};
-
-const CACHE_DEFAULTS: Record<string, CacheConfig> = {
-	image: DEFAULT_IMAGE_CACHE,
-	media: DEFAULT_MEDIA_CACHE
-};
-
-const defaults: AppConfig = {
-	general: {
-		language: 'en',
-		startPage: '/',
-		animationsEnabled: true,
-		trackNotifications: false,
-		debugEnabled: false
-	},
-	backends: {
-		demo: { enabled: true, config: {} },
-		'radio-browser': { enabled: true, config: {} },
-		'podcast-index': { enabled: true, config: {} }
-	},
-	metadata: {
-		preferredSource: 'plex'
-	},
-	playback: {
-		crossfadeEnabled: false,
-		crossfadeDuration: 5,
-		smartCrossfade: true,
-		sameAlbumCrossfade: false,
-		gaplessPlayback: true,
-		normalizeVolume: false,
-		visualizerEnabled: false,
-		volume: { level: 70, muted: false, preMuteLevel: 70 },
-		eq: { enabled: true, preset: 'flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], preampDb: 0, postgainDb: 0 },
-		repeatMode: 'off',
-		shuffled: false
-	},
-	appearance: {
-		theme: 'dark',
-		font: 'System',
-		accentColor: '#1db954',
-		cardSize: 100,
-		highlightIntensity: 100,
-		compactMode: false,
-		customColors: null,
-		visualizerColors: null
-	},
-	caches: {
-		image: DEFAULT_IMAGE_CACHE,
-		media: DEFAULT_MEDIA_CACHE
-	}
-};
-
-function mergeBackends(parsed: Record<string, any> | undefined): BackendsConfig {
-	const result: BackendsConfig = structuredClone(defaults.backends);
-	if (!parsed) return result;
-	for (const [id, val] of Object.entries(parsed)) {
-		const base = result[id] ?? { enabled: false, config: {} };
-		result[id] = {
-			enabled: val?.enabled ?? base.enabled,
-			config: { ...base.config, ...(val?.config ?? {}) }
-		};
-	}
-	return result;
-}
-
-/**
- * Migrate old flat `cache` key to keyed `caches.image`.
- */
-function migrateCaches(parsed: Record<string, any>): CachesConfig {
-	// New format already present
-	if (parsed.caches && typeof parsed.caches === 'object') {
-		const result: CachesConfig = { image: { ...DEFAULT_IMAGE_CACHE } };
-		for (const [id, val] of Object.entries(parsed.caches)) {
-			result[id] = { ...DEFAULT_IMAGE_CACHE, ...(val as any) };
-		}
-		return result;
-	}
-	// Old flat format — migrate
-	if (parsed.cache && typeof parsed.cache === 'object') {
-		return {
-			image: { ...DEFAULT_IMAGE_CACHE, ...parsed.cache }
-		};
-	}
-	return structuredClone(defaults.caches);
-}
-
-function load(): AppConfig {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw) {
-			const parsed = JSON.parse(raw);
-			return {
-				general: { ...defaults.general, ...parsed.general },
-				backends: mergeBackends(parsed.backends),
-				metadata: { ...defaults.metadata, ...parsed.metadata },
-				playback: {
-					...defaults.playback,
-					...parsed.playback,
-					volume: { ...defaults.playback.volume, ...parsed.playback?.volume },
-					eq: { ...defaults.playback.eq, ...parsed.playback?.eq }
-				},
-				appearance: { ...defaults.appearance, ...parsed.appearance },
-				caches: migrateCaches(parsed)
-			};
-		}
-	} catch {
-		// ignore corrupt data
-	}
-	return structuredClone(defaults);
-}
-
-const initial = load();
-
-let general = $state<GeneralConfig>(initial.general);
-let backends = $state<BackendsConfig>(initial.backends);
-let metadata = $state<MetadataConfig>(initial.metadata);
-let playback = $state<PlaybackConfig>(initial.playback);
-let appearance = $state<AppearanceConfig>(initial.appearance);
-let caches = $state<CachesConfig>(initial.caches);
-
-function save() {
-	localStorage.setItem(
-		STORAGE_KEY,
-		JSON.stringify({ general, backends, metadata, playback, appearance, caches })
+function persistSection(section: string, value: unknown) {
+	if (!browser) return;
+	clearTimeout(pending.get(section));
+	pending.set(
+		section,
+		setTimeout(() => {
+			pending.delete(section);
+			fetch('/api/config', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ section, value })
+			});
+		}, 150)
 	);
 }
 
+// ---------------------------------------------------------------------------
 // General
+// ---------------------------------------------------------------------------
+
 export function getGeneral(): GeneralConfig {
 	return general;
 }
 
 export function setGeneral(patch: Partial<GeneralConfig>) {
 	general = { ...general, ...patch };
-	save();
+	persistSection('general', general);
 }
 
+// ---------------------------------------------------------------------------
 // Backends
+// ---------------------------------------------------------------------------
+
 export function getBackends(): BackendsConfig {
 	return backends;
 }
@@ -267,27 +115,33 @@ export function setBackend(id: string, patch: Partial<BackendInstanceConfig>) {
 			config: patch.config ? { ...current.config, ...patch.config } : current.config
 		}
 	};
-	save();
+	persistSection('backends', backends);
 }
 
+// ---------------------------------------------------------------------------
 // Metadata
+// ---------------------------------------------------------------------------
+
 export function getMetadata(): MetadataConfig {
 	return metadata;
 }
 
 export function setMetadata(patch: Partial<MetadataConfig>) {
 	metadata = { ...metadata, ...patch };
-	save();
+	persistSection('metadata', metadata);
 }
 
+// ---------------------------------------------------------------------------
 // Playback
+// ---------------------------------------------------------------------------
+
 export function getPlayback(): PlaybackConfig {
 	return playback;
 }
 
 export function setPlayback(patch: Partial<PlaybackConfig>) {
 	playback = { ...playback, ...patch };
-	save();
+	persistSection('playback', playback);
 }
 
 // Volume
@@ -297,7 +151,7 @@ export function getVolume(): VolumeConfig {
 
 export function setVolume(patch: Partial<VolumeConfig>) {
 	playback = { ...playback, volume: { ...playback.volume, ...patch } };
-	save();
+	persistSection('playback', playback);
 }
 
 // EQ
@@ -307,17 +161,20 @@ export function getEQ(): EQConfig {
 
 export function setEQ(patch: Partial<EQConfig>) {
 	playback = { ...playback, eq: { ...playback.eq, ...patch } };
-	save();
+	persistSection('playback', playback);
 }
 
+// ---------------------------------------------------------------------------
 // Appearance
+// ---------------------------------------------------------------------------
+
 export function getAppearance(): AppearanceConfig {
 	return appearance;
 }
 
 export function setAppearance(patch: Partial<AppearanceConfig>) {
 	appearance = { ...appearance, ...patch };
-	save();
+	persistSection('appearance', appearance);
 }
 
 const VISUALIZER_COLOR_DEFAULTS: VisualizerColors = { low: '#22c55e', mid: '#eab308', high: '#ef4444' };
@@ -330,7 +187,10 @@ export function getVisualizerColorDefaults(): VisualizerColors {
 	return VISUALIZER_COLOR_DEFAULTS;
 }
 
+// ---------------------------------------------------------------------------
 // Caches (keyed by provider id)
+// ---------------------------------------------------------------------------
+
 export function getCaches(): CachesConfig {
 	return caches;
 }
@@ -348,16 +208,18 @@ export function setCache(idOrPatch: string | Partial<CacheConfig>, maybePatch?: 
 		id = idOrPatch;
 		patch = maybePatch!;
 	} else {
-		// Backward compat: setCache({ maxSizeMB: 100 }) → updates 'image'
 		id = 'image';
 		patch = idOrPatch;
 	}
 	const current = caches[id] ?? CACHE_DEFAULTS[id] ?? DEFAULT_IMAGE_CACHE;
 	caches = { ...caches, [id]: { ...current, ...patch } };
-	save();
+	persistSection('caches', caches);
 }
 
+// ---------------------------------------------------------------------------
 // Repeat
+// ---------------------------------------------------------------------------
+
 export function getRepeatMode(): RepeatMode {
 	return playback.repeatMode;
 }
@@ -366,25 +228,198 @@ const repeatCycle: RepeatMode[] = ['off', 'all', 'one'];
 export function cycleRepeatMode() {
 	const idx = repeatCycle.indexOf(playback.repeatMode);
 	playback = { ...playback, repeatMode: repeatCycle[(idx + 1) % repeatCycle.length] };
-	save();
+	persistSection('playback', playback);
 }
 
+// ---------------------------------------------------------------------------
 // Shuffle
+// ---------------------------------------------------------------------------
+
 export function getShuffled(): boolean {
 	return playback.shuffled;
 }
 
 export function setShuffled(value: boolean) {
 	playback = { ...playback, shuffled: value };
-	save();
+	persistSection('playback', playback);
 }
 
+// ---------------------------------------------------------------------------
 // Debug
+// ---------------------------------------------------------------------------
+
 export function getDebugEnabled(): boolean {
 	return general.debugEnabled;
 }
 
 export function setDebugEnabled(value: boolean) {
 	general = { ...general, debugEnabled: value };
-	save();
+	persistSection('general', general);
+}
+
+// ---------------------------------------------------------------------------
+// UI (persisted state only)
+// ---------------------------------------------------------------------------
+
+export function getSidePanel(): SidePanel {
+	return ui.sidePanel;
+}
+
+export function toggleQueue() {
+	ui = { ...ui, sidePanel: ui.sidePanel === 'queue' ? null : 'queue' };
+	persistSection('ui', ui);
+}
+
+export function toggleLyrics() {
+	ui = { ...ui, sidePanel: ui.sidePanel === 'lyrics' ? null : 'lyrics' };
+	persistSection('ui', ui);
+}
+
+export function setSidePanel(tab: 'queue' | 'lyrics') {
+	ui = { ...ui, sidePanel: tab };
+	persistSection('ui', ui);
+}
+
+export function closeSidePanel() {
+	ui = { ...ui, sidePanel: null };
+	persistSection('ui', ui);
+}
+
+export function getArtExpanded(): boolean {
+	return ui.artExpanded;
+}
+
+export function toggleArtExpanded() {
+	ui = { ...ui, artExpanded: !ui.artExpanded };
+	persistSection('ui', ui);
+}
+
+export function setArtExpanded(value: boolean) {
+	ui = { ...ui, artExpanded: value };
+	persistSection('ui', ui);
+}
+
+export function getVisualizerMode(): CompactVisMode {
+	return ui.visualizerMode;
+}
+
+export function setVisualizerMode(mode: CompactVisMode) {
+	ui = { ...ui, visualizerMode: mode };
+	persistSection('ui', ui);
+}
+
+const visModeCycle: CompactVisMode[] = ['off', 'spectrum', 'oscilloscope', 'vu'];
+export function cycleVisualizerMode() {
+	const idx = visModeCycle.indexOf(ui.visualizerMode);
+	ui = { ...ui, visualizerMode: visModeCycle[(idx + 1) % visModeCycle.length] };
+	persistSection('ui', ui);
+}
+
+export function getFullscreenVisMode(): FullscreenVisMode {
+	return ui.fullscreenVisMode;
+}
+
+export function setFullscreenVisMode(mode: FullscreenVisMode) {
+	ui = { ...ui, fullscreenVisMode: mode };
+	persistSection('ui', ui);
+}
+
+// ---------------------------------------------------------------------------
+// Visualizer (persisted state only)
+// ---------------------------------------------------------------------------
+
+const VISUALIZER_HISTORY_CAP = 50;
+
+export function getVisualizer(): VisualizerConfig {
+	return visualizer;
+}
+
+export function setVisualizer(patch: Partial<VisualizerConfig>) {
+	visualizer = { ...visualizer, ...patch };
+	persistSection('visualizer', visualizer);
+}
+
+export function getCurrentPresetName(): string | null {
+	return visualizer.currentPresetName;
+}
+
+export function setCurrentPreset(name: string) {
+	visualizer = {
+		...visualizer,
+		currentPresetName: name,
+		presetHistory: [name, ...visualizer.presetHistory.filter((n) => n !== name)].slice(
+			0,
+			VISUALIZER_HISTORY_CAP
+		)
+	};
+	persistSection('visualizer', visualizer);
+}
+
+export function getAutoCycleEnabled(): boolean {
+	return visualizer.autoCycleEnabled;
+}
+
+export function setAutoCycleEnabled(v: boolean) {
+	visualizer = { ...visualizer, autoCycleEnabled: v };
+	persistSection('visualizer', visualizer);
+}
+
+export function getAutoCycleIntervalSec(): number {
+	return visualizer.autoCycleIntervalSec;
+}
+
+export function setAutoCycleIntervalSec(v: number) {
+	visualizer = { ...visualizer, autoCycleIntervalSec: v };
+	persistSection('visualizer', visualizer);
+}
+
+export function getAutoCycleMode(): 'random' | 'sequential' {
+	return visualizer.autoCycleMode;
+}
+
+export function setAutoCycleMode(v: 'random' | 'sequential') {
+	visualizer = { ...visualizer, autoCycleMode: v };
+	persistSection('visualizer', visualizer);
+}
+
+export function getFavoritePresets(): string[] {
+	return visualizer.favoritePresets;
+}
+
+export function toggleFavorite(name: string) {
+	if (visualizer.favoritePresets.includes(name)) {
+		visualizer = {
+			...visualizer,
+			favoritePresets: visualizer.favoritePresets.filter((n) => n !== name)
+		};
+	} else {
+		visualizer = { ...visualizer, favoritePresets: [...visualizer.favoritePresets, name] };
+	}
+	persistSection('visualizer', visualizer);
+}
+
+export function isFavorite(name: string): boolean {
+	return visualizer.favoritePresets.includes(name);
+}
+
+export function getPresetHistory(): string[] {
+	return visualizer.presetHistory;
+}
+
+export function getStarfieldReactivity(): number {
+	return visualizer.starfieldReactivity;
+}
+
+export function setStarfieldReactivity(n: number) {
+	visualizer = { ...visualizer, starfieldReactivity: Math.max(0, Math.min(100, n)) };
+	persistSection('visualizer', visualizer);
+}
+
+export function getStarfieldBaseSpeed(): number {
+	return visualizer.starfieldBaseSpeed;
+}
+
+export function setStarfieldBaseSpeed(n: number) {
+	visualizer = { ...visualizer, starfieldBaseSpeed: Math.max(1, Math.min(10, n)) };
+	persistSection('visualizer', visualizer);
 }

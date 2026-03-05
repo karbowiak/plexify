@@ -1,4 +1,6 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
+
 	interface Props {
 		context: 'player' | 'visualizer';
 		onclose: () => void;
@@ -8,37 +10,37 @@
 
 	interface Hotkey {
 		key: string;
-		action: string;
+		action: () => string;
 	}
 
 	interface HotkeyGroup {
-		title: string;
+		title: () => string;
 		hotkeys: Hotkey[];
 	}
 
 	const globalGroup: HotkeyGroup = {
-		title: 'Playback',
+		title: () => m.hotkey_group_playback(),
 		hotkeys: [
-			{ key: 'Space', action: 'Play / pause' },
-			{ key: 'N', action: 'Next track' },
-			{ key: 'B', action: 'Previous track' },
-			{ key: '← / →', action: 'Seek back / forward 5s' },
-			{ key: 'Shift + ← / →', action: 'Seek back / forward 15s' },
-			{ key: '↑ / ↓', action: 'Volume up / down' },
-			{ key: 'M', action: 'Mute / unmute' },
-			{ key: '?', action: 'Show hotkey help' }
+			{ key: 'Space', action: () => m.hotkey_play_pause() },
+			{ key: 'N', action: () => m.hotkey_next() },
+			{ key: 'B', action: () => m.hotkey_previous() },
+			{ key: '← / →', action: () => m.hotkey_seek_5() },
+			{ key: 'Shift + ← / →', action: () => m.hotkey_seek_15() },
+			{ key: '↑ / ↓', action: () => m.hotkey_volume() },
+			{ key: 'M', action: () => m.hotkey_mute() },
+			{ key: '?', action: () => m.hotkey_help() }
 		]
 	};
 
 	const playerGroups: HotkeyGroup[] = [
 		globalGroup,
 		{
-			title: 'Navigation',
+			title: () => m.hotkey_group_navigation(),
 			hotkeys: [
-				{ key: 'Cmd/Ctrl + F', action: 'Search' },
-				{ key: 'S', action: 'Toggle shuffle' },
-				{ key: 'R', action: 'Cycle repeat mode' },
-				{ key: 'V', action: 'Open fullscreen visualizer' }
+				{ key: 'Cmd/Ctrl + F', action: () => m.hotkey_search() },
+				{ key: 'S', action: () => m.hotkey_shuffle() },
+				{ key: 'R', action: () => m.hotkey_repeat() },
+				{ key: 'V', action: () => m.hotkey_open_visualizer() }
 			]
 		}
 	];
@@ -46,21 +48,21 @@
 	const visualizerGroups: HotkeyGroup[] = [
 		globalGroup,
 		{
-			title: 'Visualizer',
+			title: () => m.hotkey_group_visualizer(),
 			hotkeys: [
-				{ key: 'Escape', action: 'Close visualizer / preset browser' },
-				{ key: 'F', action: 'Toggle native fullscreen' },
-				{ key: '1–5', action: 'Switch visualizer mode' },
-				{ key: 'S', action: 'Toggle shuffle' },
-				{ key: 'R', action: 'Cycle repeat mode' }
+				{ key: 'Escape', action: () => m.hotkey_close_visualizer() },
+				{ key: 'F', action: () => m.hotkey_native_fullscreen() },
+				{ key: '1–5', action: () => m.hotkey_switch_mode() },
+				{ key: 'S', action: () => m.hotkey_shuffle() },
+				{ key: 'R', action: () => m.hotkey_repeat() }
 			]
 		},
 		{
-			title: 'Milkdrop',
+			title: () => m.hotkey_group_milkdrop(),
 			hotkeys: [
-				{ key: '[ / ]', action: 'Previous / next preset' },
-				{ key: 'O', action: 'Browse presets' },
-				{ key: 'T', action: 'Random preset' }
+				{ key: '[ / ]', action: () => m.hotkey_prev_next_preset() },
+				{ key: 'O', action: () => m.hotkey_browse_presets() },
+				{ key: 'T', action: () => m.hotkey_random_preset() }
 			]
 		}
 	];
@@ -77,23 +79,25 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+	role="button"
+	tabindex="-1"
 	onclick={(e: MouseEvent) => { if (e.target === e.currentTarget) onclose(); }}
+	onkeydown={(e) => { if (e.key === 'Escape') onclose(); }}
 >
 	<div class="w-full max-w-md rounded-xl border border-white/10 bg-neutral-900 p-6 shadow-2xl">
-		<h2 class="mb-5 text-lg font-bold text-white">Keyboard Shortcuts</h2>
+		<h2 class="mb-5 text-lg font-bold text-white">{m.hotkey_title()}</h2>
 
 		{#each groups as group, gi}
 			{#if gi > 0}
 				<div class="my-4 border-t border-white/10"></div>
 			{/if}
-			<h3 class="mb-2.5 text-xs font-semibold uppercase tracking-wider text-white/40">{group.title}</h3>
+			<h3 class="mb-2.5 text-xs font-semibold uppercase tracking-wider text-white/40">{group.title()}</h3>
 			<div class="space-y-2">
 				{#each group.hotkeys as hotkey}
 					<div class="flex items-center justify-between">
-						<span class="text-sm text-white/70">{hotkey.action}</span>
+						<span class="text-sm text-white/70">{hotkey.action()}</span>
 						<kbd class="rounded border border-white/15 bg-white/5 px-2 py-0.5 font-mono text-xs text-white/60">
 							{hotkey.key}
 						</kbd>
@@ -103,7 +107,7 @@
 		{/each}
 
 		<div class="mt-5 text-center text-xs text-white/30">
-			Press <kbd class="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 font-mono text-white/40">Esc</kbd> to close
+			{m.hotkey_press_esc()}
 		</div>
 	</div>
 </div>

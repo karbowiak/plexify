@@ -11,6 +11,8 @@
 		clearUnreadDiscoveries,
 		type AppEvent
 	} from '$lib/stores/eventStore.svelte';
+	import { onMount } from 'svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	const PAGE_SIZE = 50;
 
@@ -56,7 +58,7 @@
 		hasMore = results.length >= PAGE_SIZE;
 	}
 
-	$effect(() => {
+	onMount(() => {
 		loadAll();
 	});
 
@@ -84,9 +86,9 @@
 		const d = new Date(date);
 		const entryDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-		if (entryDay.getTime() >= today.getTime()) return 'Today';
-		if (entryDay.getTime() >= yesterday.getTime()) return 'Yesterday';
-		if (entryDay.getTime() >= weekStart.getTime()) return 'This Week';
+		if (entryDay.getTime() >= today.getTime()) return m.time_today();
+		if (entryDay.getTime() >= yesterday.getTime()) return m.time_yesterday();
+		if (entryDay.getTime() >= weekStart.getTime()) return m.time_this_week();
 		return d.toLocaleString('default', { month: 'long', year: 'numeric' });
 	}
 
@@ -95,12 +97,12 @@
 		const d = new Date(date).getTime();
 		const diffMs = now - d;
 		const diffMin = Math.floor(diffMs / 60000);
-		if (diffMin < 1) return 'Just now';
-		if (diffMin < 60) return `${diffMin}m ago`;
+		if (diffMin < 1) return m.time_just_now();
+		if (diffMin < 60) return m.time_minutes_ago({ count: diffMin });
 		const diffHours = Math.floor(diffMin / 60);
-		if (diffHours < 24) return `${diffHours}h ago`;
+		if (diffHours < 24) return m.time_hours_ago({ count: diffHours });
 		const diffDays = Math.floor(diffHours / 24);
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 7) return m.time_days_ago({ count: diffDays });
 		return new Date(date).toLocaleDateString();
 	}
 
@@ -134,7 +136,7 @@
 				<ArrowLeft size={20} />
 			</a>
 			<Sparkles size={28} class="text-accent" />
-			<h1 class="text-2xl font-bold">Discoveries</h1>
+			<h1 class="text-2xl font-bold">{m.activity_discoveries_title()}</h1>
 			{#if events.length > 0}
 				<span class="text-sm text-text-muted">({events.length})</span>
 			{/if}
@@ -144,13 +146,13 @@
 	{#if events.length === 0 && !loading}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
 			<Sparkles size={48} class="opacity-30" />
-			<p class="text-lg">No discoveries yet</p>
-			<p class="text-sm">New albums, recommendations, and playlist updates will appear here</p>
+			<p class="text-lg">{m.activity_discoveries_empty()}</p>
+			<p class="text-sm">{m.activity_discoveries_empty_desc()}</p>
 		</div>
 	{:else}
 		<!-- Featured Discoveries -->
 		{#if featuredEvents.length > 0}
-			<HorizontalScroller title="Featured" baseWidth={150} showUnfold={false}>
+			<HorizontalScroller title={m.activity_discoveries_featured()} baseWidth={150} showUnfold={false}>
 				{#each featuredEvents as event}
 					{@const p = event.payload}
 					{#if p.href}

@@ -1,6 +1,6 @@
 import type { Track } from '$lib/backends/models/track';
-import type { RadioStation } from '$lib/radio/types';
-import type { PodcastEpisode } from '$lib/podcast/types';
+import type { RadioStation } from '$lib/backends/models/radioStation';
+import type { PodcastEpisode } from '$lib/backends/models/podcast';
 
 // ---------------------------------------------------------------------------
 // Types

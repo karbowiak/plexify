@@ -14,7 +14,7 @@
 	let { number, title, artist, artistId, album, albumId, duration, compact = false, onclick }: Props = $props();
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
 	{onclick}
 	role={onclick ? 'button' : undefined}

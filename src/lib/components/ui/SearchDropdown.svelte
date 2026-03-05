@@ -1,9 +1,10 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Radio, Play, Square, Podcast, Music } from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
-	import { countryFlag } from '$lib/radio/types';
-	import type { RadioStation } from '$lib/radio/types';
-	import type { Podcast as PodcastType } from '$lib/podcast/types';
+	import { countryFlag } from '$lib/plugins/radio-browser/serverTypes';
+	import type { RadioStation } from '$lib/backends/models/radioStation';
+	import type { Podcast as PodcastType } from '$lib/backends/models/podcast';
 	import type { Track as BackendTrack, Album as BackendAlbum, Artist as BackendArtist } from '$lib/backends/types';
 	import { Capability } from '$lib/backends/types';
 	import { getFirstBackendWithCapability, getBackendsWithCapability } from '$lib/stores/backendStore.svelte';
@@ -142,11 +143,11 @@
 
 <div class="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-bg-elevated shadow-xl overflow-hidden z-50 max-h-96 overflow-y-auto">
 	{#if !hasResults && !isOnlyLoading}
-		<p class="px-4 py-3 text-sm text-text-muted">No results for "{query}"</p>
+		<p class="px-4 py-3 text-sm text-text-muted">{m.search_no_results({ query })}</p>
 	{:else}
 		{#if matchedArtists.length > 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Artists</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_artists()}</p>
 			</div>
 			{#each matchedArtists as artist (artist.id)}
 				<a href="/artist/{artist.id}" class="flex items-center gap-3 px-3 py-2 text-sm hover:bg-bg-hover transition-colors">
@@ -158,14 +159,14 @@
 						</CachedImage>
 					</div>
 					<span class="truncate text-text-primary">{artist.title}</span>
-					<span class="ml-auto text-xs text-text-muted">Artist</span>
+					<span class="ml-auto text-xs text-text-muted">{m.search_type_artist()}</span>
 				</a>
 			{/each}
 		{/if}
 
 		{#if matchedAlbums.length > 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Albums</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_albums()}</p>
 			</div>
 			{#each matchedAlbums as album (album.id)}
 				<a href="/album/{album.id}" class="flex items-center gap-3 px-3 py-2 text-sm hover:bg-bg-hover transition-colors">
@@ -180,14 +181,14 @@
 						<p class="truncate text-text-primary">{album.title}</p>
 						<p class="truncate text-xs text-text-muted">{album.artistName}</p>
 					</div>
-					<span class="ml-auto text-xs text-text-muted">Album</span>
+					<span class="ml-auto text-xs text-text-muted">{m.search_type_album()}</span>
 				</a>
 			{/each}
 		{/if}
 
 		{#if matchedTracks.length > 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Songs</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_songs()}</p>
 			</div>
 			{#each matchedTracks as track (track.id)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -216,7 +217,7 @@
 
 		{#if musicLoading && matchedArtists.length === 0 && matchedAlbums.length === 0 && matchedTracks.length === 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Music</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_music()}</p>
 			</div>
 			<div class="px-4 py-2">
 				<div class="h-3 w-24 animate-pulse rounded bg-bg-highlight"></div>
@@ -225,7 +226,7 @@
 
 		{#if radioResults.length > 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Radio Stations</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_radio_stations()}</p>
 			</div>
 			{#each radioResults as station (station.uuid)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -266,7 +267,7 @@
 			{/each}
 		{:else if radioLoading}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Radio Stations</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_radio_stations()}</p>
 			</div>
 			<div class="px-4 py-2">
 				<div class="h-3 w-24 animate-pulse rounded bg-bg-highlight"></div>
@@ -275,7 +276,7 @@
 
 		{#if podcastResults.length > 0}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Podcasts</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_podcasts()}</p>
 			</div>
 			{#each podcastResults as podcast (podcast.id)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -303,12 +304,12 @@
 						<p class="truncate text-text-primary">{podcast.title}</p>
 						<p class="truncate text-xs text-text-muted">{podcast.author}</p>
 					</div>
-					<span class="ml-auto text-xs text-text-muted">Podcast</span>
+					<span class="ml-auto text-xs text-text-muted">{m.search_type_podcast()}</span>
 				</div>
 			{/each}
 		{:else if podcastLoading}
 			<div class="px-3 pt-3 pb-1">
-				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">Podcasts</p>
+				<p class="text-[10px] font-bold uppercase tracking-wider text-text-muted">{m.search_podcasts()}</p>
 			</div>
 			<div class="px-4 py-2">
 				<div class="h-3 w-24 animate-pulse rounded bg-bg-highlight"></div>

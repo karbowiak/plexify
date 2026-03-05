@@ -1,5 +1,5 @@
 import type { CacheProvider, CacheStats } from '../types';
-import * as icyStore from '$lib/radio/icyMetadataStore';
+import * as icyStore from '$lib/plugins/radio-browser/icyMetadataStore';
 
 /**
  * Cache provider for in-memory metadata caches (ICY stream metadata, etc.).

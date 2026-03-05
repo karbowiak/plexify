@@ -29,9 +29,9 @@
 </script>
 
 <div class="relative inline-block" use:clickOutside>
-	<button type="button" class="contents" onclick={() => (open = !open)}>
+	<div role="button" tabindex="0" class="contents" onclick={() => (open = !open)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open = !open; } }}>
 		{@render trigger()}
-	</button>
+	</div>
 	{#if open}
 		<div
 			class="absolute z-50 rounded-lg border border-border bg-bg-elevated shadow-2xl shadow-black/40 backdrop-blur-lg {position ===

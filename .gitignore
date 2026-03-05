@@ -25,6 +25,10 @@ vite.config.ts.timestamp-*
 # Cache
 .cache/
 
+# Database
+data/
+drizzle/
+
 # Extras
 TODO.md
 oldbackend/

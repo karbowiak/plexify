@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import {
 		SkipBack,
 		SkipForward,
@@ -19,12 +20,12 @@
 	import SeekVisualizer from './SeekVisualizer.svelte';
 	import MilkdropVisualizer from './MilkdropVisualizer.svelte';
 	import MilkdropPresetBrowser from './MilkdropPresetBrowser.svelte';
+	import type { FullscreenVisMode } from '$lib/configTypes';
 	import {
 		getFullscreenVisMode,
-		setFullscreenVisMode,
-		setFullscreenVisualizer,
-		type FullscreenVisMode
-	} from '$lib/stores/uiStore.svelte';
+		setFullscreenVisMode
+	} from '$lib/stores/configStore.svelte';
+	import { setFullscreenVisualizer } from '$lib/stores/uiEphemeral.svelte';
 	import {
 		getState,
 		getPosition,
@@ -491,7 +492,7 @@
 		type="button"
 		class="absolute top-4 right-4 z-20 text-xl text-white/30 transition-colors hover:text-white"
 		onclick={close}
-		aria-label="Close visualizer"
+		aria-label={m.aria_close_visualizer()}
 	>
 		<X size={20} />
 	</button>
@@ -533,7 +534,7 @@
 				type="button"
 				class="text-white/70 transition-colors hover:text-white"
 				onclick={() => skipPrevious()}
-				aria-label="Previous"
+				aria-label={m.player_previous()}
 			>
 				<SkipBack size={18} />
 			</button>
@@ -541,7 +542,7 @@
 				type="button"
 				class="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
 				onclick={() => togglePlayback()}
-				aria-label={playState === 'playing' ? 'Pause' : 'Play'}
+				aria-label={playState === 'playing' ? m.player_pause() : m.player_play()}
 			>
 				{#if playState === 'playing'}
 					<Pause size={18} />
@@ -553,7 +554,7 @@
 				type="button"
 				class="text-white/70 transition-colors hover:text-white"
 				onclick={() => skipNext()}
-				aria-label="Next"
+				aria-label={m.player_next()}
 			>
 				<SkipForward size={18} />
 			</button>
@@ -587,8 +588,8 @@
 					type="button"
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.prevPreset()}
-					aria-label="Previous preset"
-					title="Previous preset ([)"
+					aria-label={m.aria_previous_preset()}
+					title={m.visualizer_title_prev_preset()}
 				>
 					<ChevronLeft size={14} />
 				</button>
@@ -596,16 +597,16 @@
 					type="button"
 					class="max-w-[140px] truncate text-xs text-white/50 transition-colors hover:text-white/80"
 					onclick={togglePresetBrowser}
-					title="Browse presets (O)"
+					title={m.visualizer_title_browse_presets()}
 				>
-					{currentPreset ?? 'Preset'}
+					{currentPreset ?? m.visualizer_preset()}
 				</button>
 				<button
 					type="button"
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.nextPreset()}
-					aria-label="Next preset"
-					title="Next preset (])"
+					aria-label={m.aria_next_preset()}
+					title={m.visualizer_title_next_preset()}
 				>
 					<ChevronRight size={14} />
 				</button>
@@ -613,8 +614,8 @@
 					type="button"
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.randomPreset()}
-					aria-label="Random preset"
-					title="Random preset (T)"
+					aria-label={m.aria_random_preset()}
+					title={m.visualizer_title_random_preset()}
 				>
 					<Shuffle size={14} />
 				</button>
@@ -622,8 +623,8 @@
 					type="button"
 					class="rounded p-1 transition-colors {currentPreset && isFavorite(currentPreset) ? 'text-red-400 bg-red-400/10' : 'bg-white/10 text-white/70 hover:bg-white/20'}"
 					onclick={() => currentPreset && toggleFavorite(currentPreset)}
-					aria-label="Toggle favorite"
-					title="Favorite (F)"
+					aria-label={m.aria_favorite()}
+					title={m.visualizer_title_favorite()}
 				>
 					<Heart size={14} fill={currentPreset && isFavorite(currentPreset) ? 'currentColor' : 'none'} />
 				</button>
@@ -631,8 +632,8 @@
 					type="button"
 					class="rounded p-1 transition-colors {cycleEnabled ? 'text-accent bg-accent/10' : 'bg-white/10 text-white/70 hover:bg-white/20'}"
 					onclick={() => setAutoCycleEnabled(!cycleEnabled)}
-					aria-label="Toggle auto-cycle"
-					title="Auto-cycle ({cycleIntervalSec}s)"
+					aria-label={m.visualizer_auto_cycle()}
+					title={m.visualizer_title_auto_cycle({ seconds: cycleIntervalSec })}
 				>
 					<Timer size={14} />
 				</button>
@@ -640,8 +641,8 @@
 					type="button"
 					class="rounded p-1 transition-colors {browserOpen ? 'text-accent bg-accent/10' : 'bg-white/10 text-white/70 hover:bg-white/20'}"
 					onclick={togglePresetBrowser}
-					aria-label="Browse presets"
-					title="Browse presets (O)"
+					aria-label={m.aria_browse_presets()}
+					title={m.visualizer_title_browse_presets()}
 				>
 					<List size={14} />
 				</button>
@@ -650,7 +651,7 @@
 			<span class="text-white/10">|</span>
 			<div class="flex shrink-0 items-center gap-3">
 				<label class="flex items-center gap-1.5 text-xs text-white/50">
-					Reactivity
+					{m.visualizer_reactivity()}
 					<input
 						type="range"
 						min="0"
@@ -663,7 +664,7 @@
 					<span class="w-6 text-right tabular-nums text-white/40">{sfReactivity}</span>
 				</label>
 				<label class="flex items-center gap-1.5 text-xs text-white/50">
-					Speed
+					{m.visualizer_speed()}
 					<input
 						type="range"
 						min="1"
@@ -701,8 +702,8 @@
 			type="button"
 			class="shrink-0 text-white/30 transition-colors hover:text-white"
 			onclick={toggleNativeFullscreen}
-			aria-label={isNativeFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-			title={isNativeFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+			aria-label={isNativeFullscreen ? m.aria_close() : m.aria_fullscreen()}
+			title={isNativeFullscreen ? m.visualizer_title_exit_fullscreen() : m.visualizer_title_fullscreen()}
 		>
 			{#if isNativeFullscreen}
 				<Minimize size={18} />

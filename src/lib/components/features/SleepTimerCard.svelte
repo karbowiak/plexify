@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Timer } from 'lucide-svelte';
 	import FloatingCard from '$lib/components/ui/FloatingCard.svelte';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
@@ -41,12 +42,12 @@
 
 <FloatingCard bind:open position="above" align="end">
 	{#snippet trigger()}
-		<IconButton icon={Timer} size={16} label="Sleep timer" active={selected !== null} />
+		<IconButton icon={Timer} size={16} label={m.sleep_timer_label()} active={selected !== null} />
 	{/snippet}
 	{#snippet children()}
 		<div class="w-64 p-4">
 			<div class="mb-4 flex items-center justify-between">
-				<h3 class="text-sm font-bold">Sleep Timer</h3>
+				<h3 class="text-sm font-bold">{m.sleep_timer_title()}</h3>
 				{#if selected}
 					<button
 						type="button"
@@ -56,7 +57,7 @@
 							customMinutes = '';
 						}}
 					>
-						Cancel
+						{m.action_cancel()}
 					</button>
 				{/if}
 			</div>
@@ -82,21 +83,21 @@
 						style={selected === option.value ? `background: var(--color-accent-tint-strong)` : `background: var(--color-accent-tint-subtle)`}
 						onclick={() => select(option.value)}
 					>
-						{option.label}
+						{option.label()}
 					</button>
 				{/each}
 			</div>
 
 			<div class="mt-4 border-t border-border pt-4">
 				<p class="mb-2 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-					Custom
+					{m.sleep_timer_custom()}
 				</p>
 				<div class="flex gap-1.5">
 					<input
 						type="number"
 						min="1"
 						max="480"
-						placeholder="Minutes"
+						placeholder={m.sleep_timer_minutes_placeholder()}
 						bind:value={customMinutes}
 						onkeydown={handleCustomKeydown}
 						class="h-9 w-full rounded-lg border border-border px-3 text-xs text-text-primary placeholder:text-text-muted/50 focus:border-accent/30 focus:outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
@@ -108,7 +109,7 @@
 						style="background: var(--color-accent-tint-subtle)"
 						onclick={setCustom}
 					>
-						Set
+						{m.action_set()}
 					</button>
 				</div>
 			</div>

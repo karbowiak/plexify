@@ -1,8 +1,9 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Play, Square, Heart, Radio } from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
-	import type { RadioStation } from '$lib/radio/types';
-	import { countryFlag } from '$lib/radio/types';
+	import type { RadioStation } from '$lib/backends/models/radioStation';
+	import { countryFlag } from '$lib/plugins/radio-browser/serverTypes';
 	import { Capability } from '$lib/backends/types';
 	import { getBackendsWithCapability } from '$lib/stores/backendStore.svelte';
 	import {
@@ -65,7 +66,7 @@
 			<!-- Play button overlay -->
 			<button
 				type="button"
-				aria-label="Play {station.name}"
+				aria-label={m.aria_play_station({ name: station.name })}
 				class="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-accent text-bg-base shadow-lg shadow-glow-accent transition-all duration-200 hover:scale-105 hover:bg-accent-hover {playing
 					? 'translate-y-0 opacity-100'
 					: 'translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100'}"
@@ -81,7 +82,7 @@
 			<!-- Heart button -->
 			<button
 				type="button"
-				aria-label={favorited ? 'Remove from favorites' : 'Add to favorites'}
+				aria-label={favorited ? m.aria_remove_favorite() : m.aria_add_favorite()}
 				class="absolute top-1.5 right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/40 transition-all {favorited
 					? 'text-accent opacity-100'
 					: 'text-white opacity-0 group-hover:opacity-100'} hover:text-accent"
@@ -93,7 +94,7 @@
 			<!-- LIVE badge -->
 			{#if playing}
 				<span class="absolute top-1.5 left-1.5 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-bg-base">
-					LIVE
+					{m.player_live()}
 				</span>
 			{/if}
 		</div>
@@ -145,7 +146,7 @@
 					<span
 						class="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-bold text-bg-base"
 					>
-						LIVE
+						{m.player_live()}
 					</span>
 				{/if}
 			</div>

@@ -123,14 +123,6 @@ export function getRecentEvents(limit = 20): AppEvent[] {
 	return items.slice(0, limit);
 }
 
-export function getPlayEvents(): AppEvent[] {
-	return items.filter((e) => e.category === 'play');
-}
-
-export function getSystemEvents(): AppEvent[] {
-	return items.filter((e) => e.category === 'system');
-}
-
 export function getActiveOperations(): Map<string, Record<string, unknown>> {
 	return activeOperations;
 }
@@ -145,10 +137,6 @@ export function getTotalCount(): number {
 
 export function isLoading(): boolean {
 	return loading;
-}
-
-export function getCategoryFilter(): EventCategory | null {
-	return categoryFilter;
 }
 
 export function getBackendFilter(): string | null {

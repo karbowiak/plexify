@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { page } from '$app/state';
-	import { onMount } from 'svelte';
 	import { Trash2, HardDrive, FolderOpen, Clock, Database, RefreshCw, Lock, ArrowLeft } from 'lucide-svelte';
 	import { getCache, setCache } from '$lib/stores/configStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
-	let cacheId = $derived(page.params.id ?? 'image');
+	let { data } = $props();
+
+	let cacheId = $derived(data.cacheId);
 	let config = $derived(getCache(cacheId));
 
 	interface EnvLocks {
@@ -24,9 +25,17 @@
 		envLocks: EnvLocks;
 	}
 
-	let stats = $state<Stats | null>(null);
+	let stats = $state<Stats | null>(data.initialStats);
 	let clearing = $state(false);
 	let syncing = $state(false);
+	let fetching = $state(false);
+
+	// Re-sync stats when navigating between cache pages
+	$effect(() => {
+		// Access cacheId to create reactive dependency
+		cacheId;
+		stats = data.initialStats;
+	});
 
 	let locks = $derived(stats?.envLocks ?? { directory: false, maxSizeMB: false, ttlDays: false });
 
@@ -35,21 +44,21 @@
 	let isConfigurable = $derived(!isInMemory);
 
 	const maxSizeOptions = [
-		{ label: '100 MB', value: 100 },
-		{ label: '250 MB', value: 250 },
-		{ label: '500 MB', value: 500 },
-		{ label: '1 GB', value: 1024 },
-		{ label: '2 GB', value: 2048 },
-		{ label: '5 GB', value: 5120 }
+		{ label: () => m.cache_size_100mb(), value: 100 },
+		{ label: () => m.cache_size_250mb(), value: 250 },
+		{ label: () => m.cache_size_500mb(), value: 500 },
+		{ label: () => m.cache_size_1gb(), value: 1024 },
+		{ label: () => m.cache_size_2gb(), value: 2048 },
+		{ label: () => m.cache_size_5gb(), value: 5120 }
 	];
 
 	const ttlOptions = [
-		{ label: '1 day', value: 1 },
-		{ label: '3 days', value: 3 },
-		{ label: '7 days', value: 7 },
-		{ label: '14 days', value: 14 },
-		{ label: '30 days', value: 30 },
-		{ label: '90 days', value: 90 }
+		{ label: () => m.cache_ttl_1d(), value: 1 },
+		{ label: () => m.cache_ttl_3d(), value: 3 },
+		{ label: () => m.cache_ttl_1w(), value: 7 },
+		{ label: () => m.cache_ttl_2w(), value: 14 },
+		{ label: () => m.cache_ttl_1m(), value: 30 },
+		{ label: () => m.cache_ttl_forever(), value: 90 }
 	];
 
 	interface CacheInfo {
@@ -58,62 +67,42 @@
 		howItWorks: string[];
 	}
 
-	const cacheInfoMap: Record<string, CacheInfo> = {
-		media: {
-			name: 'Media Cache',
-			description: 'Disk-based cache for audio files (songs, podcasts, radio segments).',
-			howItWorks: [
-				'Audio files are cached on disk after first playback, so repeated listens don\'t re-fetch from the backend. This dramatically reduces bandwidth and improves response time.',
-				'The cache uses the same sharded SHA-256 directory structure as the image cache. Files are stored with their original content type (audio/mpeg, audio/flac, audio/ogg, etc.).',
-				'Default limit is 2 GB with a 30-day TTL. Oldest files are evicted first when the cache is full.',
-				'All three settings can be overridden via environment variables: MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_TTL_DAYS. When set, the corresponding UI field is locked.',
-				'This cache is especially useful for Electron builds where offline playback and reduced network usage are important.'
-			]
-		},
-		image: {
-			name: 'Image Cache',
-			description: 'Disk-based cache for album art, radio favicons, and podcast artwork.',
-			howItWorks: [
-				'All images (album art, radio favicons, podcast artwork) are fetched through a server-side cache proxy. On first load, images are downloaded from the origin and stored on disk. Subsequent requests serve from cache.',
-				'Cached files are organized in sharded subdirectories using SHA-256 hashes. When the cache exceeds the maximum size, the oldest entries are evicted first.',
-				'Each backend uses a compound protocol prefix (e.g. demo-image://, radiobrowser-image://) so the cache can route requests to the correct origin with appropriate authentication headers when needed.',
-				'All three settings can be overridden via environment variables: IMAGE_CACHE_DIR, IMAGE_CACHE_MAX_SIZE_MB, IMAGE_CACHE_TTL_DAYS. When set, the corresponding UI field is locked.'
-			]
-		},
-		metadata: {
-			name: 'Metadata Cache',
-			description: 'In-memory cache for radio stream now-playing info and other transient metadata.',
-			howItWorks: [
-				'When listening to internet radio, ICY metadata (artist and track name) is extracted from the audio stream headers and cached in memory.',
-				'Entries automatically expire after 5 minutes. The cache is cleared when the server restarts.',
-				'This cache cannot be configured as it is managed automatically with fixed limits.'
-			]
-		},
-		'audio-analysis': {
-			name: 'Audio Analysis',
-			description: 'Client-side cache for track BPM, beat detection, and frequency analysis.',
-			howItWorks: [
-				'When tracks play, the audio engine analyzes them in a Web Worker to detect BPM, beat positions, and frequency characteristics. Results are cached in browser memory.',
-				'The cache holds up to 200 tracks using LRU (least recently used) eviction. When the limit is reached, the oldest analysis is discarded.',
-				'Since this cache lives in the browser, it is cleared when the page is refreshed. Server-side stats are not available.'
-			]
-		},
-		api: {
-			name: 'API Cache',
-			description: 'In-memory cache for podcast feed responses and other API data.',
-			howItWorks: [
-				'Podcast RSS feeds are fetched and parsed on first request, then cached in memory for 30 minutes. Duplicate requests for the same feed within the TTL window are deduplicated.',
-				'The cache is cleared when the server restarts or when the podcast backend disconnects.',
-				'This cache cannot be configured as it is managed automatically with fixed limits.'
-			]
+	function getCacheInfo(id: string): CacheInfo {
+		switch (id) {
+			case 'media': return {
+				name: m.cache_media_name(),
+				description: m.cache_media_desc(),
+				howItWorks: [m.cache_media_how_1(), m.cache_media_how_2(), m.cache_media_how_3(), m.cache_media_how_4(), m.cache_media_how_5()]
+			};
+			case 'image': return {
+				name: m.cache_image_name(),
+				description: m.cache_image_desc(),
+				howItWorks: [m.cache_image_how_1(), m.cache_image_how_2(), m.cache_image_how_3(), m.cache_image_how_4()]
+			};
+			case 'metadata': return {
+				name: m.cache_metadata_name(),
+				description: m.cache_metadata_desc(),
+				howItWorks: [m.cache_metadata_how_1(), m.cache_metadata_how_2(), m.cache_metadata_how_3()]
+			};
+			case 'audio-analysis': return {
+				name: m.cache_audio_analysis_name(),
+				description: m.cache_audio_analysis_desc(),
+				howItWorks: [m.cache_audio_analysis_how_1(), m.cache_audio_analysis_how_2(), m.cache_audio_analysis_how_3()]
+			};
+			case 'api': return {
+				name: m.cache_api_name(),
+				description: m.cache_api_desc(),
+				howItWorks: [m.cache_api_how_1(), m.cache_api_how_2(), m.cache_api_how_3()]
+			};
+			default: return {
+				name: m.cache_fallback_name({ id }),
+				description: '',
+				howItWorks: []
+			};
 		}
-	};
+	}
 
-	let info = $derived(cacheInfoMap[cacheId] ?? {
-		name: cacheId.charAt(0).toUpperCase() + cacheId.slice(1) + ' Cache',
-		description: '',
-		howItWorks: []
-	});
+	let info = $derived(getCacheInfo(cacheId));
 
 	function formatBytes(bytes: number): string {
 		if (bytes === 0) return '0 B';
@@ -124,7 +113,7 @@
 	}
 
 	function formatDate(ms: number | null): string {
-		if (!ms) return 'N/A';
+		if (!ms) return m.cache_na();
 		const d = new Date(ms);
 		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 	}
@@ -152,10 +141,12 @@
 	}
 
 	async function fetchStats() {
+		fetching = true;
 		try {
 			const res = await fetch(`/api/cache/${cacheId}/stats`);
 			if (res.ok) stats = await res.json();
 		} catch { /* ignore */ }
+		fetching = false;
 	}
 
 	async function clearCacheAction() {
@@ -185,19 +176,7 @@
 		syncToServer({ ttlDays: value });
 	}
 
-	onMount(async () => {
-		// Always fetch stats first to determine if cache is configurable
-		await fetchStats();
-		// If configurable (disk-based), sync local config to server
-		if (stats && !(stats.envLocks.directory && stats.envLocks.maxSizeMB && stats.envLocks.ttlDays)) {
-			const c = getCache(cacheId);
-			syncToServer({
-				directory: c.directory,
-				maxSizeMB: c.maxSizeMB,
-				ttlDays: c.ttlDays
-			});
-		}
-	});
+
 </script>
 
 <div class="space-y-6">
@@ -215,7 +194,7 @@
 
 	<!-- Overview -->
 	<div class="rounded-xl border border-border bg-bg-elevated">
-		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Overview</h2>
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.cache_overview()}</h2>
 
 		<div class="px-6 py-4">
 			<div class="flex items-center gap-4">
@@ -238,7 +217,7 @@
 									: `${effectiveMaxSizeMB} MB`}
 							</p>
 						{:else if isInMemory}
-							<span class="rounded-full bg-overlay-subtle px-2 py-0.5 text-[10px] font-medium text-text-muted">in-memory</span>
+							<span class="rounded-full bg-overlay-subtle px-2 py-0.5 text-[10px] font-medium text-text-muted">{m.cache_in_memory()}</span>
 						{/if}
 					</div>
 					{#if isConfigurable && effectiveMaxSizeMB > 0}
@@ -260,24 +239,24 @@
 			{#if stats}
 				<div class="mt-4 flex flex-wrap gap-3">
 					<div class="rounded-lg bg-overlay-subtle px-3 py-2">
-						<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Entries</p>
+						<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">{m.cache_stat_entries()}</p>
 						<p class="text-sm font-semibold text-text-primary">{stats.entryCount.toLocaleString()}</p>
 					</div>
 					{#if stats.oldestEntry}
 						<div class="rounded-lg bg-overlay-subtle px-3 py-2">
-							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Oldest</p>
+							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">{m.cache_stat_oldest()}</p>
 							<p class="text-sm font-semibold text-text-primary">{formatDate(stats.oldestEntry)}</p>
 						</div>
 					{/if}
 					{#if stats.newestEntry}
 						<div class="rounded-lg bg-overlay-subtle px-3 py-2">
-							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Newest</p>
+							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">{m.cache_stat_newest()}</p>
 							<p class="text-sm font-semibold text-text-primary">{formatDate(stats.newestEntry)}</p>
 						</div>
 					{/if}
 					{#if isInMemory}
 						<div class="rounded-lg bg-overlay-subtle px-3 py-2">
-							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Storage</p>
+							<p class="text-[10px] font-medium uppercase tracking-wider text-text-muted">{m.cache_stat_storage()}</p>
 							<p class="text-sm font-semibold text-text-primary">{stats.directory}</p>
 						</div>
 					{/if}
@@ -296,16 +275,16 @@
 				disabled={clearing}
 			>
 				<Trash2 size={14} />
-				{clearing ? 'Clearing...' : 'Clear Cache'}
+				{clearing ? m.cache_clearing() : m.cache_clear()}
 			</button>
 			<button
 				type="button"
 				class="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:border-accent/30 hover:bg-accent/10 hover:text-accent disabled:opacity-50"
 				onclick={fetchStats}
-				disabled={syncing}
+				disabled={fetching}
 			>
-				<RefreshCw size={14} class={syncing ? 'animate-spin' : ''} />
-				Refresh
+				<RefreshCw size={14} class={fetching ? 'animate-spin' : ''} />
+				{m.action_refresh()}
 			</button>
 		</div>
 	</div>
@@ -313,25 +292,25 @@
 	<!-- Settings (only for configurable/disk caches) -->
 	{#if isConfigurable}
 		<div class="rounded-xl border border-border bg-bg-elevated">
-			<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Settings</h2>
+			<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.cache_settings()}</h2>
 
 			<!-- Cache directory -->
 			<div class="flex items-center justify-between px-6 py-4">
 				<div>
 					<div class="flex items-center gap-2">
-						<p class="text-sm font-medium text-text-primary">Cache Directory</p>
+						<p class="text-sm font-medium text-text-primary">{m.cache_directory()}</p>
 						{#if locks.directory}
 							<span class="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
 								<Lock size={10} />
-								ENV
+								{m.cache_env()}
 							</span>
 						{/if}
 					</div>
 					<p class="text-xs text-text-secondary">
 						{#if locks.directory}
-							Set by environment variable.
+							{m.cache_set_by_env()}
 						{:else}
-							Where cached files are stored on disk.
+							{m.cache_directory_desc()}
 						{/if}
 					</p>
 				</div>
@@ -354,19 +333,19 @@
 			<div class="flex items-center justify-between px-6 py-4">
 				<div>
 					<div class="flex items-center gap-2">
-						<p class="text-sm font-medium text-text-primary">Maximum Size</p>
+						<p class="text-sm font-medium text-text-primary">{m.cache_max_size()}</p>
 						{#if locks.maxSizeMB}
 							<span class="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
 								<Lock size={10} />
-								ENV
+								{m.cache_env()}
 							</span>
 						{/if}
 					</div>
 					<p class="text-xs text-text-secondary">
 						{#if locks.maxSizeMB}
-							Set by environment variable.
+							{m.cache_set_by_env()}
 						{:else}
-							Oldest entries are evicted when the cache exceeds this limit.
+							{m.cache_max_size_desc()}
 						{/if}
 					</p>
 				</div>
@@ -379,7 +358,7 @@
 						class="rounded-md border border-border bg-bg-base px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
 					>
 						{#each maxSizeOptions as opt}
-							<option value={opt.value} selected={opt.value === effectiveMaxSizeMB}>{opt.label}</option>
+							<option value={opt.value} selected={opt.value === effectiveMaxSizeMB}>{opt.label()}</option>
 						{/each}
 					</select>
 				</div>
@@ -391,19 +370,19 @@
 			<div class="flex items-center justify-between px-6 py-4 pb-5">
 				<div>
 					<div class="flex items-center gap-2">
-						<p class="text-sm font-medium text-text-primary">Cache Duration (TTL)</p>
+						<p class="text-sm font-medium text-text-primary">{m.cache_ttl()}</p>
 						{#if locks.ttlDays}
 							<span class="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
 								<Lock size={10} />
-								ENV
+								{m.cache_env()}
 							</span>
 						{/if}
 					</div>
 					<p class="text-xs text-text-secondary">
 						{#if locks.ttlDays}
-							Set by environment variable.
+							{m.cache_set_by_env()}
 						{:else}
-							How long cached entries are kept before they expire and are re-fetched.
+							{m.cache_ttl_desc()}
 						{/if}
 					</p>
 				</div>
@@ -416,7 +395,7 @@
 						class="rounded-md border border-border bg-bg-base px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
 					>
 						{#each ttlOptions as opt}
-							<option value={opt.value} selected={opt.value === effectiveTtlDays}>{opt.label}</option>
+							<option value={opt.value} selected={opt.value === effectiveTtlDays}>{opt.label()}</option>
 						{/each}
 					</select>
 				</div>
@@ -427,7 +406,7 @@
 	<!-- How it Works -->
 	{#if info.howItWorks.length > 0}
 		<div class="rounded-xl border border-border/60 bg-bg-elevated/60 p-6">
-			<h2 class="mb-3 text-sm font-semibold text-text-primary">How it works</h2>
+			<h2 class="mb-3 text-sm font-semibold text-text-primary">{m.cache_how_it_works()}</h2>
 			<div class="space-y-2 text-xs text-text-secondary">
 				{#each info.howItWorks as paragraph}
 					<p>{paragraph}</p>

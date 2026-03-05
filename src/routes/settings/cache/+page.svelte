@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Image, Database, ChevronRight, Tags, Cloud, AudioWaveform, Music } from 'lucide-svelte';
-	import { onMount } from 'svelte';
+	import * as m from '$lib/paraglide/messages.js';
+
+	let { data } = $props();
 
 	interface CacheProviderInfo {
 		id: string;
@@ -20,36 +22,46 @@
 		music: Music
 	};
 
-	let providers = $state<CacheProviderInfo[]>([
+	let providers = $derived<CacheProviderInfo[]>([
 		{
 			id: 'image',
-			name: 'Image Cache',
-			description: 'Album art, radio favicons, and podcast artwork cached on disk.',
-			icon: 'image'
+			name: m.cache_image_name(),
+			description: m.cache_image_overview_desc(),
+			icon: 'image',
+			totalSizeBytes: data.providerStats['image']?.totalSizeBytes,
+			entryCount: data.providerStats['image']?.entryCount
 		},
 		{
 			id: 'media',
-			name: 'Media Cache',
-			description: 'Audio files (songs, podcasts) cached on disk for offline playback.',
-			icon: 'music'
+			name: m.cache_media_name(),
+			description: m.cache_media_overview_desc(),
+			icon: 'music',
+			totalSizeBytes: data.providerStats['media']?.totalSizeBytes,
+			entryCount: data.providerStats['media']?.entryCount
 		},
 		{
 			id: 'metadata',
-			name: 'Metadata Cache',
-			description: 'Radio stream now-playing info and other transient metadata.',
-			icon: 'tags'
+			name: m.cache_metadata_name(),
+			description: m.cache_metadata_overview_desc(),
+			icon: 'tags',
+			totalSizeBytes: data.providerStats['metadata']?.totalSizeBytes,
+			entryCount: data.providerStats['metadata']?.entryCount
 		},
 		{
 			id: 'audio-analysis',
-			name: 'Audio Analysis',
-			description: 'Track BPM, beat detection, and frequency analysis data.',
-			icon: 'audio-waveform'
+			name: m.cache_audio_analysis_name(),
+			description: m.cache_audio_analysis_overview_desc(),
+			icon: 'audio-waveform',
+			totalSizeBytes: data.providerStats['audio-analysis']?.totalSizeBytes,
+			entryCount: data.providerStats['audio-analysis']?.entryCount
 		},
 		{
 			id: 'api',
-			name: 'API Cache',
-			description: 'Podcast feed responses and other API data.',
-			icon: 'cloud'
+			name: m.cache_api_name(),
+			description: m.cache_api_overview_desc(),
+			icon: 'cloud',
+			totalSizeBytes: data.providerStats['api']?.totalSizeBytes,
+			entryCount: data.providerStats['api']?.entryCount
 		}
 	]);
 
@@ -60,25 +72,11 @@
 		const i = Math.floor(Math.log(bytes) / Math.log(k));
 		return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 	}
-
-	onMount(async () => {
-		// Fetch stats for each known provider
-		for (const provider of providers) {
-			try {
-				const res = await fetch(`/api/cache/${provider.id}/stats`);
-				if (res.ok) {
-					const data = await res.json();
-					provider.totalSizeBytes = data.totalSizeBytes;
-					provider.entryCount = data.entryCount;
-				}
-			} catch { /* ignore */ }
-		}
-	});
 </script>
 
 <div class="space-y-6">
-	<h1 class="text-2xl font-bold text-text-primary">Cache</h1>
-	<p class="text-sm text-text-secondary">Manage disk caches used by the application. Click a cache type for detailed settings.</p>
+	<h1 class="text-2xl font-bold text-text-primary">{m.cache_title()}</h1>
+	<p class="text-sm text-text-secondary">{m.cache_desc()}</p>
 
 	<div class="space-y-3">
 		{#each providers as provider}
@@ -101,7 +99,7 @@
 						{/if}
 						{#if provider.entryCount !== undefined}
 							<span class="rounded-full bg-overlay-subtle px-2 py-0.5 text-[10px] font-medium text-text-muted">
-								{provider.entryCount.toLocaleString()} entries
+								{m.cache_entries({ count: provider.entryCount.toLocaleString() })}
 							</span>
 						{/if}
 					</div>

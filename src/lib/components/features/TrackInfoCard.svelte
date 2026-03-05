@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Info, Copy, Check } from 'lucide-svelte';
 	import FloatingCard from '$lib/components/ui/FloatingCard.svelte';
 	import { getCurrentItem, type QueueItem } from '$lib/stores/unifiedQueue.svelte';
@@ -38,8 +39,8 @@
 		if (item.type === 'track' && quality) {
 			return formatQualityBadge(quality.codec, quality.bitrate, quality.bitDepth, quality.sampleRate);
 		}
-		if (item.type === 'radio') return 'RADIO';
-		if (item.type === 'podcast') return 'PODCAST';
+		if (item.type === 'radio') return m.track_info_badge_radio();
+		if (item.type === 'podcast') return m.track_info_badge_podcast();
 		return '';
 	});
 
@@ -94,37 +95,37 @@
 			const t = item.data;
 			const q = t.quality;
 			const rows = [
-				row('Title', t.title),
-				row('Artist', t.artistName),
-				row('Album', t.albumName),
-				row('Track', t.trackNumber != null ? `${t.discNumber ?? 1}-${t.trackNumber}` : null),
-				row('Duration', formatDuration(t.duration)),
-				row('Year', t.year)
+				row(m.track_info_label_title(), t.title),
+				row(m.track_info_label_artist(), t.artistName),
+				row(m.track_info_label_album(), t.albumName),
+				row(m.track_info_label_track(), t.trackNumber != null ? `${t.discNumber ?? 1}-${t.trackNumber}` : null),
+				row(m.track_info_label_duration(), formatDuration(t.duration)),
+				row(m.track_info_year(), t.year)
 			];
 			if (q) {
 				rows.push(
-					row('Codec', q.codec?.toUpperCase()),
-					row('Bitrate', q.bitrate != null ? formatBitrate(q.bitrate) : null),
-					row('Bit Depth', formatBitDepth(q.bitDepth)),
-					row('Sample Rate', formatSampleRate(q.sampleRate)),
-					row('Channels', formatChannels(q.channels))
+					row(m.track_info_label_codec(), q.codec?.toUpperCase()),
+					row(m.track_info_label_bitrate(), q.bitrate != null ? formatBitrate(q.bitrate) : null),
+					row(m.track_info_bit_depth(), formatBitDepth(q.bitDepth)),
+					row(m.track_info_label_sample_rate(), formatSampleRate(q.sampleRate)),
+					row(m.track_info_label_channels(), formatChannels(q.channels))
 				);
 			}
 			return rows;
 		}
 		if (item.type === 'radio') {
 			return [
-				row('Station', item.data.name),
-				row('Type', 'Internet Radio'),
-				row('Codec', item.data.codec?.toUpperCase()),
-				row('Bitrate', item.data.bitrate != null ? formatBitrate(item.data.bitrate) : null)
+				row(m.track_info_station(), item.data.name),
+				row(m.track_info_label_type(), m.track_info_internet_radio()),
+				row(m.track_info_label_codec(), item.data.codec?.toUpperCase()),
+				row(m.track_info_label_bitrate(), item.data.bitrate != null ? formatBitrate(item.data.bitrate) : null)
 			];
 		}
 		if (item.type === 'podcast') {
 			return [
-				row('Episode', item.data.title),
-				row('Type', 'Podcast'),
-				row('Duration', formatDuration(item.data.duration_secs * 1000))
+				row(m.track_info_episode(), item.data.title),
+				row(m.track_info_label_type(), m.track_info_podcast()),
+				row(m.track_info_label_duration(), formatDuration(item.data.duration_secs * 1000))
 			];
 		}
 		return [];
@@ -134,41 +135,41 @@
 		if (!item || item.type !== 'track' || !item.data.quality) return [];
 		const q = item.data.quality;
 		return [
-			row('Track Gain', formatGainDb(q.gain)),
-			row('Album Gain', formatGainDb(q.albumGain)),
-			row('Peak', q.peak != null ? q.peak.toFixed(3) : null),
-			row('Loudness', formatLufs(q.loudness))
+			row(m.track_info_label_gain(), formatGainDb(q.gain)),
+			row(m.track_info_label_gain(), formatGainDb(q.albumGain)),
+			row(m.track_info_label_peak(), q.peak != null ? q.peak.toFixed(3) : null),
+			row(m.track_info_label_loudness(), formatLufs(q.loudness))
 		].filter((r) => r.value !== '—');
 	});
 
 	let crossfadeRows = $derived.by(() => {
 		if (!analysis) return [];
 		return [
-			row('BPM', analysis.bpm > 0 ? analysis.bpm.toFixed(1) : null),
-			row('Audio Start', `${(analysis.audioStartMs / 1000).toFixed(2)}s`),
-			row('Audio End', `${(analysis.audioEndMs / 1000).toFixed(2)}s`),
-			row('Outro Start', `${(analysis.outroStartMs / 1000).toFixed(2)}s`),
-			row('Intro End', `${(analysis.introEndMs / 1000).toFixed(2)}s`),
-			row('Median Energy', analysis.medianEnergy.toFixed(4))
+			row(m.track_info_bpm(), analysis.bpm > 0 ? analysis.bpm.toFixed(1) : null),
+			row(m.track_info_audio_start(), `${(analysis.audioStartMs / 1000).toFixed(2)}s`),
+			row(m.track_info_audio_end(), `${(analysis.audioEndMs / 1000).toFixed(2)}s`),
+			row(m.track_info_outro_start(), `${(analysis.outroStartMs / 1000).toFixed(2)}s`),
+			row(m.track_info_intro_end(), `${(analysis.introEndMs / 1000).toFixed(2)}s`),
+			row(m.track_info_median_energy(), analysis.medianEnergy.toFixed(4))
 		];
 	});
 
 	let engineRows = $derived.by(() => {
 		if (!debugInfo) return [];
 		return [
-			row('Context', debugInfo.contextState),
-			row('Sample Rate', debugInfo.contextSampleRate != null ? `${debugInfo.contextSampleRate} Hz` : null),
-			row('Normalization', debugInfo.normalizationEnabled ? 'On' : 'Off'),
-			row('Crossfade', debugInfo.crossfadeWindowMs > 0 ? `${debugInfo.crossfadeWindowMs}ms` : 'Off'),
-			row('Smart XF', debugInfo.smartCrossfadeEnabled ? 'On' : 'Off'),
-			row('Same Album XF', debugInfo.sameAlbumCrossfade ? 'On' : 'Off'),
-			row('Is Crossfading', debugInfo.isCrossfading ? 'Yes' : 'No'),
-			row('EQ', debugInfo.eqEnabled ? 'On' : 'Off'),
-			row('Volume', `${(debugInfo.volume * 100).toFixed(0)}%`),
-			row('Visualizer', debugInfo.visEnabled ? 'On' : 'Off'),
-			row('Analysis Cache', `${debugInfo.analysisCacheSize} tracks`),
-			row('Analysis Queue', `${debugInfo.analysisQueueLength}`),
-			row('Play Generation', `${debugInfo.playGeneration}`)
+			row(m.track_info_context(), debugInfo.contextState),
+			row(m.track_info_label_sample_rate(), debugInfo.contextSampleRate != null ? `${debugInfo.contextSampleRate} Hz` : null),
+			row(m.track_info_normalization(), debugInfo.normalizationEnabled ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_crossfade(), debugInfo.crossfadeWindowMs > 0 ? `${debugInfo.crossfadeWindowMs}ms` : m.track_info_no()),
+			row(m.track_info_smart_xf(), debugInfo.smartCrossfadeEnabled ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_same_album_xf(), debugInfo.sameAlbumCrossfade ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_label_crossfading(), debugInfo.isCrossfading ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_eq(), debugInfo.eqEnabled ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_volume(), `${(debugInfo.volume * 100).toFixed(0)}%`),
+			row(m.track_info_visualizer(), debugInfo.visEnabled ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_analysis_cache(), `${debugInfo.analysisCacheSize} ${m.track_info_tracks()}`),
+			row(m.track_info_analysis_queue(), `${debugInfo.analysisQueueLength}`),
+			row(m.track_info_play_generation(), `${debugInfo.playGeneration}`)
 		];
 	});
 
@@ -176,12 +177,12 @@
 		if (!debugInfo?.activeDeck) return [];
 		const d = debugInfo.activeDeck;
 		return [
-			row('Deck Track', d.trackId),
-			row('Position', `${d.currentTimeSec.toFixed(1)}s`),
-			row('Norm Gain', d.normGainValue.toFixed(4)),
-			row('Paused', d.paused ? 'Yes' : 'No'),
-			row('Ready State', `${d.readyState}`),
-			row('Network', `${d.networkState}`)
+			row(m.track_info_label_deck(), d.trackId),
+			row(m.track_info_label_position(), `${d.currentTimeSec.toFixed(1)}s`),
+			row(m.track_info_norm_gain(), d.normGainValue.toFixed(4)),
+			row(m.track_info_paused(), d.paused ? m.track_info_yes() : m.track_info_no()),
+			row(m.track_info_ready_state(), `${d.readyState}`),
+			row(m.track_info_network(), `${d.networkState}`)
 		];
 	});
 </script>
@@ -210,7 +211,7 @@
 		<div class="flex gap-0 p-4" style="max-height: 70vh; overflow-y: auto;">
 			<!-- Column 1: Track info + normalization -->
 			<div class="min-w-[200px] max-w-[240px]">
-				<h3 class="mb-2 text-xs font-bold text-text-primary">Track Info</h3>
+				<h3 class="mb-2 text-xs font-bold text-text-primary">{m.track_info_title()}</h3>
 				<div class="space-y-1">
 					{#each trackRows as { label, value }}
 						<div class="flex justify-between gap-3 text-[11px]">
@@ -221,7 +222,7 @@
 				</div>
 
 				{#if normRows.length > 0}
-					<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">Normalization</h3>
+					<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">{m.track_info_normalization()}</h3>
 					<div class="space-y-1">
 						{#each normRows as { label, value }}
 							<div class="flex justify-between gap-3 text-[11px]">
@@ -236,7 +237,7 @@
 			<!-- Column 2: Crossfade analysis (when applicable) -->
 			{#if hasCrossfadeAnalysis}
 				<div class="ml-4 min-w-[180px] max-w-[220px] border-l border-border pl-4">
-					<h3 class="mb-2 text-xs font-bold text-text-primary">Crossfade Analysis</h3>
+					<h3 class="mb-2 text-xs font-bold text-text-primary">{m.track_info_crossfade_analysis()}</h3>
 					<div class="space-y-1">
 						{#each crossfadeRows as { label, value }}
 							<div class="flex justify-between gap-3 text-[11px]">
@@ -251,7 +252,7 @@
 			<!-- Column 3: Engine debug (when debug enabled) -->
 			{#if debugEnabled && debugInfo}
 				<div class="ml-4 min-w-[200px] max-w-[260px] border-l border-border pl-4">
-					<h3 class="mb-2 text-xs font-bold text-text-primary">Engine</h3>
+					<h3 class="mb-2 text-xs font-bold text-text-primary">{m.track_info_engine()}</h3>
 					<div class="space-y-1">
 						{#each engineRows as { label, value }}
 							<div class="flex justify-between gap-3 text-[11px]">
@@ -262,7 +263,7 @@
 					</div>
 
 					{#if deckRows.length > 0}
-						<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">Active Deck</h3>
+						<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">{m.track_info_active_deck()}</h3>
 						<div class="space-y-1">
 							{#each deckRows as { label, value }}
 								<div class="flex justify-between gap-3 text-[11px]">
@@ -274,7 +275,7 @@
 					{/if}
 
 					{#if item?.type === 'track' && Object.keys(item.data.extra).length > 0}
-						<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">Backend Extra</h3>
+						<h3 class="mb-2 mt-4 text-xs font-bold text-text-primary">{m.track_info_backend_extra()}</h3>
 						<div class="space-y-1">
 							{#each Object.entries(item.data.extra) as [key, value]}
 								<div class="flex justify-between gap-3 text-[11px]">
@@ -292,10 +293,10 @@
 					>
 						{#if copied}
 							<Check size={12} class="text-green-400" />
-							<span class="text-green-400">Copied!</span>
+							<span class="text-green-400">{m.action_copied()}</span>
 						{:else}
 							<Copy size={12} />
-							<span>Copy JSON</span>
+							<span>{m.action_copy_json()}</span>
 						{/if}
 					</button>
 				</div>
@@ -311,7 +312,7 @@
 					: 'bg-bg-highlight text-text-muted hover:text-text-secondary'}"
 				onclick={() => setDebugEnabled(!debugEnabled)}
 			>
-				Debug {debugEnabled ? 'On' : 'Off'}
+				{debugEnabled ? m.track_info_debug_on() : m.track_info_debug_off()}
 			</button>
 		</div>
 	{/snippet}

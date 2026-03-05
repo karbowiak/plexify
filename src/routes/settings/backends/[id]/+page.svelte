@@ -5,6 +5,7 @@
 	import { connectBackend, disconnectBackend } from '$lib/stores/backendStore.svelte';
 	import { Capability } from '$lib/backends/types';
 	import { Check, X } from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	const backendId = $derived(page.params.id!);
 	const backend = $derived(get(backendId));
@@ -40,7 +41,7 @@
 		<div>
 			<h1 class="text-2xl font-bold text-text-primary">{backend.metadata.name}</h1>
 			<p class="mt-1 text-sm text-text-secondary">
-				v{backend.metadata.version} by {backend.metadata.author}
+				{m.backends_version_by({ version: backend.metadata.version, author: backend.metadata.author })}
 			</p>
 		</div>
 
@@ -48,11 +49,11 @@
 		<div class="rounded-xl border border-border bg-bg-elevated">
 			<div class="flex items-center justify-between px-6 py-4">
 				<div>
-					<p class="text-sm font-medium text-text-primary">Enabled</p>
-					<p class="text-xs text-text-secondary">Enable or disable this backend.</p>
+					<p class="text-sm font-medium text-text-primary">{m.backends_enabled()}</p>
+					<p class="text-xs text-text-secondary">{m.backends_enabled_desc()}</p>
 				</div>
 				<button
-					aria-label="Toggle backend"
+					aria-label={m.aria_toggle_backend()}
 					onclick={toggleEnabled}
 					class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config.enabled
 						? 'bg-accent'
@@ -70,7 +71,7 @@
 		<!-- Config fields -->
 		{#if backend.metadata.configFields.length > 0}
 			<div class="rounded-xl border border-border bg-bg-elevated">
-				<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Configuration</h2>
+				<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.backends_configuration()}</h2>
 
 				<div class="space-y-1 px-6 pb-5">
 					{#each backend.metadata.configFields as field}
@@ -84,7 +85,7 @@
 
 							{#if field.type === 'toggle'}
 								<button
-									aria-label="Toggle {field.label}"
+									aria-label={m.aria_toggle_field({ field: field.label })}
 									onclick={() =>
 										setConfigValue(field.key, !config.config[field.key])}
 									class="relative h-6 w-11 shrink-0 rounded-full transition-colors {config
@@ -128,7 +129,7 @@
 
 		<!-- Capabilities grid -->
 		<div class="rounded-xl border border-border bg-bg-elevated">
-			<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Capabilities</h2>
+			<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">{m.backends_capabilities()}</h2>
 
 			<div class="grid grid-cols-4 gap-2 px-6 pb-5">
 				{#each allCapabilities as cap}
@@ -151,7 +152,7 @@
 	</div>
 {:else}
 	<div class="space-y-6">
-		<h1 class="text-2xl font-bold text-text-primary">Backend not found</h1>
-		<p class="text-sm text-text-secondary">No backend registered with id "{page.params.id}".</p>
+		<h1 class="text-2xl font-bold text-text-primary">{m.backends_not_found()}</h1>
+		<p class="text-sm text-text-secondary">{m.backends_not_found_desc({ id: page.params.id ?? '' })}</p>
 	</div>
 {/if}

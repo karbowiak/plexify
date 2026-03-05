@@ -1,39 +1,9 @@
 <script lang="ts">
-	import type { RadioStation } from '$lib/radio/types';
-	import { Capability } from '$lib/backends/types';
-	import { getFirstBackendWithCapability } from '$lib/stores/backendStore.svelte';
 	import StationCard from '$lib/components/radio/StationCard.svelte';
 	import HorizontalScroller from '$lib/components/ui/HorizontalScroller.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
-	let topVoted = $state<RadioStation[]>([]);
-	let topClicked = $state<RadioStation[]>([]);
-	let trending = $state<RadioStation[]>([]);
-	let featuredLoading = $state(true);
-
-	function getRadioBackend() {
-		return getFirstBackendWithCapability(Capability.InternetRadio);
-	}
-
-	async function loadFeatured() {
-		featuredLoading = true;
-		try {
-			const rb = getRadioBackend();
-			if (!rb?.getTopRadioStations) return;
-			const [voted, clicked, trend] = await Promise.all([
-				rb.getTopRadioStations('topvote', 15),
-				rb.getTopRadioStations('topclick', 15),
-				rb.getTopRadioStations('lastchange', 15)
-			]);
-			topVoted = voted;
-			topClicked = clicked;
-			trending = trend;
-		} catch {
-			// silent
-		}
-		featuredLoading = false;
-	}
-
-	loadFeatured();
+	let { data } = $props();
 </script>
 
 {#snippet cardSkeleton()}
@@ -46,31 +16,31 @@
 	</div>
 {/snippet}
 
-<HorizontalScroller title="Top Voted" loading={featuredLoading}>
+<HorizontalScroller title={m.radio_top_voted()}>
 	{#snippet skeleton()}
 		{@render cardSkeleton()}
 	{/snippet}
-	{#each topVoted as station (station.uuid)}
+	{#each data.topVoted as station (station.uuid)}
 		<div class="shrink-0" style:width="var(--scroller-item-width)">
 			<StationCard {station} variant="card" />
 		</div>
 	{/each}
 </HorizontalScroller>
-<HorizontalScroller title="Most Popular" loading={featuredLoading}>
+<HorizontalScroller title={m.radio_most_popular()}>
 	{#snippet skeleton()}
 		{@render cardSkeleton()}
 	{/snippet}
-	{#each topClicked as station (station.uuid)}
+	{#each data.topClicked as station (station.uuid)}
 		<div class="shrink-0" style:width="var(--scroller-item-width)">
 			<StationCard {station} variant="card" />
 		</div>
 	{/each}
 </HorizontalScroller>
-<HorizontalScroller title="Recently Changed" loading={featuredLoading}>
+<HorizontalScroller title={m.radio_recently_changed()}>
 	{#snippet skeleton()}
 		{@render cardSkeleton()}
 	{/snippet}
-	{#each trending as station (station.uuid)}
+	{#each data.trending as station (station.uuid)}
 		<div class="shrink-0" style:width="var(--scroller-item-width)">
 			<StationCard {station} variant="card" />
 		</div>

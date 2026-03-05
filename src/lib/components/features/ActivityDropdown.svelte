@@ -1,4 +1,5 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { Activity, Music, Radio, Podcast, Loader2, Sparkles } from 'lucide-svelte';
 	import FloatingCard from '$lib/components/ui/FloatingCard.svelte';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
@@ -64,13 +65,13 @@
 	function relativeTime(timestamp: Date, _now: number): string {
 		const diff = _now - new Date(timestamp).getTime();
 		const secs = Math.floor(diff / 1000);
-		if (secs < 5) return 'just now';
-		if (secs < 60) return `${secs}s ago`;
+		if (secs < 5) return m.time_just_now();
+		if (secs < 60) return m.time_seconds_ago({ count: secs });
 		const mins = Math.floor(secs / 60);
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 60) return m.time_minutes_ago({ count: mins });
 		const hours = Math.floor(mins / 60);
-		if (hours < 24) return `${hours}h ago`;
-		return `${Math.floor(hours / 24)}d ago`;
+		if (hours < 24) return m.time_hours_ago({ count: hours });
+		return m.time_days_ago({ count: Math.floor(hours / 24) });
 	}
 
 	function playTypeIcon(type: string) {
@@ -98,7 +99,7 @@
 <FloatingCard bind:open position="below" align="end">
 	{#snippet trigger()}
 		<div class="relative">
-			<IconButton icon={Activity} label="Activity" active={open} />
+			<IconButton icon={Activity} label={m.nav_activity()} active={open} />
 			{#if activeCount > 0}
 				<svg
 					class="pointer-events-none absolute -inset-1 animate-spin"
@@ -137,7 +138,7 @@
 							? 'bg-bg-elevated text-text-primary'
 							: 'text-text-muted hover:text-text-primary'}"
 					>
-						Activity
+						{m.nav_activity()}
 					</button>
 					<button
 						type="button"
@@ -147,7 +148,7 @@
 							: 'text-text-muted hover:text-text-primary'}"
 					>
 						<Sparkles size={12} />
-						Discoveries
+						{m.nav_discoveries()}
 					</button>
 				</div>
 				<div class="flex items-center gap-2">
@@ -156,7 +157,7 @@
 						class="text-xs text-text-muted transition-colors hover:text-text-primary"
 						onclick={() => (open = false)}
 					>
-						View all
+						{m.action_view_all()}
 					</a>
 					{#if items.length > 0 && activeTab === 'activity'}
 						<button
@@ -164,7 +165,7 @@
 							class="text-xs text-text-muted transition-colors hover:text-text-primary"
 							onclick={() => clearEvents()}
 						>
-							Clear
+							{m.action_clear()}
 						</button>
 					{/if}
 				</div>
@@ -176,7 +177,7 @@
 					{#each [...activeOps.entries()] as [opId, payload]}
 						<div class="flex items-center gap-2 rounded-md bg-bg-elevated px-2 py-1.5">
 							<Loader2 size={12} class="shrink-0 animate-spin text-accent" />
-							<p class="min-w-0 truncate text-xs text-text-primary">{payload.message ?? 'Working...'}</p>
+							<p class="min-w-0 truncate text-xs text-text-primary">{payload.message ?? m.activity_working()}</p>
 						</div>
 					{/each}
 				</div>
@@ -184,7 +185,7 @@
 
 			{#if items.length === 0 && (activeTab === 'discoveries' || activeCount === 0)}
 				<p class="py-6 text-center text-sm text-text-muted">
-					{activeTab === 'discoveries' ? 'No discoveries yet' : 'No recent activity'}
+					{activeTab === 'discoveries' ? m.activity_no_discoveries() : m.activity_no_activity()}
 				</p>
 			{:else}
 				<div class="flex max-h-80 flex-col gap-0.5 overflow-y-auto">

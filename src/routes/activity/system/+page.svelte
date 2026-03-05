@@ -15,6 +15,8 @@
 		loadEvents,
 		type AppEvent
 	} from '$lib/stores/eventStore.svelte';
+	import { onMount } from 'svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
 	const PAGE_SIZE = 50;
 
@@ -42,7 +44,7 @@
 		hasMore = results.length >= PAGE_SIZE;
 	}
 
-	$effect(() => {
+	onMount(() => {
 		loadAll();
 	});
 
@@ -67,9 +69,9 @@
 		const weekStart = new Date(today.getTime() - today.getDay() * 86400000);
 		const d = new Date(date);
 		const entryDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-		if (entryDay.getTime() >= today.getTime()) return 'Today';
-		if (entryDay.getTime() >= yesterday.getTime()) return 'Yesterday';
-		if (entryDay.getTime() >= weekStart.getTime()) return 'This Week';
+		if (entryDay.getTime() >= today.getTime()) return m.time_today();
+		if (entryDay.getTime() >= yesterday.getTime()) return m.time_yesterday();
+		if (entryDay.getTime() >= weekStart.getTime()) return m.time_this_week();
 		return d.toLocaleString('default', { month: 'long', year: 'numeric' });
 	}
 
@@ -78,12 +80,12 @@
 		const d = new Date(date).getTime();
 		const diffMs = now - d;
 		const diffMin = Math.floor(diffMs / 60000);
-		if (diffMin < 1) return 'Just now';
-		if (diffMin < 60) return `${diffMin}m ago`;
+		if (diffMin < 1) return m.time_just_now();
+		if (diffMin < 60) return m.time_minutes_ago({ count: diffMin });
 		const diffHours = Math.floor(diffMin / 60);
-		if (diffHours < 24) return `${diffHours}h ago`;
+		if (diffHours < 24) return m.time_hours_ago({ count: diffHours });
 		const diffDays = Math.floor(diffHours / 24);
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 7) return m.time_days_ago({ count: diffDays });
 		return new Date(date).toLocaleDateString();
 	}
 
@@ -129,7 +131,7 @@
 			<ArrowLeft size={20} />
 		</a>
 		<AlertCircle size={28} class="text-accent" />
-		<h1 class="text-2xl font-bold">System Events</h1>
+		<h1 class="text-2xl font-bold">{m.activity_system_title()}</h1>
 	</div>
 
 	<!-- Active Operations -->
@@ -139,7 +141,7 @@
 				<div class="flex items-center gap-3 rounded-lg bg-bg-elevated px-4 py-2.5">
 					<Loader2 size={16} class="shrink-0 animate-spin text-accent" />
 					<div class="min-w-0 flex-1">
-						<p class="text-sm text-text-primary">{payload.message ?? 'Working...'}</p>
+						<p class="text-sm text-text-primary">{payload.message ?? m.activity_working()}</p>
 						{#if payload.detail}
 							<p class="truncate text-xs text-text-muted">{payload.detail}</p>
 						{/if}
@@ -157,8 +159,8 @@
 	{#if events.length === 0 && !loading}
 		<div class="flex flex-col items-center justify-center gap-4 py-24 text-text-muted">
 			<AlertCircle size={48} class="opacity-30" />
-			<p class="text-lg">No system events</p>
-			<p class="text-sm">Analysis, sync, and other system events will appear here</p>
+			<p class="text-lg">{m.activity_system_empty()}</p>
+			<p class="text-sm">{m.activity_system_empty_desc()}</p>
 		</div>
 	{:else}
 		{#each grouped as group}

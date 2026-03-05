@@ -8,12 +8,9 @@
 		ChevronUp
 	} from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
-	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import type { PodcastDetail, PodcastEpisode } from '$lib/podcast/types';
+	import type { PodcastEpisode } from '$lib/backends/models/podcast';
 	import EpisodeRow from '$lib/components/podcast/EpisodeRow.svelte';
-	import { Capability } from '$lib/backends/types';
-	import { getFirstBackendWithCapability } from '$lib/stores/backendStore.svelte';
 	import {
 		subscribe,
 		unsubscribe,
@@ -23,59 +20,28 @@
 	} from '$lib/stores/podcastStore.svelte';
 	import { playPodcastNow, getCurrentItem, getActiveMediaType } from '$lib/stores/unifiedQueue.svelte';
 	import { getState, playCurrentItem, stopPlayback } from '$lib/stores/playerStore.svelte';
+	import * as m from '$lib/paraglide/messages.js';
 
-	let feedUrl = $derived.by(() => {
-		try {
-			return atob(page.params.id ?? '');
-		} catch {
-			return '';
-		}
-	});
+	let { data } = $props();
 
-	let detail = $state<PodcastDetail | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
 	let descExpanded = $state(false);
 
-	let subscribed = $derived(feedUrl ? isSubscribed(feedUrl) : false);
+	let subscribed = $derived(data.feedUrl ? isSubscribed(data.feedUrl) : false);
 	let currentItem = $derived(getCurrentItem());
 	let mediaType = $derived(getActiveMediaType());
 	let playState = $derived(getState());
 
-	$effect(() => {
-		const url = feedUrl;
-		if (!url) return;
-		loading = true;
-		error = null;
-		const pb = getFirstBackendWithCapability(Capability.Podcasts);
-		if (!pb?.getPodcastFeed) {
-			error = 'No podcast backend available';
-			loading = false;
-			return;
-		}
-		pb.getPodcastFeed(url)
-			.then((d) => {
-				detail = d;
-			})
-			.catch((e) => {
-				error = e instanceof Error ? e.message : 'Failed to load podcast';
-			})
-			.finally(() => {
-				loading = false;
-			});
-	});
-
 	function toggleSubscribe() {
-		if (!detail || !feedUrl) return;
+		if (!data.detail || !data.feedUrl) return;
 		if (subscribed) {
-			unsubscribe(feedUrl);
+			unsubscribe(data.feedUrl);
 		} else {
 			subscribe({
-				feedUrl,
+				feedUrl: data.feedUrl,
 				podcastId: 0,
-				title: detail.title,
-				author: detail.author,
-				artworkUrl: detail.artwork_url,
+				title: data.detail.title,
+				author: data.detail.author,
+				artworkUrl: data.detail.artwork_url,
 				addedAt: Date.now()
 			});
 		}
@@ -86,24 +52,24 @@
 	}
 
 	function handlePlay(episode: PodcastEpisode) {
-		if (!detail || !feedUrl) return;
+		if (!data.detail || !data.feedUrl) return;
 		if (isEpisodePlaying(episode)) {
 			stopPlayback();
 		} else {
-			playPodcastNow(episode, feedUrl, detail.title, detail.artwork_url, detail.episodes);
+			playPodcastNow(episode, data.feedUrl, data.detail.title, data.detail.artwork_url, data.detail.episodes);
 			playCurrentItem();
 		}
 	}
 
 	function episodeProgress(episode: PodcastEpisode): number {
-		if (!feedUrl || !episode.duration_secs) return 0;
-		const secs = getEpisodeProgress(feedUrl, episode.guid);
+		if (!data.feedUrl || !episode.duration_secs) return 0;
+		const secs = getEpisodeProgress(data.feedUrl, episode.guid);
 		return secs / episode.duration_secs;
 	}
 
 	function episodeCompleted(episode: PodcastEpisode): boolean {
-		if (!feedUrl) return false;
-		return isCompleted(feedUrl, episode.guid);
+		if (!data.feedUrl) return false;
+		return isCompleted(data.feedUrl, episode.guid);
 	}
 </script>
 
@@ -115,40 +81,17 @@
 		class="mb-4 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
 	>
 		<ArrowLeft size={14} />
-		Back to Podcasts
+		{m.podcasts_back()}
 	</button>
 
-	{#if loading}
-		<!-- Loading skeleton -->
-		<div class="animate-pulse">
-			<div class="flex gap-6">
-				<div class="h-56 w-56 shrink-0 rounded-lg bg-bg-highlight"></div>
-				<div class="flex-1 space-y-3 pt-4">
-					<div class="h-6 w-2/3 rounded bg-bg-highlight"></div>
-					<div class="h-4 w-1/3 rounded bg-bg-highlight"></div>
-					<div class="h-3 w-full rounded bg-bg-highlight"></div>
-					<div class="h-3 w-3/4 rounded bg-bg-highlight"></div>
-				</div>
-			</div>
-			<div class="mt-8 space-y-3">
-				{#each Array(5) as _}
-					<div class="h-14 rounded-lg bg-bg-highlight"></div>
-				{/each}
-			</div>
-		</div>
-	{:else if error}
-		<div class="flex flex-col items-center justify-center py-16 text-text-muted">
-			<PodcastIcon size={48} class="mb-4 opacity-30" />
-			<p class="text-sm">{error}</p>
-		</div>
-	{:else if detail}
+	{#if data.detail}
 		<!-- Hero -->
 		<div class="relative mb-8">
 			<!-- Blur background -->
-			{#if detail.artwork_url}
+			{#if data.detail.artwork_url}
 				<div class="absolute inset-0 -top-16 -right-8 -left-8 overflow-hidden">
 					<CachedImage
-						src={detail.artwork_url}
+						src={data.detail.artwork_url}
 						alt=""
 						class="h-full w-full scale-110 object-cover opacity-15 blur-3xl"
 					/>
@@ -158,8 +101,8 @@
 			<div class="relative flex gap-6">
 				<!-- Artwork -->
 				<div class="h-56 w-56 shrink-0 overflow-hidden rounded-lg shadow-lg">
-					{#if detail.artwork_url}
-						<CachedImage src={detail.artwork_url} alt="" class="h-full w-full object-cover" />
+					{#if data.detail.artwork_url}
+						<CachedImage src={data.detail.artwork_url} alt="" class="h-full w-full object-cover" />
 					{:else}
 						<div
 							class="flex h-full w-full items-center justify-center bg-gradient-to-br from-accent/20 to-bg-highlight"
@@ -172,28 +115,28 @@
 				<!-- Info -->
 				<div class="flex min-w-0 flex-1 flex-col justify-center">
 					<p class="mb-1 text-xs font-medium uppercase tracking-wider text-text-muted">
-						Podcast
+						{m.search_type_podcast()}
 					</p>
-					<h1 class="mb-1 text-2xl font-bold text-text-primary">{detail.title}</h1>
-					<p class="mb-3 text-sm text-text-secondary">{detail.author}</p>
+					<h1 class="mb-1 text-2xl font-bold text-text-primary">{data.detail.title}</h1>
+					<p class="mb-3 text-sm text-text-secondary">{data.detail.author}</p>
 
 					<!-- Description -->
-					{#if detail.description}
+					{#if data.detail.description}
 						<div class="mb-3">
 							<p
 								class="text-xs leading-relaxed text-text-secondary {descExpanded
 									? ''
 									: 'line-clamp-3'}"
 							>
-								{detail.description}
+								{data.detail.description}
 							</p>
-							{#if detail.description.length > 200}
+							{#if data.detail.description.length > 200}
 								<button
 									type="button"
 									onclick={() => (descExpanded = !descExpanded)}
 									class="mt-1 flex items-center gap-0.5 text-xs text-accent hover:underline"
 								>
-									{descExpanded ? 'Show less' : 'Show more'}
+									{descExpanded ? m.action_show_less() : m.action_show_more()}
 									{#if descExpanded}
 										<ChevronUp size={12} />
 									{:else}
@@ -205,9 +148,9 @@
 					{/if}
 
 					<!-- Category tags -->
-					{#if detail.categories.length > 0}
+					{#if data.detail.categories.length > 0}
 						<div class="mb-3 flex flex-wrap gap-1.5">
-							{#each detail.categories as cat}
+							{#each data.detail.categories as cat}
 								<span
 									class="rounded-full bg-bg-highlight px-2 py-0.5 text-[10px] text-text-muted"
 								>
@@ -228,14 +171,14 @@
 						>
 							{#if subscribed}
 								<Check size={16} />
-								Subscribed
+								{m.action_subscribed()}
 							{:else}
 								<Plus size={16} />
-								Subscribe
+								{m.action_subscribe()}
 							{/if}
 						</button>
 						<span class="text-xs text-text-muted">
-							{detail.episodes.length} episodes
+							{m.podcasts_episodes_count({ count: data.detail.episodes.length })}
 						</span>
 					</div>
 				</div>
@@ -244,13 +187,13 @@
 
 		<!-- Episode list -->
 		<div class="mb-2">
-			<h2 class="text-sm font-semibold text-text-primary">Episodes</h2>
+			<h2 class="text-sm font-semibold text-text-primary">{m.podcasts_episodes()}</h2>
 		</div>
 		<div class="space-y-0.5">
-			{#each detail.episodes as episode (episode.guid)}
+			{#each data.detail.episodes as episode (episode.guid)}
 				<EpisodeRow
 					{episode}
-					podcastArtwork={detail.artwork_url}
+					podcastArtwork={data.detail.artwork_url}
 					isPlaying={isEpisodePlaying(episode)}
 					progress={episodeProgress(episode)}
 					isCompleted={episodeCompleted(episode)}

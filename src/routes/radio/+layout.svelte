@@ -1,18 +1,22 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { Globe, Heart, Clock, Map, Tag, Star } from 'lucide-svelte';
 	import { Capability } from '$lib/backends/types';
 	import { hasCapability } from '$lib/stores/backendStore.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import * as m from '$lib/paraglide/messages.js';
+
+	let { children }: { children: Snippet } = $props();
 
 	type Tab = 'featured' | 'favorites' | 'recent' | 'country' | 'genre';
 
-	const tabs: { id: Tab; label: string; icon: typeof Globe; path: string }[] = [
-		{ id: 'featured', label: 'Featured', icon: Globe, path: '/radio' },
-		{ id: 'favorites', label: 'Favorites', icon: Heart, path: '/radio/favorites' },
-		{ id: 'recent', label: 'Recent', icon: Clock, path: '/radio/recent' },
-		{ id: 'country', label: 'By Country', icon: Map, path: '/radio/country' },
-		{ id: 'genre', label: 'By Genre', icon: Tag, path: '/radio/genre' }
+	const tabs: { id: Tab; label: () => string; icon: typeof Globe; path: string }[] = [
+		{ id: 'featured', label: () => m.nav_featured(), icon: Globe, path: '/radio' },
+		{ id: 'favorites', label: () => m.nav_favorites(), icon: Heart, path: '/radio/favorites' },
+		{ id: 'recent', label: () => m.nav_recent(), icon: Clock, path: '/radio/recent' },
+		{ id: 'country', label: () => m.nav_by_country(), icon: Map, path: '/radio/country' },
+		{ id: 'genre', label: () => m.nav_by_genre(), icon: Tag, path: '/radio/genre' }
 	];
 
 	function isTabActive(tab: typeof tabs[number]): boolean {
@@ -26,10 +30,10 @@
 {#if !radioAvailable}
 	<section class="flex flex-col items-center justify-center py-24 text-text-muted">
 		<Globe size={64} class="mb-6 opacity-20" />
-		<h2 class="mb-2 text-lg font-semibold text-text-primary">Internet Radio is not available</h2>
-		<p class="mb-4 text-sm">Enable the Radio Browser backend in Settings to listen to internet radio stations.</p>
+		<h2 class="mb-2 text-lg font-semibold text-text-primary">{m.radio_unavailable()}</h2>
+		<p class="mb-4 text-sm">{m.radio_unavailable_desc()}</p>
 		<a href="/settings" class="rounded-full bg-accent px-5 py-2 text-sm font-medium text-bg-base transition-colors hover:bg-accent/90">
-			Go to Settings
+			{m.action_go_to_settings()}
 		</a>
 	</section>
 {:else}
@@ -43,8 +47,8 @@
 				<Globe size={24} class="text-accent" />
 			</div>
 			<div class="relative">
-				<h1 class="text-2xl font-bold text-text-primary">Internet Radio</h1>
-				<p class="text-sm text-text-secondary">45,000+ stations worldwide</p>
+				<h1 class="text-2xl font-bold text-text-primary">{m.radio_title()}</h1>
+				<p class="text-sm text-text-secondary">{m.radio_subtitle()}</p>
 			</div>
 		</div>
 
@@ -59,12 +63,12 @@
 						: 'bg-bg-highlight text-text-secondary hover:text-text-primary'}"
 				>
 					<tab.icon size={14} />
-					{tab.label}
+					{tab.label()}
 				</button>
 			{/each}
 		</div>
 
 		<!-- Page content -->
-		<slot />
+		{@render children()}
 	</section>
 {/if}

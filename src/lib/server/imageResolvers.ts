@@ -19,10 +19,6 @@ export function hasResolver(protocol: string): boolean {
 	return resolvers.has(protocol);
 }
 
-export function clearResolvers() {
-	resolvers.clear();
-}
-
 /**
  * Parse a compound protocol URL like "demo-image://https://cdn.example.com/img.jpg"
  * Returns { backendId, resourceType, protocol, resourcePath } or null for plain http/https URLs.
@@ -80,9 +76,6 @@ export function resolveUrl(
 
 	return resolver(parsed.resourcePath, config);
 }
-
-/** @deprecated Use resolveUrl instead */
-export const resolveImageUrl = resolveUrl;
 
 /**
  * Register resolvers from a backend's resolvers array.

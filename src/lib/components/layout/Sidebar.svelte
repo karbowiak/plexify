@@ -19,18 +19,19 @@
 		AlertCircle,
 		Sparkles
 	} from 'lucide-svelte';
+	import * as m from '$lib/paraglide/messages.js';
+	import { fade } from 'svelte/transition';
 	import NavItem from '$lib/components/ui/NavItem.svelte';
 	import NavGroup from '$lib/components/ui/NavGroup.svelte';
 	import SubNavItem from '$lib/components/ui/SubNavItem.svelte';
 	import PlaylistItem from '$lib/components/ui/PlaylistItem.svelte';
-	import { getArtExpanded } from '$lib/stores/uiStore.svelte';
+	import { getArtExpanded, getAppearance } from '$lib/stores/configStore.svelte';
 	import {
 		toggleCreatePlaylist,
 		getPlaylistVersion,
 		isSubmenuPinned,
 		toggleSubmenuPin
-	} from '$lib/stores/uiStore.svelte';
-	import { getAppearance } from '$lib/stores/configStore.svelte';
+	} from '$lib/stores/uiEphemeral.svelte';
 	import { hasCapability, getBackend } from '$lib/stores/backendStore.svelte';
 	import { Capability } from '$lib/backends/types';
 	import type { Playlist } from '$lib/backends/types';
@@ -70,15 +71,15 @@
 
 <aside class="flex h-full w-(--spacing-sidebar) shrink-0 flex-col bg-bg-base">
 	<nav class="flex flex-col {compact ? 'pt-2 pb-1' : 'pt-4 pb-2'}">
-		<NavItem icon={Home} label="Home" href="/" active={isActive('/', true)} />
+		<NavItem icon={Home} label={m.nav_home()} href="/" active={isActive('/', true)} />
 		{#if hasCapability(Capability.Search)}
-			<NavItem icon={Search} label="Search" href="/search" active={isActive('/search')} />
+			<NavItem icon={Search} label={m.nav_search()} href="/search" active={isActive('/search')} />
 		{/if}
 
 		{#if hasCapability(Capability.Artists) || hasCapability(Capability.Albums) || hasCapability(Capability.Tracks)}
 			<NavGroup
 				icon={Library}
-				label="Your Library"
+				label={m.nav_library()}
 				href="/library"
 				active={isActive('/library') || isActive('/liked')}
 				expanded={libraryExpanded}
@@ -86,12 +87,12 @@
 			>
 				{#snippet children()}
 					{#if hasCapability(Capability.Tracks)}
-						<SubNavItem icon={Heart} label="Liked Songs" href="/liked/songs" active={isActive('/liked/songs')} />
+						<SubNavItem icon={Heart} label={m.nav_liked_songs()} href="/liked/songs" active={isActive('/liked/songs')} />
 					{/if}
 					{#if hasCapability(Capability.Artists)}
 						<SubNavItem
 							icon={Users}
-							label="Liked Artists"
+							label={m.nav_liked_artists()}
 							href="/liked/artists"
 							active={isActive('/liked/artists')}
 						/>
@@ -99,7 +100,7 @@
 					{#if hasCapability(Capability.Albums)}
 						<SubNavItem
 							icon={Disc3}
-							label="Liked Albums"
+							label={m.nav_liked_albums()}
 							href="/liked/albums"
 							active={isActive('/liked/albums')}
 						/>
@@ -109,29 +110,29 @@
 		{/if}
 
 		{#if hasCapability(Capability.Tags)}
-			<NavItem icon={Tags} label="Genres" href="/genres" active={isActive('/genres')} />
+			<NavItem icon={Tags} label={m.nav_genres()} href="/genres" active={isActive('/genres')} />
 		{/if}
 		<NavGroup
 			icon={Activity}
-			label="Activity"
+			label={m.nav_activity()}
 			href="/activity"
 			active={isActive('/activity')}
 			expanded={activityExpanded}
 			onToggle={() => toggleSubmenuPin('activity')}
 		>
 			{#snippet children()}
-				<SubNavItem icon={Clock} label="Recent" href="/activity/recent" active={isActive('/activity/recent')} />
-				<SubNavItem icon={AlertCircle} label="System" href="/activity/system" active={isActive('/activity/system')} />
-				<SubNavItem icon={Sparkles} label="Discoveries" href="/activity/discoveries" active={isActive('/activity/discoveries')} />
+				<SubNavItem icon={Clock} label={m.nav_recent()} href="/activity/recent" active={isActive('/activity/recent')} />
+				<SubNavItem icon={AlertCircle} label={m.nav_system()} href="/activity/system" active={isActive('/activity/system')} />
+				<SubNavItem icon={Sparkles} label={m.nav_discoveries()} href="/activity/discoveries" active={isActive('/activity/discoveries')} />
 			{/snippet}
 		</NavGroup>
 		{#if hasCapability(Capability.Radio)}
-			<NavItem icon={Radio} label="Stations" href="/stations" active={isActive('/stations')} />
+			<NavItem icon={Radio} label={m.nav_stations()} href="/stations" active={isActive('/stations')} />
 		{/if}
 		{#if hasCapability(Capability.InternetRadio)}
 			<NavGroup
 				icon={Globe}
-				label="Internet Radio"
+				label={m.nav_internet_radio()}
 				href="/radio"
 				active={isActive('/radio')}
 				expanded={radioExpanded}
@@ -140,31 +141,31 @@
 				{#snippet children()}
 					<SubNavItem
 						icon={Star}
-						label="Featured"
+						label={m.nav_featured()}
 						href="/radio"
 						active={isActive('/radio', true)}
 					/>
 					<SubNavItem
 						icon={Heart}
-						label="Favorites"
+						label={m.nav_favorites()}
 						href="/radio/favorites"
 						active={isActive('/radio/favorites')}
 					/>
 					<SubNavItem
 						icon={Clock}
-						label="Recent"
+						label={m.nav_recent()}
 						href="/radio/recent"
 						active={isActive('/radio/recent')}
 					/>
 					<SubNavItem
 						icon={MapPin}
-						label="By Country"
+						label={m.nav_by_country()}
 						href="/radio/country"
 						active={isActive('/radio/country')}
 					/>
 					<SubNavItem
 						icon={Music}
-						label="By Genre"
+						label={m.nav_by_genre()}
 						href="/radio/genre"
 						active={isActive('/radio/genre')}
 					/>
@@ -172,7 +173,7 @@
 			</NavGroup>
 		{/if}
 		{#if hasCapability(Capability.Podcasts)}
-			<NavItem icon={Podcast} label="Podcasts" href="/podcasts" active={isActive('/podcasts')} />
+			<NavItem icon={Podcast} label={m.nav_podcasts()} href="/podcasts" active={isActive('/podcasts')} />
 		{/if}
 	</nav>
 
@@ -181,7 +182,7 @@
 
 		<nav class="flex flex-col pt-2 pb-2">
 			{#if hasCapability(Capability.EditPlaylists)}
-				<NavItem icon={Plus} label="Create Playlist" onclick={() => toggleCreatePlaylist()} />
+				<NavItem icon={Plus} label={m.action_create_playlist()} onclick={() => toggleCreatePlaylist()} />
 			{/if}
 		</nav>
 
@@ -192,7 +193,7 @@
 				? 'mb-[calc(var(--spacing-sidebar)-var(--spacing-player))]'
 				: ''}"
 		>
-			<div class="flex-1 overflow-y-auto pt-2 pb-2">
+			<div class="flex-1 overflow-y-auto pt-2 pb-2" transition:fade={{ duration: 150 }}>
 				{#each backendPlaylists as pl}
 					<PlaylistItem
 						name={pl.title}

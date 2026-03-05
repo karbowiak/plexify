@@ -1,9 +1,10 @@
 <script lang="ts">
+	import * as m from '$lib/paraglide/messages.js';
 	import { SlidersHorizontal } from 'lucide-svelte';
 	import FloatingCard from '$lib/components/ui/FloatingCard.svelte';
 	import IconButton from '$lib/components/ui/IconButton.svelte';
 
-	import { bandLabels, presetNames, presets } from '$lib/data/eq';
+	import { bandLabels, presetNames, presets, getPresetName } from '$lib/data/eq';
 	import { getEQ, setEQ } from '$lib/stores/configStore.svelte';
 
 	let open = $state(false);
@@ -88,19 +89,19 @@
 
 <FloatingCard bind:open position="above" align="end">
 	{#snippet trigger()}
-		<IconButton icon={SlidersHorizontal} size={16} label="Equalizer" active={open || enabled} />
+		<IconButton icon={SlidersHorizontal} size={16} label={m.eq_title()} active={open || enabled} />
 	{/snippet}
 	{#snippet children()}
 		<div class="w-[480px] p-4">
 			<div class="mb-3 flex items-center justify-between">
-				<h3 class="text-sm font-bold">Equalizer</h3>
+				<h3 class="text-sm font-bold">{m.eq_title()}</h3>
 				<div class="flex items-center gap-2">
 					<button
 						type="button"
 						class="rounded-full px-2 py-0.5 text-[10px] font-medium text-text-muted hover:text-text-secondary transition-colors"
 						onclick={resetFlat}
 					>
-						Reset
+						{m.action_reset()}
 					</button>
 					<button
 						type="button"
@@ -109,13 +110,13 @@
 							: 'bg-bg-highlight text-text-muted'}"
 						onclick={() => setEQ({ enabled: !enabled })}
 					>
-						{enabled ? 'On' : 'Off'}
+						{enabled ? m.eq_on() : m.eq_off()}
 					</button>
 				</div>
 			</div>
 
 			<div class="mb-4 grid grid-cols-3 gap-1.5">
-				{#each Object.entries(presetNames) as [key, label]}
+				{#each Object.keys(presets) as key}
 					<button
 						type="button"
 						class="rounded-lg border px-2 py-1.5 text-xs font-medium transition-all {preset ===
@@ -125,7 +126,7 @@
 						style={preset === key ? `background: var(--color-accent-tint-strong)` : `background: var(--color-accent-tint-subtle)`}
 						onclick={() => selectPreset(key)}
 					>
-						{label}
+						{getPresetName(key)}
 					</button>
 				{/each}
 			</div>
@@ -190,8 +191,8 @@
 			<!-- Gain controls -->
 			<div class="mt-4 space-y-2 transition-opacity {enabled ? '' : 'pointer-events-none opacity-40'}">
 				{#each [
-					{ label: 'Preamp', value: eqConfig.preampDb, key: 'preampDb' as const },
-					{ label: 'Postgain', value: eqConfig.postgainDb, key: 'postgainDb' as const }
+					{ label: m.eq_preamp(), value: eqConfig.preampDb, key: 'preampDb' as const },
+					{ label: m.eq_postgain(), value: eqConfig.postgainDb, key: 'postgainDb' as const }
 				] as ctrl}
 					<div class="flex items-center gap-3">
 						<span class="w-16 shrink-0 text-[10px] text-text-muted">{ctrl.label}</span>
