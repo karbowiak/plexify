@@ -1,11 +1,13 @@
-import { Capability, type Backend, type BackendMetadata, type Hub, type ResourceResolver } from '../types';
+import { Capability, type Backend, type BackendMetadata, type DiscoveryItem, type Hub, type ResourceResolver } from '../types';
 import type { Track } from '../models/track';
 import type { Album } from '../models/album';
 import type { Artist } from '../models/artist';
 import type { Playlist } from '../models/playlist';
+import type { QueueItem } from '$lib/stores/unifiedQueue.svelte';
 import * as api from './api';
 import { dzTrackToTrack, dzAlbumToAlbum, dzArtistToArtist } from './mappers';
 import * as localState from './state';
+import { emitTrackPlay } from '$lib/events/emit';
 
 function toDzId(id: string): number {
 	return parseInt(id.replace('dz-', ''), 10);
@@ -38,13 +40,15 @@ const SUPPORTED_CAPABILITIES = new Set<Capability>([
 	Capability.Hubs,
 	Capability.Tags,
 	Capability.Playlists,
-	Capability.EditPlaylists
+	Capability.EditPlaylists,
+	Capability.Discoveries
 ]);
 
 export class DemoBackend implements Backend {
 	readonly id = 'demo';
 	readonly capabilities = SUPPORTED_CAPABILITIES;
 	private _connected = false;
+	private _emittedDiscoveries = new Set<string>();
 
 	readonly resolvers: ResourceResolver[] = [
 		{
@@ -62,7 +66,8 @@ export class DemoBackend implements Backend {
 		version: '2.0.0',
 		author: 'Built-in',
 		configFields: [],
-		idPrefix: 'dz'
+		idPrefix: 'dz',
+		brandColor: '#A238FF'
 	};
 
 	async connect(): Promise<void> {
@@ -171,6 +176,44 @@ export class DemoBackend implements Backend {
 		];
 	}
 
+	// Discoveries — check for new top albums
+	async checkDiscoveries(): Promise<DiscoveryItem[]> {
+		const chart = await api.getChart();
+		const albums = chart.albums.data.map(dzAlbumToAlbum);
+		const discoveries: DiscoveryItem[] = [];
+
+		for (const album of albums.slice(0, 3)) {
+			if (this._emittedDiscoveries.has(album.id)) continue;
+			this._emittedDiscoveries.add(album.id);
+			discoveries.push({
+				type: 'new_album',
+				title: album.title,
+				subtitle: album.artistName ?? undefined,
+				imageUrl: album.thumb ?? undefined,
+				entityId: album.id,
+				href: `/album/${album.id}`
+			});
+		}
+
+		return discoveries;
+	}
+
+	// Liked (chart data as fake liked items)
+	async getLikedTracks(limit = 50): Promise<Track[]> {
+		const chart = await api.getChart();
+		return chart.tracks.data.slice(0, limit).map(dzTrackToTrack);
+	}
+
+	async getLikedAlbums(limit = 50): Promise<Album[]> {
+		const chart = await api.getChart();
+		return chart.albums.data.slice(0, limit).map(dzAlbumToAlbum);
+	}
+
+	async getLikedArtists(limit = 50): Promise<Artist[]> {
+		const chart = await api.getChart();
+		return chart.artists.data.slice(0, limit).map(dzArtistToArtist);
+	}
+
 	// Tags (genres)
 	async getTags(): Promise<{ tag: string; count: number | null }[]> {
 		const res = await api.getGenres();
@@ -220,6 +263,23 @@ export class DemoBackend implements Backend {
 
 	async deletePlaylist(playlistId: string): Promise<void> {
 		localState.deletePlaylist(playlistId);
+	}
+
+	// Play history recording
+	recordPlay(item: QueueItem, durationPlayedMs: number): void {
+		if (item.type !== 'track') return;
+		emitTrackPlay({
+			title: item.data.title,
+			subtitle: item.data.artistName,
+			imageUrl: item.data.thumb,
+			entityId: item.data.id,
+			backendId: this.id,
+			artistId: item.data.artistId,
+			artistName: item.data.artistName,
+			albumId: item.data.albumId,
+			albumName: item.data.albumName,
+			durationPlayedMs
+		});
 	}
 
 	// Tags — genre artists

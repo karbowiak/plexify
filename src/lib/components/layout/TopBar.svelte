@@ -3,9 +3,12 @@
 	import IconButton from '$lib/components/ui/IconButton.svelte';
 	import ActivityDropdown from '$lib/components/features/ActivityDropdown.svelte';
 	import SearchDropdown from '$lib/components/ui/SearchDropdown.svelte';
+	import HotkeyHelpModal from '$lib/components/ui/HotkeyHelpModal.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { getAppearance } from '$lib/stores/configStore.svelte';
+	import { getAppearance, cycleRepeatMode, getShuffled, setShuffled } from '$lib/stores/configStore.svelte';
+	import { getFullscreenVisualizer, setFullscreenVisualizer } from '$lib/stores/uiStore.svelte';
+	import { shuffleQueue, unshuffleQueue } from '$lib/stores/unifiedQueue.svelte';
 
 	let compact = $derived(getAppearance().compactMode);
 	let isSettings = $derived(page.url.pathname.startsWith('/settings'));
@@ -17,12 +20,48 @@
 	let focused = $state(false);
 	let showDropdown = $derived(query.trim().length > 0 && focused);
 	let searchInput = $state<HTMLInputElement | undefined>();
+	let showHotkeyHelp = $state(false);
 
 	function onGlobalKeydown(e: KeyboardEvent) {
+		if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+			// Don't trigger when typing in inputs
+			const tag = (e.target as HTMLElement)?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+			e.preventDefault();
+			showHotkeyHelp = !showHotkeyHelp;
+			return;
+		}
+		if (showHotkeyHelp) return;
 		if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
 			e.preventDefault();
 			searchInput?.focus();
 			searchInput?.select();
+			return;
+		}
+		// Player-only hotkeys (not in fullscreen visualizer)
+		if (e.metaKey || e.ctrlKey || e.altKey) return;
+		const tag = (e.target as HTMLElement)?.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		if (getFullscreenVisualizer()) return;
+		switch (e.key) {
+			case 's':
+			case 'S': {
+				e.preventDefault();
+				const next = !getShuffled();
+				setShuffled(next);
+				if (next) shuffleQueue(); else unshuffleQueue();
+				break;
+			}
+			case 'r':
+			case 'R':
+				e.preventDefault();
+				cycleRepeatMode();
+				break;
+			case 'v':
+			case 'V':
+				e.preventDefault();
+				setFullscreenVisualizer(true);
+				break;
 		}
 	}
 
@@ -83,3 +122,7 @@
 		<IconButton icon={Settings} label="Settings" active={isSettings} onclick={onSettingsClick} />
 	</div>
 </header>
+
+{#if showHotkeyHelp}
+	<HotkeyHelpModal context="player" onclose={() => showHotkeyHelp = false} />
+{/if}

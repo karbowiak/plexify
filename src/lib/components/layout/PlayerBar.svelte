@@ -27,6 +27,7 @@
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
 	import EQCard from '$lib/components/features/EQCard.svelte';
 	import SleepTimerCard from '$lib/components/features/SleepTimerCard.svelte';
+	import TrackInfoCard from '$lib/components/features/TrackInfoCard.svelte';
 	import SeekVisualizer from '$lib/components/visualizer/SeekVisualizer.svelte';
 	import FullscreenVisualizer from '$lib/components/visualizer/FullscreenVisualizer.svelte';
 	import {
@@ -320,6 +321,9 @@
 			{/if}
 			{#if mediaType === 'track'}
 				<IconButton icon={RepeatIcon} size={16} label="Repeat" active={repeatMode !== 'off'} onclick={cycleRepeatMode} />
+			{/if}
+			{#if item}
+				<TrackInfoCard />
 			{/if}
 		</div>
 		<div class="flex w-full items-center {compact ? 'gap-1.5' : 'gap-2'}">

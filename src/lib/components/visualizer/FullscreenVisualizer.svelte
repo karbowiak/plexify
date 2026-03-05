@@ -10,9 +10,12 @@
 		List,
 		Shuffle,
 		ChevronLeft,
-		ChevronRight
+		ChevronRight,
+		Maximize,
+		Minimize
 	} from 'lucide-svelte';
 	import CachedImage from '$lib/components/ui/CachedImage.svelte';
+	import HotkeyHelpModal from '$lib/components/ui/HotkeyHelpModal.svelte';
 	import SeekVisualizer from './SeekVisualizer.svelte';
 	import MilkdropVisualizer from './MilkdropVisualizer.svelte';
 	import MilkdropPresetBrowser from './MilkdropPresetBrowser.svelte';
@@ -32,6 +35,8 @@
 		skipPrevious,
 		seekTo
 	} from '$lib/stores/playerStore.svelte';
+	import { getVisualizerColors, cycleRepeatMode, getShuffled, setShuffled } from '$lib/stores/configStore.svelte';
+	import { shuffleQueue, unshuffleQueue } from '$lib/stores/unifiedQueue.svelte';
 	import { getCurrentItem, toDisplay } from '$lib/stores/unifiedQueue.svelte';
 	import {
 		getPresetBrowserOpen,
@@ -70,6 +75,7 @@
 
 	const MODES: FullscreenVisMode[] = ['spectrum', 'oscilloscope', 'vu', 'starfield', 'milkdrop'];
 
+	let showHotkeyHelp = $state(false);
 	let milkdropRef: MilkdropVisualizer | undefined = $state();
 	let milkdropPresetKeys: string[] = $state([]);
 
@@ -101,9 +107,26 @@
 		y: number;
 		z: number;
 		pz: number;
+		hue: number; // 0-360 for colored, -1 for default white
+	}
+	interface StaticStar {
+		sx: number;
+		sy: number;
+		brightness: number;
+		size: number;
+		hue: number;
 	}
 	let stars: Star[] | null = null;
+	let staticStars: StaticStar[] | null = null;
 	let starSpeed = 0;
+
+	// JWST-inspired stellar/nebula hues
+	const STAR_HUES = [5, 15, 40, 50, 175, 190, 215, 225, 310, 330];
+	function randomStarHue(): number {
+		return Math.random() < 0.2
+			? STAR_HUES[Math.floor(Math.random() * STAR_HUES.length)]
+			: -1;
+	}
 
 	function computeSpectrum(samples: Float32Array, bins: number): Float32Array {
 		const N = Math.min(samples.length, 1024);
@@ -135,7 +158,24 @@
 		return `${m}:${s.toString().padStart(2, '0')}`;
 	}
 
+	let isNativeFullscreen = $state(false);
+
+	function onFullscreenChange() {
+		isNativeFullscreen = !!document.fullscreenElement;
+	}
+
+	function toggleNativeFullscreen() {
+		if (document.fullscreenElement) {
+			document.exitFullscreen();
+		} else {
+			document.documentElement.requestFullscreen();
+		}
+	}
+
 	function close() {
+		if (document.fullscreenElement) {
+			document.exitFullscreen();
+		}
 		setFullscreenVisualizer(false);
 	}
 
@@ -154,7 +194,16 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+			e.preventDefault();
+			showHotkeyHelp = !showHotkeyHelp;
+			return;
+		}
 		if (e.key === 'Escape') {
+			if (showHotkeyHelp) {
+				showHotkeyHelp = false;
+				return;
+			}
 			if (browserOpen) {
 				closePresetBrowser();
 			} else {
@@ -162,12 +211,26 @@
 			}
 			return;
 		}
+		if (showHotkeyHelp) return;
 		if (visMode === 'milkdrop') {
-			if (e.key === 'ArrowRight') milkdropRef?.nextPreset();
-			if (e.key === 'ArrowLeft') milkdropRef?.prevPreset();
-			if (e.key === 'b' || e.key === 'B') togglePresetBrowser();
-			if (e.key === 'r' || e.key === 'R') milkdropRef?.randomPreset();
-			if ((e.key === 'f' || e.key === 'F') && currentPreset) toggleFavorite(currentPreset);
+			if (e.key === ']') milkdropRef?.nextPreset();
+			if (e.key === '[') milkdropRef?.prevPreset();
+			if (e.key === 'o' || e.key === 'O') togglePresetBrowser();
+			if (e.key === 't' || e.key === 'T') milkdropRef?.randomPreset();
+		}
+		if (e.key === 'f' || e.key === 'F') {
+			toggleNativeFullscreen();
+		}
+		if (e.key >= '1' && e.key <= '5') {
+			setFullscreenVisMode(MODES[parseInt(e.key) - 1]);
+		}
+		if (e.key === 's' || e.key === 'S') {
+			const next = !getShuffled();
+			setShuffled(next);
+			if (next) shuffleQueue(); else unshuffleQueue();
+		}
+		if (e.key === 'r' || e.key === 'R') {
+			cycleRepeatMode();
 		}
 	}
 
@@ -183,9 +246,11 @@
 			canvasEl.width = canvasEl.clientWidth || window.innerWidth;
 			canvasEl.height = canvasEl.clientHeight || window.innerHeight;
 			stars = null;
+			staticStars = null;
 		}
 		resize();
 		window.addEventListener('resize', resize);
+		document.addEventListener('fullscreenchange', onFullscreenChange);
 
 		function draw() {
 			if (cancelled || !canvasEl) return;
@@ -209,6 +274,7 @@
 
 			if (currentMode === 'spectrum') {
 				if (pcm) {
+					const vc = getVisualizerColors();
 					const BINS = 128;
 					const raw = computeSpectrum(pcm, BINS);
 					if (!specSmoothed || specSmoothed.length !== BINS) {
@@ -224,18 +290,29 @@
 						const x = i * barW;
 						const norm = specSmoothed[i] / maxVal;
 						const barH = Math.max(2, norm * H * 0.85);
-						ctx.fillStyle = `hsl(${120 + norm * 60}, 80%, 50%)`;
+						const grad = ctx.createLinearGradient(x, H, x, H - barH);
+						grad.addColorStop(0, vc.low);
+						grad.addColorStop(0.6, vc.mid);
+						grad.addColorStop(1, vc.high);
+						ctx.fillStyle = grad;
 						ctx.fillRect(x + 1, H - barH, barW - 2, barH);
 					}
 				}
 			} else if (currentMode === 'oscilloscope') {
 				if (pcm) {
-					ctx.strokeStyle = accent;
+					const vc = getVisualizerColors();
+					const mid = H / 2;
+					const grad = ctx.createLinearGradient(0, 0, 0, H);
+					grad.addColorStop(0, vc.high);
+					grad.addColorStop(0.3, vc.mid);
+					grad.addColorStop(0.5, vc.low);
+					grad.addColorStop(0.7, vc.mid);
+					grad.addColorStop(1, vc.high);
+					ctx.strokeStyle = grad;
 					ctx.lineWidth = 2;
-					ctx.shadowColor = accent;
+					ctx.shadowColor = vc.low;
 					ctx.shadowBlur = 8;
 					ctx.beginPath();
-					const mid = H / 2;
 					const len = Math.min(pcm.length, 1024);
 					for (let i = 0; i < len; i++) {
 						const x = (i / (len - 1)) * W;
@@ -262,15 +339,16 @@
 					vuSmoothed.R += (rmsR > vuSmoothed.R ? 0.55 : 0.15) * (rmsR - vuSmoothed.R);
 
 					const DB_FLOOR = -40;
+						const vc = getVisualizerColors();
 					const drawVU = (rms: number, y: number, h: number, label: string) => {
 						const db = rms > 0 ? 20 * Math.log10(rms) : DB_FLOOR;
 						const fill =
 							Math.max(0, Math.min(1, (db - DB_FLOOR) / -DB_FLOOR)) * W;
 						const grad = ctx.createLinearGradient(0, 0, W, 0);
-						grad.addColorStop(0, accent);
-						grad.addColorStop(0.7, accent);
-						grad.addColorStop(0.85, '#f0c040');
-						grad.addColorStop(1, '#e04040');
+						grad.addColorStop(0, vc.low);
+						grad.addColorStop(0.7, vc.low);
+						grad.addColorStop(0.85, vc.mid);
+						grad.addColorStop(1, vc.high);
 						ctx.fillStyle = '#222';
 						ctx.fillRect(0, y, W, h);
 						ctx.fillStyle = grad;
@@ -297,7 +375,16 @@
 						x: (Math.random() - 0.5) * W * 2,
 						y: (Math.random() - 0.5) * H * 2,
 						z: Math.random() * MAX_DEPTH,
-						pz: Math.random() * MAX_DEPTH
+						pz: Math.random() * MAX_DEPTH,
+						hue: randomStarHue()
+					}));
+					const NUM_STATIC = 300;
+					staticStars = Array.from({ length: NUM_STATIC }, () => ({
+						sx: Math.random(),
+						sy: Math.random(),
+						brightness: 0.15 + Math.random() * 0.35,
+						size: 0.3 + Math.random() * 0.5,
+						hue: randomStarHue()
 					}));
 				}
 
@@ -325,6 +412,18 @@
 				ctx.fillStyle = `rgba(0, 0, 0, ${Math.max(0.15, 0.4 - rms * 0.5)})`;
 				ctx.fillRect(0, 0, W, H);
 
+				if (staticStars) {
+					for (let i = 0; i < staticStars.length; i++) {
+						const st = staticStars[i];
+						ctx.fillStyle = st.hue >= 0
+							? `hsla(${st.hue}, 50%, ${50 + st.brightness * 30}%, ${st.brightness})`
+							: `rgba(200, 210, 255, ${st.brightness})`;
+						ctx.beginPath();
+						ctx.arc(st.sx * W, st.sy * H, st.size, 0, Math.PI * 2);
+						ctx.fill();
+					}
+				}
+
 				for (let i = 0; i < stars.length; i++) {
 					const s = stars[i];
 					s.pz = s.z;
@@ -335,6 +434,7 @@
 						s.y = (Math.random() - 0.5) * H * 2;
 						s.z = MAX_DEPTH;
 						s.pz = MAX_DEPTH;
+						s.hue = randomStarHue();
 						continue;
 					}
 
@@ -349,7 +449,9 @@
 					const size = Math.max(0.5, depthNorm * 3);
 
 					if (speed > 2) {
-						ctx.strokeStyle = `rgba(200, 210, 255, ${brightness * 0.6})`;
+						ctx.strokeStyle = s.hue >= 0
+							? `hsla(${s.hue}, 40%, 70%, ${brightness * 0.6})`
+							: `rgba(200, 210, 255, ${brightness * 0.6})`;
 						ctx.lineWidth = size * 0.6;
 						ctx.beginPath();
 						ctx.moveTo(px, py);
@@ -357,7 +459,9 @@
 						ctx.stroke();
 					}
 
-					ctx.fillStyle = `rgba(220, 230, 255, ${brightness})`;
+					ctx.fillStyle = s.hue >= 0
+						? `hsla(${s.hue}, 70%, ${50 + brightness * 30}%, ${brightness})`
+						: `rgba(220, 230, 255, ${brightness})`;
 					ctx.beginPath();
 					ctx.arc(sx, sy, size, 0, Math.PI * 2);
 					ctx.fill();
@@ -373,6 +477,7 @@
 			cancelled = true;
 			cancelAnimationFrame(raf);
 			window.removeEventListener('resize', resize);
+			document.removeEventListener('fullscreenchange', onFullscreenChange);
 		};
 	});
 </script>
@@ -483,7 +588,7 @@
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.prevPreset()}
 					aria-label="Previous preset"
-					title="Previous preset (←)"
+					title="Previous preset ([)"
 				>
 					<ChevronLeft size={14} />
 				</button>
@@ -491,7 +596,7 @@
 					type="button"
 					class="max-w-[140px] truncate text-xs text-white/50 transition-colors hover:text-white/80"
 					onclick={togglePresetBrowser}
-					title="Browse presets (B)"
+					title="Browse presets (O)"
 				>
 					{currentPreset ?? 'Preset'}
 				</button>
@@ -500,7 +605,7 @@
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.nextPreset()}
 					aria-label="Next preset"
-					title="Next preset (→)"
+					title="Next preset (])"
 				>
 					<ChevronRight size={14} />
 				</button>
@@ -509,7 +614,7 @@
 					class="rounded bg-white/10 p-1 text-white/70 transition-colors hover:bg-white/20"
 					onclick={() => milkdropRef?.randomPreset()}
 					aria-label="Random preset"
-					title="Random preset (R)"
+					title="Random preset (T)"
 				>
 					<Shuffle size={14} />
 				</button>
@@ -536,7 +641,7 @@
 					class="rounded p-1 transition-colors {browserOpen ? 'text-accent bg-accent/10' : 'bg-white/10 text-white/70 hover:bg-white/20'}"
 					onclick={togglePresetBrowser}
 					aria-label="Browse presets"
-					title="Browse presets (B)"
+					title="Browse presets (O)"
 				>
 					<List size={14} />
 				</button>
@@ -590,5 +695,24 @@
 				</button>
 			{/each}
 		</div>
+
+		<!-- Fullscreen toggle -->
+		<button
+			type="button"
+			class="shrink-0 text-white/30 transition-colors hover:text-white"
+			onclick={toggleNativeFullscreen}
+			aria-label={isNativeFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+			title={isNativeFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+		>
+			{#if isNativeFullscreen}
+				<Minimize size={18} />
+			{:else}
+				<Maximize size={18} />
+			{/if}
+		</button>
 	</div>
+
+	{#if showHotkeyHelp}
+		<HotkeyHelpModal context="visualizer" onclose={() => showHotkeyHelp = false} />
+	{/if}
 </div>

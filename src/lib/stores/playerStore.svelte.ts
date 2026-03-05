@@ -1,5 +1,5 @@
 import type { Track } from '$lib/backends/models/track';
-import type { PlaybackState, EngineCallbacks, PlayRequest } from '$lib/audio/types';
+import type { PlaybackState, EngineCallbacks, PlayRequest, EngineDebugInfo, TrackAnalysis } from '$lib/audio/types';
 import { WebAudioEngine } from '$lib/audio/engine';
 import {
 	getCurrentItem,
@@ -14,10 +14,15 @@ import {
 } from './unifiedQueue.svelte';
 import { getPlayback, getVolume } from './configStore.svelte';
 import { onTrackEnd as sleepTimerOnTrackEnd } from './sleepTimerStore.svelte';
-import { Capability } from '$lib/backends/types';
-import { getBackend, getBackendsWithCapability, resolveEntityBackend } from './backendStore.svelte';
+import { Capability, type Backend } from '$lib/backends/types';
+import { getBackend, getBackendsWithCapability, getFirstBackendWithCapability, resolveEntityBackend } from './backendStore.svelte';
 import { addToRecent, startIcyStream, stopIcyStream } from './radioStore.svelte';
 import { getEpisodeProgress, setEpisodeProgress, markCompleted } from './podcastStore.svelte';
+import {
+	emitAnalysisStart,
+	emitAnalysisComplete,
+	emitAnalysisError
+} from '$lib/events/emit';
 
 // ---------------------------------------------------------------------------
 // Reactive state
@@ -33,6 +38,10 @@ let visSamples: Float32Array | null = null;
 
 // Progress save interval for podcasts
 let progressInterval: ReturnType<typeof setInterval> | null = null;
+
+// History tracking — record on next track start (captures previous item's play duration)
+let historyItem: QueueItem | null = null;
+let historyStartMs: number = 0;
 
 // ---------------------------------------------------------------------------
 // Engine (lazy init, SSR-safe)
@@ -52,6 +61,11 @@ const callbacks: EngineCallbacks = {
 		const item = getCurrentItem();
 		if (!item) return;
 
+		// Flush previous item to history before starting new one
+		flushHistory();
+		historyItem = item;
+		historyStartMs = Date.now();
+
 		if (dur) durationMs = dur;
 		error = null;
 
@@ -59,7 +73,7 @@ const callbacks: EngineCallbacks = {
 		fireNowPlaying(item);
 
 		if (item.type === 'radio') {
-			startIcyStream(item.data.stream_url);
+			startIcyStream(item.data.stream_url, item.data);
 		} else if (item.type === 'track') {
 			schedulePreload();
 		} else if (item.type === 'podcast') {
@@ -102,6 +116,7 @@ const callbacks: EngineCallbacks = {
 				void playItemInternal(allItems[0]);
 			}
 		} else {
+			flushHistory();
 			state = 'stopped';
 			positionMs = 0;
 			durationMs = 0;
@@ -112,6 +127,15 @@ const callbacks: EngineCallbacks = {
 	},
 	onVisFrame(samples) {
 		visSamples = samples;
+	},
+	onAnalysisStart(trackId) {
+		emitAnalysisStart(trackId);
+	},
+	onAnalysisComplete(trackId, bpm) {
+		emitAnalysisComplete(trackId, bpm);
+	},
+	onAnalysisError(trackId, err) {
+		emitAnalysisError(trackId, err);
 	}
 };
 
@@ -141,6 +165,26 @@ function fireScrobble(item: QueueItem, durationPlayedMs: number) {
 		}
 		b.scrobble?.(item, durationPlayedMs).catch(() => {});
 	}
+
+}
+
+function resolvePlaybackBackend(item: QueueItem): Backend | null {
+	switch (item.type) {
+		case 'track':
+			return resolveEntityBackend(item.data.id) ?? getBackend();
+		case 'radio':
+			return getFirstBackendWithCapability(Capability.InternetRadio) ?? null;
+		case 'podcast':
+			return getFirstBackendWithCapability(Capability.Podcasts) ?? null;
+	}
+}
+
+function flushHistory() {
+	if (!historyItem) return;
+	const durationPlayedMs = Date.now() - historyStartMs;
+	if (durationPlayedMs < 5000) { historyItem = null; return; }
+	resolvePlaybackBackend(historyItem)?.recordPlay?.(historyItem, durationPlayedMs);
+	historyItem = null;
 }
 
 export function getEngine(): WebAudioEngine {
@@ -371,6 +415,7 @@ export function togglePlayback() {
 }
 
 export function stopPlayback() {
+	flushHistory();
 	stopProgressSave();
 	stopIcyStream();
 	getEngine().stop();
@@ -442,8 +487,18 @@ export function getAnalyserNode(): AnalyserNode | null {
 	return getEngine().getAnalyserNode();
 }
 
+// Debug info
+export function getEngineDebugInfo(): EngineDebugInfo | null {
+	return engine?.getEngineDebugInfo() ?? null;
+}
+
+export function getTrackAnalysis(trackId: string): TrackAnalysis | null {
+	return engine?.getTrackAnalysis(trackId) ?? null;
+}
+
 // Cleanup
 export function destroyPlayer() {
+	flushHistory();
 	stopProgressSave();
 	stopIcyStream();
 	engine?.destroy();

@@ -4,6 +4,7 @@
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import PlayerBar from '$lib/components/layout/PlayerBar.svelte';
+	import GlobalHotkeys from '$lib/components/layout/GlobalHotkeys.svelte';
 	import SidePanel from '$lib/components/layout/SidePanel.svelte';
 	import { getSidePanel, getShowCreatePlaylist } from '$lib/stores/uiStore.svelte';
 	import CreatePlaylistModal from '$lib/components/ui/CreatePlaylistModal.svelte';
@@ -12,6 +13,9 @@
 	import { page } from '$app/state';
 	import { getAppearance } from '$lib/stores/configStore.svelte';
 	import { restoreBackends } from '$lib/stores/backendStore.svelte';
+	import { initMediaSession, destroyMediaSession } from '$lib/stores/mediaSession.svelte';
+	import { initEventStore, destroyEventStore } from '$lib/stores/eventStore.svelte';
+	import { startDiscoveryScheduler, stopDiscoveryScheduler } from '$lib/stores/discoveryScheduler.svelte';
 	import { onMount } from 'svelte';
 
 	let compact = $derived(getAppearance().compactMode);
@@ -24,6 +28,13 @@
 
 	onMount(() => {
 		restoreBackends();
+		initMediaSession();
+		initEventStore().then(() => startDiscoveryScheduler());
+		return () => {
+			stopDiscoveryScheduler();
+			destroyMediaSession();
+			destroyEventStore();
+		};
 	});
 
 	$effect(() => {
@@ -59,6 +70,8 @@
 	</div>
 	<PlayerBar />
 </div>
+
+<GlobalHotkeys />
 
 {#if showCreatePlaylist}
 	<CreatePlaylistModal />

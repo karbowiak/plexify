@@ -12,6 +12,61 @@ export function formatDuration(ms: number): string {
 	return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+export function formatBitrate(kbps: number | null): string {
+	if (kbps == null) return '';
+	if (kbps >= 1000) return `${(kbps / 1000).toFixed(1).replace(/\.0$/, '')} Mbps`;
+	return `${Math.round(kbps)} kbps`;
+}
+
+export function formatSampleRate(hz: number | null): string {
+	if (hz == null) return '';
+	if (hz >= 1000) return `${(hz / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
+	return `${hz} Hz`;
+}
+
+export function formatBitDepth(bits: number | null): string {
+	if (bits == null) return '';
+	return `${bits}-bit`;
+}
+
+export function formatChannels(ch: number | null): string {
+	if (ch == null) return '';
+	if (ch === 1) return 'Mono';
+	if (ch === 2) return 'Stereo';
+	return `${ch}ch`;
+}
+
+export function formatFileSize(bytes: number): string {
+	if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+	if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+	if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+	return `${bytes} B`;
+}
+
+export function formatGainDb(db: number | null): string {
+	if (db == null) return '';
+	const sign = db >= 0 ? '+' : '';
+	return `${sign}${db.toFixed(1)} dB`;
+}
+
+export function formatLufs(lufs: number | null): string {
+	if (lufs == null) return '';
+	return `${lufs.toFixed(1)} LUFS`;
+}
+
+export function formatQualityBadge(codec: string | null | undefined, bitrate: number | null | undefined, bitDepth: number | null | undefined, sampleRate: number | null | undefined): string {
+	if (!codec) return '';
+	const c = codec.toUpperCase();
+	const isLossless = ['FLAC', 'ALAC', 'WAV', 'AIFF', 'APE', 'DSD'].includes(c);
+	if (isLossless && bitDepth && sampleRate) {
+		const sr = sampleRate >= 1000 ? Math.round(sampleRate / 1000) : sampleRate;
+		return `${c} ${bitDepth}/${sr}`;
+	}
+	if (isLossless) return c;
+	if (bitrate) return `${c} ${Math.round(bitrate)}k`;
+	return c;
+}
+
 export function formatNumber(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`;

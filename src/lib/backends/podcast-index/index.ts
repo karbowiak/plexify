@@ -5,12 +5,14 @@ import type {
 	PodcastDetail,
 	PodcastCategory
 } from '../models/podcast';
+import type { QueueItem } from '$lib/stores/unifiedQueue.svelte';
 import {
 	searchPodcasts as apiSearchPodcasts,
 	trendingPodcasts as apiTrendingPodcasts,
 	getCategories as apiGetCategories,
 	getPodcastFeed as apiGetPodcastFeed
 } from '$lib/podcast/api';
+import { emitPodcastPlay } from '$lib/events/emit';
 
 const BACKEND_ID = 'podcast-index';
 const IMG_PREFIX = 'podcastindex-image://';
@@ -55,7 +57,8 @@ export class PodcastIndexBackend implements Backend {
 		icon: 'podcast',
 		version: '1.0.0',
 		author: 'Built-in',
-		configFields: []
+		configFields: [],
+		brandColor: '#F43F5E'
 	};
 
 	async connect(): Promise<void> {
@@ -98,5 +101,19 @@ export class PodcastIndexBackend implements Backend {
 
 	async getPodcastEpisodeStreamUrl(episode: PodcastEpisode): Promise<string> {
 		return episode.audio_url;
+	}
+
+	recordPlay(item: QueueItem, durationPlayedMs: number): void {
+		if (item.type !== 'podcast') return;
+		emitPodcastPlay({
+			title: item.data.title,
+			subtitle: item.podcastTitle,
+			imageUrl: item.data.artwork_url || item.podcastArtwork || null,
+			entityId: item.data.guid,
+			backendId: this.id,
+			feedUrl: item.feedUrl,
+			audioUrl: item.data.audio_url,
+			durationPlayedMs
+		});
 	}
 }

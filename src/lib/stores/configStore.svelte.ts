@@ -12,6 +12,8 @@ export interface GeneralConfig {
 	language: string;
 	startPage: string;
 	animationsEnabled: boolean;
+	trackNotifications: boolean;
+	debugEnabled: boolean;
 }
 
 export interface BackendInstanceConfig {
@@ -70,6 +72,12 @@ export interface CustomColors {
 	accentSecondary: string | null;
 }
 
+export interface VisualizerColors {
+	low: string;
+	mid: string;
+	high: string;
+}
+
 export interface AppearanceConfig {
 	theme: 'dark' | 'light' | 'system';
 	font: string;
@@ -78,6 +86,7 @@ export interface AppearanceConfig {
 	highlightIntensity: number;
 	compactMode: boolean;
 	customColors: CustomColors | null;
+	visualizerColors: VisualizerColors | null;
 }
 
 export interface AppConfig {
@@ -110,7 +119,9 @@ const defaults: AppConfig = {
 	general: {
 		language: 'en',
 		startPage: '/',
-		animationsEnabled: true
+		animationsEnabled: true,
+		trackNotifications: false,
+		debugEnabled: false
 	},
 	backends: {
 		demo: { enabled: true, config: {} },
@@ -140,7 +151,8 @@ const defaults: AppConfig = {
 		cardSize: 100,
 		highlightIntensity: 100,
 		compactMode: false,
-		customColors: null
+		customColors: null,
+		visualizerColors: null
 	},
 	caches: {
 		image: DEFAULT_IMAGE_CACHE,
@@ -242,6 +254,10 @@ export function getBackendConfig(id: string): BackendInstanceConfig {
 	return backends[id] ?? { enabled: false, config: {} };
 }
 
+export function hasBackendConfig(id: string): boolean {
+	return id in backends;
+}
+
 export function setBackend(id: string, patch: Partial<BackendInstanceConfig>) {
 	const current = getBackendConfig(id);
 	backends = {
@@ -304,6 +320,16 @@ export function setAppearance(patch: Partial<AppearanceConfig>) {
 	save();
 }
 
+const VISUALIZER_COLOR_DEFAULTS: VisualizerColors = { low: '#22c55e', mid: '#eab308', high: '#ef4444' };
+
+export function getVisualizerColors(): VisualizerColors {
+	return appearance.visualizerColors ?? VISUALIZER_COLOR_DEFAULTS;
+}
+
+export function getVisualizerColorDefaults(): VisualizerColors {
+	return VISUALIZER_COLOR_DEFAULTS;
+}
+
 // Caches (keyed by provider id)
 export function getCaches(): CachesConfig {
 	return caches;
@@ -350,5 +376,15 @@ export function getShuffled(): boolean {
 
 export function setShuffled(value: boolean) {
 	playback = { ...playback, shuffled: value };
+	save();
+}
+
+// Debug
+export function getDebugEnabled(): boolean {
+	return general.debugEnabled;
+}
+
+export function setDebugEnabled(value: boolean) {
+	general = { ...general, debugEnabled: value };
 	save();
 }

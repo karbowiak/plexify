@@ -3,6 +3,8 @@
  * Stores the latest now-playing info per stream URL.
  */
 
+import { publish } from '$lib/server/eventBus';
+
 export interface IcyNowPlaying {
 	streamTitle: string;
 	artist: string | null;
@@ -68,6 +70,14 @@ export function setMetadata(streamUrl: string, streamTitle: string): void {
 	store.set(streamUrl, entry);
 	// Notify SSE subscribers
 	for (const cb of listeners.get(streamUrl) ?? []) cb(entry);
+
+	// Publish to unified event bus so the single /api/events SSE carries ICY updates
+	publish({
+		category: 'system',
+		type: 'radio_icy_update',
+		timestamp: new Date(),
+		payload: { streamUrl, streamTitle, artist, title }
+	});
 }
 
 export function getMetadata(streamUrl: string): IcyNowPlaying | null {

@@ -11,6 +11,7 @@
 		showUnfold?: boolean;
 		children: Snippet;
 		skeleton?: Snippet;
+		action?: Snippet;
 	}
 
 	let {
@@ -21,7 +22,8 @@
 		skeletonCount = 5,
 		showUnfold = true,
 		children,
-		skeleton
+		skeleton,
+		action
 	}: Props = $props();
 
 	let unfolded = $state(false);
@@ -67,6 +69,10 @@
 	{#if title}
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-lg font-semibold text-text-primary">{title}</h2>
+			<div class="flex items-center gap-2">
+			{#if action}
+				{@render action()}
+			{/if}
 			{#if showUnfold && !loading}
 				<button
 					type="button"
@@ -81,6 +87,7 @@
 					{/if}
 				</button>
 			{/if}
+			</div>
 		</div>
 	{/if}
 

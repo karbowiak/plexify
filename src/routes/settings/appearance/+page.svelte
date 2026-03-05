@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getAppearance, setAppearance, type CustomColors } from '$lib/stores/configStore.svelte';
+	import { getAppearance, setAppearance, getVisualizerColors, getVisualizerColorDefaults, type CustomColors } from '$lib/stores/configStore.svelte';
 	import {
 		DARK_DEFAULTS, LIGHT_DEFAULTS,
 		DARK_OVERLAY_BASE, LIGHT_OVERLAY_BASE,
@@ -51,6 +51,10 @@
 		overlayBase: false, scrollbarBase: false, rangeTrackBase: false, accentSecondary: false
 	});
 	let accentPickerOpen = $state(false);
+	let visLowPickerOpen = $state(false);
+	let visMidPickerOpen = $state(false);
+	let visHighPickerOpen = $state(false);
+	let visColors = $derived(getVisualizerColors());
 
 	const colorLabels: { key: keyof CustomColors; label: string; cssVar: string }[] = [
 		{ key: 'bgBase', label: 'Background Base', cssVar: '--color-bg-base' },
@@ -325,6 +329,55 @@
 					<ListMusic size={14} class="text-text-muted" />
 				</div>
 			</div>
+		</div>
+	</div>
+
+	<!-- Visualizer Colors -->
+	<div class="rounded-xl border border-border bg-bg-elevated">
+		<h2 class="px-6 pt-5 pb-3 text-sm font-semibold text-accent">Visualizer Colors</h2>
+		<div class="space-y-4 px-6 pb-5">
+			<p class="text-xs text-text-secondary">Customize the gradient colors for spectrum, oscilloscope, and VU visualizers.</p>
+			<div class="flex items-center gap-6">
+				<div class="flex items-center gap-2">
+					<span class="text-xs text-text-muted">Low</span>
+					<ColorPicker
+						value={visColors.low}
+						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, low: hex } })}
+						bind:open={visLowPickerOpen}
+						label="hex"
+					/>
+				</div>
+				<div class="flex items-center gap-2">
+					<span class="text-xs text-text-muted">Mid</span>
+					<ColorPicker
+						value={visColors.mid}
+						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, mid: hex } })}
+						bind:open={visMidPickerOpen}
+						label="hex"
+					/>
+				</div>
+				<div class="flex items-center gap-2">
+					<span class="text-xs text-text-muted">High</span>
+					<ColorPicker
+						value={visColors.high}
+						onchange={(hex) => setAppearance({ visualizerColors: { ...visColors, high: hex } })}
+						bind:open={visHighPickerOpen}
+						label="hex"
+					/>
+				</div>
+			</div>
+
+			<!-- Gradient preview -->
+			<div class="h-3 w-full rounded-full" style="background: linear-gradient(to right, {visColors.low} 0%, {visColors.mid} 50%, {visColors.high} 100%)"></div>
+
+			{#if config.visualizerColors !== null}
+				<button
+					onclick={() => setAppearance({ visualizerColors: null })}
+					class="rounded-lg bg-overlay px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-overlay-hover hover:text-text-primary"
+				>
+					Reset to Defaults
+				</button>
+			{/if}
 		</div>
 	</div>
 

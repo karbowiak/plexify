@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getVisSamples } from '$lib/stores/playerStore.svelte';
 	import type { CompactVisMode } from '$lib/stores/uiStore.svelte';
+	import { getVisualizerColors } from '$lib/stores/configStore.svelte';
 
 	interface Props {
 		progressPct: number;
@@ -69,8 +70,9 @@
 			}
 			const accent = accentCache;
 
+			const isStream = progressPct <= 0 && hoverPct === null;
 			const activePct = hoverPct ?? progressPct;
-			const splitX = (activePct / 100) * W;
+			const splitX = isStream ? W : (activePct / 100) * W;
 			const isHovering = hoverPct !== null;
 
 			if (mode === 'spectrum') {
@@ -79,6 +81,7 @@
 					raf = requestAnimationFrame(draw);
 					return;
 				}
+				const vc = getVisualizerColors();
 				const BINS = 64;
 				const raw = computeSpectrum(pcm, BINS);
 				if (!specSmoothed || specSmoothed.length !== BINS) {
@@ -90,17 +93,22 @@
 				}
 				const barW = W / BINS;
 				const maxVal = Math.max(...Array.from(specSmoothed), 0.001);
+				// Pre-create full-height gradients so color maps to absolute Y position
+				const activeGrad = ctx.createLinearGradient(0, H, 0, 0);
+				activeGrad.addColorStop(0, vc.low);
+				activeGrad.addColorStop(0.6, vc.mid);
+				activeGrad.addColorStop(1, vc.high);
+				const hoverGrad = ctx.createLinearGradient(0, H, 0, 0);
+				hoverGrad.addColorStop(0, hexToRgba(vc.low, 0.5));
+				hoverGrad.addColorStop(0.6, hexToRgba(vc.mid, 0.5));
+				hoverGrad.addColorStop(1, hexToRgba(vc.high, 0.5));
 				for (let i = 0; i < BINS; i++) {
 					const x = i * barW;
 					const barH = Math.max(2, (specSmoothed[i] / maxVal) * H * 0.9);
 					const barX = x + barW * 0.1;
 					const barWidth = barW * 0.8;
-					ctx.fillStyle =
-						x + barW / 2 < splitX
-							? isHovering
-								? hexToRgba(accent, 0.5)
-								: accent
-							: '#404040';
+					const active = x + barW / 2 < splitX;
+					ctx.fillStyle = active ? (isHovering ? hoverGrad : activeGrad) : '#404040';
 					ctx.fillRect(barX, H - barH, barWidth, barH);
 				}
 				// Progress indicator
@@ -116,11 +124,19 @@
 					raf = requestAnimationFrame(draw);
 					return;
 				}
+				const vc = getVisualizerColors();
 				const samples = pcm.length > 512 ? pcm.subarray(0, 512) : pcm;
-				ctx.strokeStyle = '#e0e0e0';
+				const mid = H / 2;
+				// Vertical gradient: high at extremes, low at center
+				const grad = ctx.createLinearGradient(0, 0, 0, H);
+				grad.addColorStop(0, vc.high);
+				grad.addColorStop(0.3, vc.mid);
+				grad.addColorStop(0.5, vc.low);
+				grad.addColorStop(0.7, vc.mid);
+				grad.addColorStop(1, vc.high);
+				ctx.strokeStyle = grad;
 				ctx.lineWidth = 1.5;
 				ctx.beginPath();
-				const mid = H / 2;
 				for (let i = 0; i < samples.length; i++) {
 					const x = (i / (samples.length - 1)) * W;
 					const y = mid - samples[i] * mid * 3.0;
@@ -157,14 +173,15 @@
 				const gap = 4;
 				const barH = (H - gap) / 2;
 
+				const vc = getVisualizerColors();
 				const drawBar = (rms: number, y: number) => {
 					const db = rms > 0 ? 20 * Math.log10(rms) : DB_FLOOR;
 					const fill = Math.max(0, Math.min(1, (db - DB_FLOOR) / -DB_FLOOR)) * W;
 					const grad = ctx.createLinearGradient(0, 0, W, 0);
-					grad.addColorStop(0, accent);
-					grad.addColorStop(0.7, accent);
-					grad.addColorStop(0.85, '#f0c040');
-					grad.addColorStop(1, '#e04040');
+					grad.addColorStop(0, vc.low);
+					grad.addColorStop(0.7, vc.low);
+					grad.addColorStop(0.85, vc.mid);
+					grad.addColorStop(1, vc.high);
 					ctx.fillStyle = '#2a2a2a';
 					ctx.fillRect(0, y, W, barH);
 					ctx.fillStyle = grad;

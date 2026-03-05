@@ -1,5 +1,6 @@
 import { Capability, type Backend, type BackendMetadata, type ResourceResolver } from '../types';
 import type { RadioStation, RadioCountry, RadioTag } from '../models/radioStation';
+import type { QueueItem } from '$lib/stores/unifiedQueue.svelte';
 import {
 	searchStations,
 	topStations,
@@ -43,7 +44,8 @@ export class RadioBrowserBackend implements Backend {
 		icon: 'radio',
 		version: '1.0.0',
 		author: 'Built-in',
-		configFields: []
+		configFields: [],
+		brandColor: '#2196F3'
 	};
 
 	async connect(): Promise<void> {
@@ -92,5 +94,10 @@ export class RadioBrowserBackend implements Backend {
 
 	async registerRadioClick(uuid: string): Promise<void> {
 		registerClick(uuid);
+	}
+
+	recordPlay(item: QueueItem): void {
+		// Radio play events are emitted by radioStore.handleIcyUpdate on ICY track changes.
+		// No-op here to avoid double-emit.
 	}
 }

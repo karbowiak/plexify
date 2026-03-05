@@ -144,6 +144,17 @@ export function setFullscreenVisMode(mode: FullscreenVisMode) {
 	save();
 }
 
+// Submenu pinned state (visibility = pinned || routeActive, derived in Sidebar)
+let pinnedSubmenus = $state<Record<string, boolean>>({});
+
+export function isSubmenuPinned(key: string): boolean {
+	return pinnedSubmenus[key] ?? false;
+}
+
+export function toggleSubmenuPin(key: string) {
+	pinnedSubmenus = { ...pinnedSubmenus, [key]: !pinnedSubmenus[key] };
+}
+
 // Playlist version — bumped when playlists are created/deleted to trigger re-fetches
 let playlistVersion = $state(0);
 

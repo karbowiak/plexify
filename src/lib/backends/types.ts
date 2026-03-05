@@ -26,7 +26,8 @@ export const Capability = {
 	Artists: 'artists',
 	Albums: 'albums',
 	Tracks: 'tracks',
-	Podcasts: 'podcasts'
+	Podcasts: 'podcasts',
+	Discoveries: 'discoveries'
 } as const;
 
 export type Capability = (typeof Capability)[keyof typeof Capability];
@@ -48,6 +49,7 @@ export interface BackendMetadata {
 	author: string;
 	configFields: ConfigField[];
 	idPrefix?: string; // prefix used in compound entity IDs, e.g. "dz"
+	brandColor?: string; // hex color for badge/branding, e.g. '#A238FF'
 }
 
 export interface ResourceResolver {
@@ -85,6 +87,9 @@ export interface Backend {
 	// Scrobble (Capability.Scrobble)
 	scrobble?(item: QueueItem, durationPlayedMs: number): Promise<void>;
 
+	// Play history recording — backend extracts display data and emits to event system
+	recordPlay?(item: QueueItem, durationPlayedMs: number): void;
+
 	// Search (Capability.Search)
 	search?(query: string): Promise<{ tracks: Track[]; albums: Album[]; artists: Artist[] }>;
 
@@ -96,6 +101,11 @@ export interface Backend {
 	getArtistAlbums?(artistId: string): Promise<Album[]>;
 	getArtistTopTracks?(artistId: string, limit?: number): Promise<Track[]>;
 	getArtistRelated?(artistId: string): Promise<Artist[]>;
+
+	// Liked / favorites (Capability.Tracks / Albums / Artists)
+	getLikedTracks?(limit?: number): Promise<Track[]>;
+	getLikedAlbums?(limit?: number): Promise<Album[]>;
+	getLikedArtists?(limit?: number): Promise<Artist[]>;
 
 	// Playback (Capability.Tracks)
 	getStreamUrl?(trackId: string): Promise<string>;
@@ -143,6 +153,18 @@ export interface Backend {
 	getPodcastCategories?(): Promise<PodcastCategory[]>;
 	getPodcastFeed?(feedUrl: string): Promise<PodcastDetail>;
 	getPodcastEpisodeStreamUrl?(episode: PodcastEpisode): Promise<string>;
+
+	// Discoveries (Capability.Discoveries)
+	checkDiscoveries?(): Promise<DiscoveryItem[]>;
+}
+
+export interface DiscoveryItem {
+	type: 'new_album' | 'playlist_updated' | 'recommendation';
+	title: string;
+	subtitle?: string;
+	imageUrl?: string;
+	entityId?: string;
+	href?: string;
 }
 
 // ---------------------------------------------------------------------------

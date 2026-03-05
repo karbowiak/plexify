@@ -8,7 +8,7 @@
  *   [deck norm gains] → preamp → EQ×10 → postgain → limiter → analyser → master → destination
  */
 
-import type { EngineCallbacks, PlayRequest, TrackAnalysis } from './types';
+import type { EngineCallbacks, PlayRequest, TrackAnalysis, EngineDebugInfo, DeckDebugInfo } from './types';
 import AnalyzerWorker from './analyzer.worker?worker';
 
 // ---------------------------------------------------------------------------
@@ -115,6 +115,7 @@ export class WebAudioEngine {
 			this.worker.onmessage = (e: MessageEvent) => {
 				const data = e.data as TrackAnalysis;
 				log('analysis complete for trackId:', data.trackId, 'bpm:', data.bpm);
+				this.cb?.onAnalysisComplete?.(data.trackId, data.bpm);
 				this.analysisCache.set(data.trackId, data);
 				if (this.analysisCache.size > 200) {
 					const firstKey = this.analysisCache.keys().next().value;
@@ -853,6 +854,7 @@ export class WebAudioEngine {
 			if (this.analysisCache.has(job.trackId)) continue;
 
 			log('analyzeTrack() fetching trackId:', job.trackId);
+			this.cb?.onAnalysisStart?.(job.trackId);
 
 			try {
 				await this.fetchAndAnalyze(job);
@@ -862,11 +864,13 @@ export class WebAudioEngine {
 					await new Promise((r) => setTimeout(r, 2000));
 					await this.fetchAndAnalyze(job);
 				} catch (retryErr) {
+					const errMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
 					warn(
 						'analyzeTrack() retry also failed for trackId:',
 						job.trackId,
 						retryErr
 					);
+					this.cb?.onAnalysisError?.(job.trackId, errMsg);
 				}
 			}
 		}
@@ -919,6 +923,50 @@ export class WebAudioEngine {
 
 	getAnalyserNode(): AnalyserNode | null {
 		return this.analyserNode;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Debug info
+	// ---------------------------------------------------------------------------
+
+	private snapshotDeck(deck: Deck | null): DeckDebugInfo | null {
+		if (!deck) return null;
+		return {
+			trackId: deck.trackId,
+			durationMs: deck.durationMs,
+			albumId: deck.albumId,
+			gainDb: deck.gainDb,
+			normGainValue: deck.normGain.gain.value,
+			currentTimeSec: deck.audio.currentTime,
+			paused: deck.audio.paused,
+			readyState: deck.audio.readyState,
+			networkState: deck.audio.networkState,
+			isStream: deck.isStream,
+			hasStartedPlaying: deck.hasStartedPlaying
+		};
+	}
+
+	getEngineDebugInfo(): EngineDebugInfo {
+		return {
+			contextState: this.ctx?.state ?? null,
+			contextSampleRate: this.ctx?.sampleRate ?? null,
+			activeDeck: this.snapshotDeck(this.activeDeck),
+			preloadedDeck: this.snapshotDeck(this.preloadedDeck),
+			normalizationEnabled: this.normalizationEnabled,
+			crossfadeWindowMs: this.crossfadeWindowMs,
+			smartCrossfadeEnabled: this.smartCrossfadeEnabled,
+			sameAlbumCrossfade: this.sameAlbumCrossfade,
+			isCrossfading: this.isCrossfading,
+			eqEnabled: this.eqEnabled,
+			eqGains: [...this.eqGains],
+			preampDb: this.preampDb,
+			postgainDb: this.postgainDb,
+			volume: this.volume,
+			visEnabled: this.visEnabled,
+			analysisCacheSize: this.analysisCache.size,
+			analysisQueueLength: this.analysisQueue.length,
+			playGeneration: this.playGeneration
+		};
 	}
 
 	// ---------------------------------------------------------------------------
