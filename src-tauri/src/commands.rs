@@ -1791,6 +1791,92 @@ pub async fn podcast_get_categories() -> Result<Vec<crate::podcast::PodcastCateg
 }
 
 // ---------------------------------------------------------------------------
+// Genius integration
+// ---------------------------------------------------------------------------
+
+/// Save Genius API credentials to settings.
+#[tauri::command]
+pub async fn genius_save_credentials(
+    client_id: String,
+    client_secret: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.genius_client_id = client_id;
+    settings.genius_client_secret = client_secret;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Disconnect Genius — clear credentials from settings.
+#[tauri::command]
+pub async fn genius_disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.genius_client_id = String::new();
+    settings.genius_client_secret = String::new();
+    settings.genius_enabled = false;
+    settings.genius_always_fetch = false;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Enable or disable Genius lyrics fetching.
+#[tauri::command]
+pub async fn genius_set_enabled(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.genius_enabled = enabled;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Toggle whether Genius should always fetch lyrics (even when Plex has them).
+#[tauri::command]
+pub async fn genius_set_always_fetch(always_fetch: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let mut settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+    settings.genius_always_fetch = always_fetch;
+    crate::plex::save_settings(&config_dir, &settings).map_err(|e| format!("{:#}", e))
+}
+
+/// Search Genius for songs matching "{artist} {track}".
+#[tauri::command]
+pub async fn genius_search(
+    artist: String,
+    track: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::genius::GeniusSearchHit>, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| format!("{:#}", e))?;
+    let settings = crate::plex::load_settings(&config_dir).map_err(|e| format!("{:#}", e))?;
+
+    if settings.genius_client_id.is_empty() || settings.genius_client_secret.is_empty() {
+        return Err("Genius credentials not configured".to_string());
+    }
+
+    let token = crate::genius::get_access_token(&settings.genius_client_id, &settings.genius_client_secret)
+        .await
+        .map_err(|e| format!("{:#}", e))?;
+
+    crate::genius::search(&token, &artist, &track)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+/// Scrape lyrics from a Genius song page URL.
+#[tauri::command]
+pub async fn genius_get_lyrics(
+    song_url: String,
+) -> Result<Vec<crate::genius::GeniusLyricLine>, String> {
+    crate::genius::scrape_lyrics(&song_url)
+        .await
+        .map_err(|e| format!("{:#}", e))
+}
+
+// ---------------------------------------------------------------------------
 // Generic HTTP proxy
 // ---------------------------------------------------------------------------
 

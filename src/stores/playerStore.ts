@@ -16,6 +16,7 @@ import { useVisualizerStore } from "./visualizerStore"
 import { useRadioStreamStore } from "./radioStreamStore"
 import { radioStop, radioSetVolume } from "../lib/radioAudio"
 import { getAudioTranscodeUrl } from "../backends/plex/api"
+import { useLyricsStore } from "./lyricsStore"
 
 type RadioType = 'track' | 'artist' | 'album' | 'playlist'
 
@@ -548,29 +549,12 @@ async function sendToAudioEngine(track: MusicTrack): Promise<void> {
  * Fetch and set lyrics for a track, guarded against stale results from a previous track.
  * Retries once after 2 s on transient error before giving up.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fetchLyricsForTrack(trackId: string, get: () => PlayerState, set: any): void {
-  const provider = getProvider()
-  if (!provider?.getLyrics) return
-  void provider.getLyrics(trackId)
-    .then(lines => {
-      if (get().currentTrack?.id === trackId) set({ lyricsLines: lines })
-    })
-    .catch(err => {
-      console.warn(`Lyrics fetch failed for track ${trackId}, retrying once:`, err)
-      setTimeout(() => {
-        if (get().currentTrack?.id !== trackId) return
-        const p = getProvider()
-        if (!p?.getLyrics) return
-        void p.getLyrics(trackId)
-          .then(lines => {
-            if (get().currentTrack?.id === trackId) set({ lyricsLines: lines })
-          })
-          .catch(() => {
-            if (get().currentTrack?.id === trackId) set({ lyricsLines: [] })
-          })
-      }, 2000)
-    })
+function fetchLyricsForTrack(track: MusicTrack): void {
+  useLyricsStore.getState().fetchForTrack(
+    track.id,
+    track.artistName ?? "",
+    track.title,
+  )
 }
 
 /** Pre-buffer the next track in queue for gapless playback. */
@@ -724,7 +708,7 @@ function _onTrackBecomesActive(track: MusicTrack, index: number, get: () => Play
           .then(levels => { if (levels.length > 0) set({ waveformLevels: levels }) })
       }))
     }
-    fetchLyricsForTrack(track.id, get, set)
+    fetchLyricsForTrack(track)
     _reportProgress(track.id, "playing", 0, track.duration)
   }
   if (provider?.updateNowPlaying) {

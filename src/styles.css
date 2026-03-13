@@ -574,8 +574,8 @@ body {
    Lyrics scroll — gradient mask for smooth fade at top and bottom
    --------------------------------------------------------------------------- */
 .lyrics-scroll {
-  mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black 92%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 92%, transparent 100%);
 }
 
 /* ---------------------------------------------------------------------------

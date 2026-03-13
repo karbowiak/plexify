@@ -20,6 +20,7 @@ import { useProviderStore } from "./stores/providerStore"
 import { useShallow } from "zustand/react/shallow"
 import { useConnectionStore, useLibraryStore, useUIStore } from "./stores"
 import { useLastfmStore } from "./metadata/lastfm/authStore"
+import { useGeniusStore } from "./metadata/genius/authStore"
 import "./stores/accentStore"    // import so the module runs applyAccent() on load
 import "./stores/themeStore"    // import so the module runs applyTheme() on load
 import "./stores/fontStore"     // import so the module runs applyFont() on load
@@ -44,12 +45,14 @@ function App() {
     useShallow(s => ({ showCreatePlaylist: s.showCreatePlaylist, setShowCreatePlaylist: s.setShowCreatePlaylist, pendingPlaylistItemIds: s.pendingPlaylistItemIds, setPendingPlaylistItemIds: s.setPendingPlaylistItemIds }))
   )
   const initLastfm = useLastfmStore(s => s.initialize)
+  const initGenius = useGeniusStore(s => s.initialize)
   const [location, navigate] = useLocation()
 
   useEffect(() => {
     void loadAndConnect()
     void createAppMenu(() => navigate("/settings"))
     void initLastfm()
+    void initGenius()
   }, [])
 
   useEffect(() => {

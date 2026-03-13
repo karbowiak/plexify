@@ -145,6 +145,7 @@ export class DeckManager {
       oldDeck.fadeGain.gain.cancelScheduledValues(now)
       oldDeck.fadeGain.gain.setValueCurveAtTime(plan.fadeOutCurve, now, durationSec)
 
+      newDeck.fadeGain.gain.cancelScheduledValues(now)
       newDeck.fadeGain.gain.setValueAtTime(0, now)
       newDeck.fadeGain.gain.setValueCurveAtTime(plan.fadeInCurve, now, durationSec)
     }

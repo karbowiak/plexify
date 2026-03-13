@@ -5,6 +5,7 @@ mod audio_devices;
 mod commands;
 mod db;
 mod deezer;
+mod genius;
 mod itunes;
 mod itunes_throttle;
 mod lastfm;
@@ -445,6 +446,13 @@ pub fn run() {
             commands::podcast_get_feed,
             commands::podcast_lookup,
             commands::podcast_get_categories,
+            // Genius integration
+            commands::genius_save_credentials,
+            commands::genius_disconnect,
+            commands::genius_set_enabled,
+            commands::genius_set_always_fetch,
+            commands::genius_search,
+            commands::genius_get_lyrics,
             // Generic HTTP proxy
             commands::http_get_json,
             // Audio device detection

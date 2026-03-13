@@ -1045,6 +1045,7 @@ const METADATA_CAPABILITY_LABELS: Record<keyof MetadataCapabilities, string> = {
   similarArtists: "Similar Artists",
   trackInfo: "Track Info",
   scrobble: "Scrobble",
+  lyrics: "Lyrics",
 }
 
 const SOURCE_ICONS: Record<MetadataSource, React.ReactNode> = {

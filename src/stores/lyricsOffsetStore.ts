@@ -2,8 +2,8 @@ import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { usePlayerStore } from "./playerStore"
 
-const MIN_OFFSET = -5000
-const MAX_OFFSET = 5000
+const MIN_OFFSET = -15000
+const MAX_OFFSET = 15000
 
 interface LyricsOffsetState {
   /** Per-track offset map, keyed by track ID */

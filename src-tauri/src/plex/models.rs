@@ -1260,6 +1260,27 @@ pub struct PlexSettings {
     /// Default 6 = 3 stars. Rating below threshold → unlove. 0 (unrated) → unlove.
     #[serde(default = "default_lastfm_love_threshold")]
     pub lastfm_love_threshold: u8,
+
+    // -----------------------------------------------------------------------
+    // Genius integration
+    // -----------------------------------------------------------------------
+
+    /// Genius API client ID.
+    #[serde(default)]
+    pub genius_client_id: String,
+
+    /// Genius API client secret. Stays in Rust for token exchange.
+    #[serde(default)]
+    pub genius_client_secret: String,
+
+    /// Whether Genius lyrics fetching is enabled.
+    #[serde(default)]
+    pub genius_enabled: bool,
+
+    /// When true, always fetch Genius lyrics even when Plex provides lyrics.
+    /// When false (default), only fetch from Genius when Plex has no lyrics.
+    #[serde(default)]
+    pub genius_always_fetch: bool,
 }
 
 fn default_lastfm_love_threshold() -> u8 {

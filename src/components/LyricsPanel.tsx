@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { usePlayerStore } from "../stores/playerStore"
 import { useUIStore } from "../stores/uiStore"
 import { useLyricsOffsetStore } from "../stores/lyricsOffsetStore"
+import { useLyricsStore } from "../stores/lyricsStore"
 import { useResizable } from "../hooks/useResizable"
 import { useCapability } from "../hooks/useCapability"
 
@@ -16,8 +17,9 @@ function formatOffset(ms: number): string {
 }
 
 /** Lyrics timing offset bar — centered drag slider rendered as a footer beneath lyrics. */
-function LyricsOffsetBar() {
+function LyricsOffsetBar({ hidden }: { hidden?: boolean }) {
   const { offsetMs, setOffset, resetOffset } = useLyricsOffsetStore()
+  if (hidden) return null
   return (
     <div className="flex items-center gap-3 border-t border-[var(--border)] bg-[var(--bg-surface)] px-4 py-3 shrink-0">
       <span className="shrink-0 text-[10px] font-medium uppercase tracking-wider text-[color:var(--text-muted)]">
@@ -25,8 +27,8 @@ function LyricsOffsetBar() {
       </span>
       <input
         type="range"
-        min={-5000}
-        max={5000}
+        min={-15000}
+        max={15000}
         step={100}
         value={offsetMs}
         onChange={e => setOffset(parseInt(e.target.value, 10))}
@@ -48,12 +50,98 @@ function LyricsOffsetBar() {
   )
 }
 
+/** Source selector — shown when multiple sources or Genius hits exist. */
+function LyricsSourceSelector() {
+  const { sources, activeSourceId, geniusHits, isSearching, isFetchingLyrics, selectSource, fetchGeniusLyrics } =
+    useLyricsStore(useShallow(s => ({
+      sources: s.sources,
+      activeSourceId: s.activeSourceId,
+      geniusHits: s.geniusHits,
+      isSearching: s.isSearching,
+      isFetchingLyrics: s.isFetchingLyrics,
+      selectSource: s.selectSource,
+      fetchGeniusLyrics: s.fetchGeniusLyrics,
+    })))
+
+  const [expanded, setExpanded] = useState(false)
+
+  const hasMultiple = sources.length > 1 || geniusHits.length > 0
+  if (!hasMultiple && !isSearching) return null
+
+  // Genius hits that aren't already loaded as sources
+  const loadedIds = new Set(sources.filter(s => s.id.startsWith("genius-")).map(s => s.id.replace("genius-", "")))
+  const unloadedHits = geniusHits.filter(h => !loadedIds.has(String(h.id)))
+
+  return (
+    <div className="shrink-0 border-b border-[var(--border)] px-4 py-2">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {sources.map(source => (
+          <button
+            key={source.id}
+            onClick={() => selectSource(source.id)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              activeSourceId === source.id
+                ? "bg-accent text-white"
+                : "bg-[var(--bg-surface)] text-[color:var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]"
+            }`}
+          >
+            {source.label}
+            {!source.isSynced && <span className="ml-1 opacity-50">(plain)</span>}
+          </button>
+        ))}
+        {isSearching && (
+          <span className="text-xs text-[color:var(--text-muted)] animate-pulse">Searching Genius...</span>
+        )}
+        {isFetchingLyrics && (
+          <span className="text-xs text-[color:var(--text-muted)] animate-pulse">Loading lyrics...</span>
+        )}
+        {unloadedHits.length > 0 && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="rounded-full px-2 py-1 text-xs text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
+          >
+            {expanded ? "Less" : `+${unloadedHits.length} more`}
+          </button>
+        )}
+      </div>
+
+      {expanded && unloadedHits.length > 0 && (
+        <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+          {unloadedHits.map(hit => (
+            <button
+              key={hit.id}
+              onClick={() => {
+                void fetchGeniusLyrics(hit)
+                setExpanded(false)
+              }}
+              className="flex items-center gap-2 w-full rounded-lg px-2 py-1.5 text-left hover:bg-[var(--bg-surface-hover)] transition-colors"
+            >
+              {hit.thumbnail_url && (
+                <img src={hit.thumbnail_url} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-[color:var(--text-primary)] truncate">{hit.title}</p>
+                <p className="text-[10px] text-[color:var(--text-muted)] truncate">{hit.artist}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Shared lyrics body used both in the standalone panel and the queue's Lyrics tab. */
 export function LyricsContent() {
   const { lyricsLines, positionMs } = usePlayerStore(
     useShallow(s => ({ lyricsLines: s.lyricsLines, positionMs: s.positionMs }))
   )
   const offsetMs = useLyricsOffsetStore(s => s.offsetMs)
+  const activeSource = useLyricsStore(s => {
+    const src = s.sources.find(src => src.id === s.activeSourceId)
+    return src ?? null
+  })
+  const isSynced = activeSource?.isSynced ?? true
   const activeRef = useRef<HTMLButtonElement>(null)
   const lastIndexRef = useRef(0)
 
@@ -61,6 +149,7 @@ export function LyricsContent() {
   useEffect(() => { lastIndexRef.current = 0 }, [lyricsLines])
 
   const activeIndex = useMemo(() => {
+    if (!isSynced) return -1 // No active line for unsynced lyrics
     if (!lyricsLines || lyricsLines.length === 0) return -1
     const adjustedPos = positionMs + offsetMs
 
@@ -88,16 +177,17 @@ export function LyricsContent() {
       return hi
     }
     return -1
-  }, [lyricsLines, positionMs, offsetMs])
+  }, [lyricsLines, positionMs, offsetMs, isSynced])
 
   useEffect(() => {
-    if (activeRef.current) {
+    if (isSynced && activeRef.current) {
       activeRef.current.scrollIntoView({ behavior: "smooth", block: "center" })
     }
-  }, [activeIndex])
+  }, [activeIndex, isSynced])
 
   return (
     <>
+      <LyricsSourceSelector />
       <div className="flex-1 overflow-y-auto px-6 py-4 lyrics-scroll scrollbar scrollbar-w-1 scrollbar-track-transparent scrollbar-thumb-[var(--bg-surface)] hover:scrollbar-thumb-[var(--bg-surface-hover)]">
         {!lyricsLines ? (
           <div className="flex items-center justify-center h-full">
@@ -117,13 +207,19 @@ export function LyricsContent() {
                   key={i}
                   ref={isActive ? activeRef : undefined}
                   type="button"
-                  className={`-mx-2 rounded-lg px-2 text-left text-2xl font-bold transition-all duration-300 cursor-pointer select-text ${
+                  className={`-mx-2 rounded-lg px-2 text-left text-2xl font-bold transition-all duration-300 select-text ${
+                    isSynced ? "cursor-pointer" : "cursor-default"
+                  } ${
                     isActive
                       ? "text-accent"
-                      : "text-[color:var(--text-muted)]/40 hover:text-[color:var(--text-muted)]/60 hover:bg-[var(--accent-tint-hover)]"
+                      : isSynced
+                        ? "text-[color:var(--text-muted)]/40 hover:text-[color:var(--text-muted)]/60 hover:bg-[var(--accent-tint-hover)]"
+                        : "text-[color:var(--text-secondary)]"
                   }`}
                   style={isActive ? { filter: "drop-shadow(0 0 8px rgb(var(--accent-rgb) / 0.15))" } : undefined}
-                  onClick={() => usePlayerStore.getState().seekTo(line.startMs)}
+                  onClick={() => {
+                    if (isSynced) usePlayerStore.getState().seekTo(line.startMs)
+                  }}
                 >
                   {line.text}
                 </button>
@@ -132,7 +228,7 @@ export function LyricsContent() {
           </div>
         )}
       </div>
-      <LyricsOffsetBar />
+      <LyricsOffsetBar hidden={!isSynced} />
     </>
   )
 }

@@ -11,6 +11,7 @@ export interface MetadataCapabilities {
   similarArtists: boolean
   trackInfo: boolean
   scrobble: boolean
+  lyrics: boolean
 }
 
 export interface MetadataBackendDefinition {

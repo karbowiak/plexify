@@ -30,6 +30,7 @@ export const deezerMetadataBackend: MetadataBackendDefinition = {
     similarArtists: false,
     trackInfo: false,
     scrobble: false,
+    lyrics: false,
   },
   SettingsComponent: DeezerSettings,
   useIsEnabled: () => true,

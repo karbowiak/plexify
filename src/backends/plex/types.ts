@@ -338,6 +338,12 @@ export interface PlexSettings {
   lastfm_replace_metadata: boolean
   /** Minimum Plex rating (0–10) that triggers a Last.fm love. Default 6 (= 3★). */
   lastfm_love_threshold: number
+  /** Genius API client ID. Empty if not configured. */
+  genius_client_id: string
+  /** Whether Genius lyrics fetching is enabled. */
+  genius_enabled: boolean
+  /** When true, always fetch Genius lyrics even when Plex provides them. */
+  genius_always_fetch: boolean
 }
 
 // ---------------------------------------------------------------------------

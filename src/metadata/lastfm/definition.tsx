@@ -27,6 +27,7 @@ export const lastfmMetadataBackend: MetadataBackendDefinition = {
     similarArtists: true,
     trackInfo: true,
     scrobble: true,
+    lyrics: false,
   },
   SettingsComponent: LastfmSettings,
   useIsEnabled: () => useLastfmStore(s => s.hasApiKey),

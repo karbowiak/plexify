@@ -26,6 +26,7 @@ export const appleMetadataBackend: MetadataBackendDefinition = {
     similarArtists: false,
     trackInfo: false,
     scrobble: false,
+    lyrics: false,
   },
   SettingsComponent: AppleSettings,
   useIsEnabled: () => true,
