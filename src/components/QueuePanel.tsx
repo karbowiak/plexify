@@ -374,14 +374,18 @@ export function QueuePanel() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll so Now Playing sits at the top of the visible area
+  // Auto-scroll so Now Playing sits at the top of the visible area.
+  // Uses rAF to wait for layout after tab switches or panel open.
   useEffect(() => {
-    if (nowPlayingRef.current && scrollRef.current) {
-      const container = scrollRef.current
-      const el = nowPlayingRef.current
-      container.scrollTop = el.offsetTop - container.offsetTop
-    }
-  }, [queueIndex, isQueueOpen])
+    const frame = requestAnimationFrame(() => {
+      if (nowPlayingRef.current && scrollRef.current) {
+        const container = scrollRef.current
+        const el = nowPlayingRef.current
+        container.scrollTop = el.offsetTop - container.offsetTop
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [queueIndex, isQueueOpen, queueActiveTab])
 
   const list = queue.length === 0 ? (
     <div className="flex flex-1 items-center justify-center text-sm text-gray-500">
