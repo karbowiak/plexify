@@ -860,13 +860,15 @@ fn fetch_and_decode_incremental(
 ) -> Result<IncrementalDecodeResult, String> {
     use symphonia::core::io::MediaSourceStream;
 
+    let ext = cache::extract_extension(url);
+
     // ---- Cache HIT: decode from local file ----
     if let Some(cached_path) = cache.lookup(rating_key) {
         debug!(rating_key, path = %cached_path.display(), "cache hit — decoding from file");
         let file = std::fs::File::open(&cached_path)
             .map_err(|e| format!("cache read: {}", e))?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut setup = decode::probe_from_source(mss).map_err(|e| format!("{}", e))?;
+        let mut setup = decode::probe_from_source(mss, Some(&ext)).map_err(|e| format!("{}", e))?;
         let mut result = decode_initial_batch(&mut setup, device_rate, device_channels)?;
         result.decoder = if setup.finished { None } else { Some(setup) };
         return Ok(result);
@@ -957,7 +959,7 @@ fn fetch_and_decode_incremental(
     })?;
 
     let reader = StreamingReader::new(shared_buf);
-    let mut setup = decode::probe_stream(reader).map_err(|e| format!("{}", e))?;
+    let mut setup = decode::probe_stream(reader, Some(&ext)).map_err(|e| format!("{}", e))?;
     let mut result = decode_initial_batch(&mut setup, device_rate, device_channels)?;
     result.decoder = if setup.finished { None } else { Some(setup) };
     Ok(result)

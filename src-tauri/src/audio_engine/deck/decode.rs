@@ -34,18 +34,23 @@ pub struct DecoderSetup {
 pub fn probe_audio(data: Vec<u8>) -> Result<DecoderSetup> {
     let cursor = std::io::Cursor::new(data);
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
-    probe_from_source(mss)
+    probe_from_source(mss, None)
 }
 
 /// Probe and set up a decoder from a streaming source.
 /// The reader may block waiting for HTTP data — that's fine, we're on the decode thread.
-pub fn probe_stream(reader: StreamingReader) -> Result<DecoderSetup> {
+pub fn probe_stream(reader: StreamingReader, ext: Option<&str>) -> Result<DecoderSetup> {
     let mss = MediaSourceStream::new(Box::new(reader), Default::default());
-    probe_from_source(mss)
+    probe_from_source(mss, ext)
 }
 
-pub fn probe_from_source(mss: MediaSourceStream) -> Result<DecoderSetup> {
-    let hint = Hint::new();
+/// Probe and set up a decoder. Pass a file extension hint (e.g. "opus", "ogg",
+/// "flac") for reliable format detection — some containers like OGG/Opus need it.
+pub fn probe_from_source(mss: MediaSourceStream, ext: Option<&str>) -> Result<DecoderSetup> {
+    let mut hint = Hint::new();
+    if let Some(ext) = ext {
+        hint.with_extension(ext);
+    }
     let format_opts = FormatOptions {
         enable_gapless: true,
         ..Default::default()
@@ -294,7 +299,7 @@ mod tests {
         });
 
         let reader = StreamingReader::new(shared);
-        let mut setup = probe_stream(reader).expect("should probe stream");
+        let mut setup = probe_stream(reader, Some("wav")).expect("should probe stream");
         let samples = decode_all(&mut setup).expect("should decode stream");
 
         writer.join().unwrap();
