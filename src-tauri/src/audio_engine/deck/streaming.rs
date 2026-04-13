@@ -15,6 +15,10 @@ use symphonia::core::io::MediaSource;
 struct Inner {
     data: Vec<u8>,
     done: bool,
+    /// True when the download was aborted due to an error (not a clean finish).
+    /// The reader returns `ConnectionAborted` instead of normal EOF so the
+    /// decoder can distinguish truncated streams from complete ones.
+    aborted: bool,
     /// Total content length from the HTTP response (if known).
     content_length: Option<u64>,
 }
@@ -39,6 +43,7 @@ impl SharedBuffer {
             inner: Mutex::new(Inner {
                 data: Vec::with_capacity(capacity),
                 done: false,
+                aborted: false,
                 content_length,
             }),
             condvar: Condvar::new(),
@@ -66,10 +71,13 @@ impl SharedBuffer {
         self.condvar.notify_all();
     }
 
-    /// Signal a download error.
+    /// Signal a download error. The reader will return `ConnectionAborted`
+    /// instead of normal EOF so the decoder can detect the truncation.
     pub fn abort(&self) {
-        // Just mark as done — the reader will see EOF
-        self.finish();
+        let mut inner = self.inner.lock().unwrap();
+        inner.aborted = true;
+        inner.done = true;
+        self.condvar.notify_all();
     }
 
     /// Set the content length once known (from HTTP Content-Length header).
@@ -112,7 +120,15 @@ impl Read for StreamingReader {
             }
 
             if inner.done {
-                // No more data coming — EOF
+                if inner.aborted {
+                    // Download was aborted — signal distinct error so the
+                    // decoder can tell this apart from a normal end-of-file.
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "stream download aborted",
+                    ));
+                }
+                // No more data coming — normal EOF
                 return Ok(0);
             }
 

@@ -40,6 +40,10 @@ pub struct SharedAtomics {
     pub deck_b_seek_ms: Arc<AtomicI64>,
     pub deck_a_generation: Arc<AtomicU64>,
     pub deck_b_generation: Arc<AtomicU64>,
+    /// Rating key of the last preload that failed (stream error / truncated).
+    /// Written by bg decode or control thread on error, read by PLAY handler
+    /// to avoid using a broken preload.
+    pub preload_error_rk: Arc<AtomicI64>,
 }
 
 impl SharedAtomics {
@@ -55,6 +59,7 @@ impl SharedAtomics {
             deck_b_seek_ms: Arc::new(AtomicI64::new(-1)),
             deck_a_generation: Arc::new(AtomicU64::new(0)),
             deck_b_generation: Arc::new(AtomicU64::new(0)),
+            preload_error_rk: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -518,6 +523,20 @@ impl AudioCallbackState {
             self.set_state(EngineState::Stopped);
             let _ = self.event_tx.try_send(EngineEvent::State {
                 state: "stopped".into(),
+            });
+        } else if active.loaded
+            && !active.fully_decoded
+            && !active.samples.is_empty()
+            && active.position >= active.samples.len()
+            && !self.is_crossfading
+        {
+            // Active deck ran out of samples but the track isn't fully decoded.
+            // This happens when a streaming download was truncated (HTTP error).
+            // Enter buffering state — if more data arrives it will resume,
+            // otherwise the JS side can detect the stall.
+            self.set_state(EngineState::Buffering);
+            let _ = self.event_tx.try_send(EngineEvent::State {
+                state: "buffering".into(),
             });
         }
     }

@@ -45,6 +45,10 @@ pub struct DecoderSetup {
     sample_buf: Option<SampleBuffer<f32>>,
     /// Whether we've reached end of stream.
     pub finished: bool,
+    /// Whether the stream was aborted (download error, not normal EOF).
+    /// When true, the decoded audio is truncated — callers should NOT treat
+    /// it as a complete track.
+    pub aborted: bool,
 }
 
 /// Probe and set up a decoder from in-memory bytes (full file).
@@ -119,6 +123,7 @@ pub fn probe_from_source(mss: MediaSourceStream, ext: Option<&str>) -> Result<De
         channels,
         sample_buf: None,
         finished: false,
+        aborted: false,
     })
 }
 
@@ -149,6 +154,7 @@ pub fn decode_batch(setup: &mut DecoderSetup, max_samples: usize) -> Result<Vec<
             Err(e) => {
                 warn!("decode packet error: {}", e);
                 setup.finished = true;
+                setup.aborted = true;
                 break;
             }
         };
@@ -166,6 +172,7 @@ pub fn decode_batch(setup: &mut DecoderSetup, max_samples: usize) -> Result<Vec<
             Err(e) => {
                 warn!("fatal decode error: {}", e);
                 setup.finished = true;
+                setup.aborted = true;
                 break;
             }
         };

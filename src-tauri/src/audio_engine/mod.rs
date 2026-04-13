@@ -308,17 +308,23 @@ fn control_thread_main(
 
                     // Check if this track is already playing (scheduler beat us to it)
                     let already_active = active_rk == meta.rating_key;
+                    // Check if the preload was truncated (stream error during download)
+                    let preload_broken = atomics.preload_error_rk.load(Ordering::Relaxed) == meta.rating_key;
                     if already_active {
                         info!(rating_key = meta.rating_key, "track already active, skipping play");
                         pending_rating_key = 0;
                     // If the pending deck already has this track preloaded, just transition
-                    } else if pending_rating_key == meta.rating_key && pending_rating_key != 0 {
+                    } else if pending_rating_key == meta.rating_key && pending_rating_key != 0 && !preload_broken {
                         info!(rating_key = meta.rating_key, "using preloaded deck");
                         cache_ramps(&meta, &audio_cmd_tx);
                         let _ = audio_cmd_tx.send(AudioCommand::TransitionToActive { user_skip: true });
                         set_active_eagerly(&atomics, pending);
                         pending_rating_key = 0;
                     } else {
+                        if preload_broken {
+                            warn!(rating_key = meta.rating_key, "preload was truncated, re-fetching");
+                            atomics.preload_error_rk.store(0, Ordering::Relaxed);
+                        }
                         let deck = pending;
                         handle_play(
                             &url,
@@ -536,12 +542,15 @@ fn handle_play(
                 expected_samples: expected_total,
             });
 
+            // Don't mark as fully decoded if the stream was truncated
+            let fully_decoded = !has_more && !result.aborted;
+
             // Send initial samples
             let _ = sample_tx.send(SampleBatch {
                 rating_key: meta.rating_key,
                 generation,
                 samples: result.initial_samples,
-                fully_decoded: !has_more,
+                fully_decoded,
             });
 
             // Tell audio callback to swap pending → active
@@ -561,6 +570,10 @@ fn handle_play(
                     device_rate,
                     device_channels,
                 );
+            }
+
+            if result.aborted {
+                warn!(rating_key = meta.rating_key, "stream was truncated during play");
             }
         }
         Err(e) => {
@@ -628,12 +641,19 @@ fn handle_preload(
                 expected_samples: expected_total,
             });
 
+            let fully_decoded = !has_more && !result.aborted;
+
             let _ = sample_tx.send(SampleBatch {
                 rating_key: meta.rating_key,
                 generation,
                 samples: result.initial_samples,
-                fully_decoded: !has_more,
+                fully_decoded,
             });
+
+            if result.aborted {
+                warn!(rating_key = meta.rating_key, "preload stream was truncated");
+                atomics.preload_error_rk.store(meta.rating_key, Ordering::Relaxed);
+            }
 
             debug!(rating_key = meta.rating_key, "preload initial batch ready");
             // NOTE: No TransitionToActive here — the audio callback's scheduler handles it
@@ -807,23 +827,26 @@ fn spawn_background_decode(
                         }
                     }
                     Ok(_) => {
-                        debug!(rating_key, "bg decode: complete");
-                        let _ = sample_tx.send(SampleBatch {
-                            rating_key,
-                            generation: current_gen,
-                            samples: Vec::new(),
-                            fully_decoded: true,
-                        });
+                        if decoder.aborted {
+                            // Stream was truncated (download error) — don't mark
+                            // as fully decoded so is_finished() won't fire and
+                            // cause premature auto-advance.
+                            warn!(rating_key, "bg decode: incomplete (stream truncated)");
+                            atomics.preload_error_rk.store(rating_key, Ordering::Relaxed);
+                        } else {
+                            debug!(rating_key, "bg decode: complete");
+                            let _ = sample_tx.send(SampleBatch {
+                                rating_key,
+                                generation: current_gen,
+                                samples: Vec::new(),
+                                fully_decoded: true,
+                            });
+                        }
                         return;
                     }
                     Err(e) => {
                         warn!(rating_key, error = %e, "bg decode: error");
-                        let _ = sample_tx.send(SampleBatch {
-                            rating_key,
-                            generation: current_gen,
-                            samples: Vec::new(),
-                            fully_decoded: true,
-                        });
+                        atomics.preload_error_rk.store(rating_key, Ordering::Relaxed);
                         return;
                     }
                 }
@@ -848,6 +871,9 @@ struct IncrementalDecodeResult {
     decoder: Option<decode::DecoderSetup>,
     source_rate: u32,
     source_channels: u16,
+    /// True if the stream was aborted (download error). The initial samples
+    /// are valid but the track is truncated — don't treat as fully decoded.
+    aborted: bool,
 }
 
 /// Fetch and decode audio — checks disk cache first, falls back to HTTP streaming.
@@ -1019,6 +1045,7 @@ fn decode_initial_batch(
         decoder: None, // caller fills this
         source_rate,
         source_channels,
+        aborted: setup.aborted,
     })
 }
 
