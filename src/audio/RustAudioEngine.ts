@@ -27,6 +27,24 @@ export interface AudioEngineCallbacks {
 export interface RampPoint { db: number; timeSec: number }
 export interface TrackRamps { startRamp: RampPoint[]; endRamp: RampPoint[] }
 
+/** Interpolate a loudness ramp to find where it crosses a dB threshold. */
+function interpolateThreshold(ramp: RampPoint[], thresholdDb: number): number | null {
+  if (ramp.length < 2) return null
+  // If threshold is below the quietest point, return first time
+  if (thresholdDb <= ramp[0].db) return ramp[0].timeSec
+  // If threshold is above the loudest point, return last time
+  if (thresholdDb >= ramp[ramp.length - 1].db) return ramp[ramp.length - 1].timeSec
+  // Linear interpolation between surrounding points
+  for (let i = 0; i < ramp.length - 1; i++) {
+    const a = ramp[i], b = ramp[i + 1]
+    if ((a.db <= thresholdDb && b.db >= thresholdDb) || (a.db >= thresholdDb && b.db <= thresholdDb)) {
+      const ratio = (thresholdDb - a.db) / (b.db - a.db)
+      return a.timeSec + ratio * (b.timeSec - a.timeSec)
+    }
+  }
+  return null
+}
+
 export function parseRamp(raw: string | null | undefined): RampPoint[] {
   if (!raw) return []
   return raw.split(";").filter(Boolean).map(pair => {
@@ -301,10 +319,19 @@ class RustAudioEngine {
     return this.rampCache.get(ratingKey) ?? null
   }
 
-  getMixrampOverlap(_endRamp: RampPoint[], _startRamp: RampPoint[]): { endOverlapSec: number; startOverlapSec: number } | null {
-    // MixRamp interpolation is now handled entirely in Rust.
-    // This method is kept for API compatibility but returns null.
-    return null
+  getMixrampOverlap(endRamp: RampPoint[], startRamp: RampPoint[]): { endOverlapSec: number; startOverlapSec: number } | null {
+    // MixRamp interpolation for display only (actual crossfade computed in Rust)
+    const threshold = -17
+    const endCross = interpolateThreshold(endRamp, threshold)
+    const startCross = interpolateThreshold(startRamp, threshold)
+    if (endCross == null || startCross == null) return null
+    // endCross is time from start of ramp (= time before track end)
+    // startCross is time from start of next track
+    const endOverlapSec = endRamp.length > 0
+      ? endRamp[endRamp.length - 1].timeSec - endCross
+      : 0
+    if (endOverlapSec < 0.2 || startCross < 0.2) return null
+    return { endOverlapSec, startOverlapSec: startCross }
   }
 
   // ---------------------------------------------------------------------------
